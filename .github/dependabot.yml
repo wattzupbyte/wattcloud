@@ -22,9 +22,9 @@ updates:
       - "deps"
       - "rust"
     ignore:
-      # Pin kem to match the ml-kem version used by sdk-core's crypto-interop
-      # constraint with secure-cloud. Upgrade requires a coordinated PR in
-      # both repos.
+      # `kem` is pinned because the HKDF info strings and ML-KEM parameters
+      # in sdk-core's crypto module are part of the V7 wire format. Upgrading
+      # requires a protocol version bump, not a dependency bump.
       - dependency-name: "kem"
 
   # byo-server standalone workspace.

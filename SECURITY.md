@@ -6,11 +6,11 @@ are enforced. It is the authoritative reference for implementers.
 For the BYO protocol (vault format, enrollment, OAuth flow, provider APIs,
 relay server) see `SPEC.md`.
 
-Wattcloud is the BYO-only carveout of SecureCloud. Some sections below
-(especially the Key Hierarchy appendix) still describe hybrid managed + BYO
-material for historical reasons — those constants remain byte-for-byte
-compatible across both repos so V7 ciphertext interoperates. In this repo
-only the BYO code path is compiled; the managed modules were deleted.
+Certain HKDF info strings and the vault root folder path contain the
+literal bytes `"SecureCloud"` — these are frozen protocol identifiers from
+earlier versions of the codebase. They are part of the V7 wire format and
+the on-disk vault layout; renaming them would make every existing vault
+undecryptable. Treat them as magic constants, not as product references.
 
 ---
 
@@ -190,7 +190,14 @@ decapsulate(mlkem_sk, x25519_sk, header):
     (wrapping_key || kem_hmac_key) = HKDF-SHA256(combined_ikm, info="SecureCloud v6", L=64)
 ```
 
-The HKDF info string literal is `"SecureCloud v6"` for historical reasons: it names the *hybrid KEM construction*, not a file format. V7 is the only wire format the code implements or accepts. `wrapping_key` is used to AES-GCM-wrap the per-file random `content_key`; `kem_hmac_key` is discarded (v7's chunk HMAC key is separately derived via `HKDF-SHA256(content_key, info="chunk-hmac-v1")`).
+The HKDF info string literal is `"SecureCloud v6"` — a frozen protocol
+identifier from an earlier name of the codebase, retained verbatim so V7
+ciphertext produced by older clients remains decryptable. It labels the
+*hybrid KEM construction*, not a file format. V7 is the only wire format
+the code implements or accepts. `wrapping_key` is used to AES-GCM-wrap the
+per-file random `content_key`; `kem_hmac_key` is discarded (v7's chunk
+HMAC key is separately derived via `HKDF-SHA256(content_key,
+info="chunk-hmac-v1")`).
 
 **Security properties:**
 - If X25519 is broken by a quantum computer → ML-KEM-1024 still protects

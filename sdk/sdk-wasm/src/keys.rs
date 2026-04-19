@@ -1,6 +1,6 @@
 // Key generation and master-secret WASM bindings.
 //
-// All outputs are base64-encoded. Return shapes match the existing secure-cloud-wasm
+// All outputs are base64-encoded. Return shapes are part of the @wattcloud/wasm JS API
 // crate exactly so the frontend requires no changes until Phase 6.
 
 use js_sys::Reflect;

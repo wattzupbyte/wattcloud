@@ -1,6 +1,6 @@
 // Auth / KDF WASM bindings.
 //
-// Functions match the existing secure-cloud-wasm auth_hash.rs API:
+// Auth / KDF helpers. JS API contract is part of @wattcloud/wasm:
 // - derive_auth_and_encryption_keys / derive_auth_hash_only / verify_auth_hash
 // - encrypt_master_secret_with_key / decrypt_master_secret_with_key
 // - generate_auth_salt / generate_device_key

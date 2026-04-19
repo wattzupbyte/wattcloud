@@ -6,10 +6,9 @@ Dropbox, OneDrive, Box, pCloud, WebDAV, SFTP, or S3-compatible); Wattcloud is a
 small relay server plus a browser SPA that encrypts everything client-side
 before it leaves the device.
 
-Wattcloud is a BYO-only carveout of SecureCloud. The cryptographic primitives
-(V7 wire format, ZK-1…ZK-7 invariants, R5 zero-logging posture) must remain
-**byte-for-byte identical** across both repos so V7 ciphertext remains
-interoperable.
+The V7 wire format, ZK-1…ZK-7 invariants, and R5 zero-logging posture are
+protocol constants. Once deployed, they must not change without a protocol
+version bump — otherwise existing users' vaults become undecryptable.
 
 ---
 
@@ -184,9 +183,10 @@ See [SECURITY.md](SECURITY.md) for the full invariants. Highlights:
   anything cleartext. ZK-1…ZK-7 enforced throughout (see SPEC.md).
 - **R5 zero-logging**: all operator-side logging is disabled by default so the
   relay cannot keep records a subpoena could seize.
-- **V7 interop invariant**: Wattcloud's crypto primitives are byte-for-byte
-  identical to SecureCloud's so V7 ciphertext is decryptable across both repos.
-  Do not modify `sdk/sdk-core/src/crypto/` without propagating the change.
+- **V7 is a stable wire format**: anything under `sdk/sdk-core/src/crypto/`
+  (HKDF info strings, AES-GCM chunk framing, ML-KEM + X25519 parameters) is
+  a protocol constant. Changes break every existing user's vault — treat them
+  as a protocol version bump, not a refactor.
 
 ## Development
 

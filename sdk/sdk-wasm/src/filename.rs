@@ -1,6 +1,6 @@
 // Filename and folder-path encryption WASM bindings.
 //
-// Return shapes match the existing secure-cloud-wasm crate:
+// Return shapes are part of the @wattcloud/wasm JS API contract — see docs below.
 //   encrypt_filename    → { encrypted_name }  (base64)
 //   decrypt_filename    → { name }            (UTF-8 string)
 //   encrypt_folder_path → { encrypted_path }  (base64 components joined with '/')

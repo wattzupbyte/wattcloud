@@ -1,6 +1,6 @@
 // Hashing WASM bindings.
 //
-// blake2b_256 matches the existing secure-cloud-wasm crate:
+// blake2b_256 — part of the @wattcloud/wasm JS API:
 //   input:  base64 data
 //   output: { hash } (base64 32-byte digest) or { error }
 

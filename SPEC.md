@@ -703,7 +703,7 @@ The `host_key` handshake frame includes a `relay_version` field. When `relay_ver
 
 V1 single-shot `write` verb remains supported for relay deployments that have not upgraded. Relay-side buffer holds at most 200 MiB of V7 ciphertext per session; exceeding this limit returns an error and the upload must be aborted and restarted.
 
-TOFU host-key fingerprint is stored per `provider_id` in the encrypted vault SQLite. Never transmitted to the relay or SecureCloud server.
+TOFU host-key fingerprint is stored per `provider_id` in the encrypted vault SQLite. Never transmitted to the relay.
 
 ### Rust Orchestrators and WASM Dispatcher (P8)
 
@@ -1320,15 +1320,15 @@ Old `vault_key` cannot decrypt any body after rotation. All subkeys change.
 
 ### Key Differences from Managed Mode
 
-| Property | BYO Mode | Managed Mode |
-|----------|----------|--------------|
-| Password hashing | Argon2id 128 MB, t=3, p=4 | Argon2id 64 MB, t=3, p=4 |
-| Shard source | Device-local (vault header slot) | Server-held (`user_key_shards` table) |
-| Server involvement | Stateless relay only; no key material | Server holds shard; required for key derivation |
-| Vault location | User-owned provider (Drive, Dropbox, etc.) | Secure Cloud backend (`/data/files`) |
-| Provider token storage | Encrypted in vault SQLite | Not applicable (managed OAuth) |
-| Recovery code | Separate `recovery_vault_kek` path | Account recovery via `recovery_kek` wrapping private keys |
-| File encryption | Same V7 format, same per-file X25519+ML-KEM KEM | Identical |
+| Property | Value |
+|----------|-------|
+| Password hashing | Argon2id 128 MB, t=3, p=4 |
+| Shard source | Device-local (vault header slot) |
+| Server involvement | Stateless relay only; no key material touches the server |
+| Vault location | User-owned storage provider (Drive, Dropbox, OneDrive, Box, pCloud, WebDAV, SFTP, S3) |
+| Provider token storage | Encrypted in vault SQLite |
+| Recovery code | Separate `recovery_vault_kek` path |
+| File encryption | V7 (AES-256-GCM chunked + hybrid X25519 + ML-KEM-1024) |
 
 ---
 
@@ -1457,7 +1457,7 @@ Unit tests use mock HTTP clients. The following should be verified against live 
 
 | Package | Purpose |
 |---------|---------|
-| `@secure-cloud/sdk-wasm` | WASM bindings (vault crypto, V7 streaming, OAuth) |
+| `@wattcloud/wasm` | WASM bindings (vault crypto, V7 streaming, OAuth) |
 | `better-sqlite3` | SQLite in-process (vault DB) |
 | `vitest` | Unit tests |
 

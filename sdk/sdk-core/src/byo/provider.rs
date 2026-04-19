@@ -162,7 +162,7 @@ pub struct ProviderConfig {
     /// Access key ID.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub s3_access_key_id: Option<String>,
-    /// Secret access key (stored encrypted in vault SQLite; never logged or transmitted to SecureCloud).
+    /// Secret access key (stored encrypted in vault SQLite; never logged or transmitted to the Wattcloud relay).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub s3_secret_access_key: Option<String>,
     /// Force path-style URLs (`https://endpoint/bucket/key` instead of `https://bucket.endpoint/key`).

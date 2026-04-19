@@ -1,6 +1,6 @@
 // KEK derivation and re-encryption WASM bindings.
 //
-// Return shapes match the existing secure-cloud-wasm crate:
+// Return shapes are part of the @wattcloud/wasm JS API contract — see docs below.
 //   derive_client_kek_half  → { client_kek_half }
 //   derive_kek_v2           → { kek }
 //   derive_recovery_kek     → { recovery_kek }

@@ -4,8 +4,10 @@ Zero-knowledge, Bring-Your-Own-storage cloud file manager. The relay server
 never sees plaintext or key material; all crypto runs client-side inside a
 WebAssembly module.
 
-Wattcloud is the BYO-only carveout of SecureCloud. **Do not reintroduce managed
-modules here** — the `managed` feature was removed from `sdk-core` deliberately.
+**Do not introduce managed-server modules** (user accounts, centralized
+storage backend, session management, etc.). Wattcloud is a stateless relay
+by design — the managed feature was removed from `sdk-core` deliberately and
+must not come back.
 
 ## Project Layout
 
@@ -41,12 +43,14 @@ modules here** — the `managed` feature was removed from `sdk-core` deliberatel
 **Before adding any API call:** verify the payload contains ONLY encrypted
 blobs, HKDF-derived auth tokens, HMAC challenge responses, or public keys.
 
-## Crypto-interop Invariant
+## Protocol Stability
 
-`sdk/sdk-core/src/crypto/` must remain byte-for-byte identical to the
-corresponding files in the upstream SecureCloud repo so V7 ciphertext is
-interoperable. If you change a crypto primitive here, propagate the same
-change in the other repo and vice versa.
+`sdk/sdk-core/src/crypto/` and `sdk/sdk-core/src/byo/` contain the V7 wire
+format and BYO vault layout. Once deployed, every HKDF info string,
+AES-GCM nonce derivation, vault root folder path, and manifest field name
+is a protocol constant. Changing any of them makes existing users' vaults
+undecryptable. A change to these files is a **protocol version bump** —
+design a migration, don't just refactor.
 
 ## Cryptographic Primitives
 
@@ -58,11 +62,13 @@ change in the other repo and vice versa.
 | Key commitment | BLAKE2b-256(content_key ‖ file_iv) | Prevents partitioning-oracle attacks |
 | Chunk integrity | HMAC-SHA256 (chunk-indexed) | Key: `HKDF(content_key, "chunk-hmac-v1")` |
 | Filename encryption | AES-GCM-SIV (deterministic nonce) | Same filename + key → same ciphertext |
-| Key derivation | HKDF-SHA256 | `"SecureCloud v6"` info string names the KEM construction, not a format — kept for V7 interop. |
+| Key derivation | HKDF-SHA256 | Info string literals include `"SecureCloud v6"` and `"SecureCloud BYO …"` — frozen protocol identifiers, NOT product branding. |
 
-The HKDF `info` strings still contain `"SecureCloud"` because they are part of
-the V7 wire format. Renaming them would break ciphertext interoperability. The
-rename to "Wattcloud" is cosmetic/UX only; protocol identifiers stay as-is.
+HKDF `info` strings and the `"SecureCloud/"` vault root folder path contain
+the literal bytes from an earlier name of the codebase. They are part of
+the V7 wire format and the BYO on-disk layout — changing them makes every
+existing vault undecryptable. Treat them as magic constants; any rename is a
+protocol version bump with migration, not a refactor.
 
 ## sdk-core Constraints
 
@@ -135,5 +141,6 @@ only piece that is *not* invoked by Actions.
   trusted_device, upload, workspace, state) to `sdk-core`. They were pruned on
   purpose. If a BYO feature needs similar functionality, add it under
   `sdk-core/src/byo/`.
-- **Do not add** `sdk-ffi` / Android bindings. Android stays in SecureCloud.
-- Changes under `sdk-core/src/crypto/` require a coordinated PR in SecureCloud.
+- **Do not add** `sdk-ffi` / Android bindings. Wattcloud is browser-only.
+- Changes under `sdk-core/src/crypto/` or `sdk-core/src/byo/` are protocol
+  version bumps; design a migration before editing.
