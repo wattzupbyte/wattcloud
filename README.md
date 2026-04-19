@@ -48,7 +48,8 @@ for the threat model.
 ┌──────────────────────────────────────────────────────────────┐
 │ Browser SPA (Svelte + Vite)                                  │
 │   ├─ Web Worker (sdk-wasm)  — all crypto, V7 pipeline        │
-│   └─ byo TS package         — StorageProvider dispatcher     │
+│   └─ @wattcloud/sdk         — StorageProvider dispatcher     │
+│      (frontend/src/lib/sdk)                                  │
 └───────────────┬────────────────────────────────┬─────────────┘
                 │                                │
                 ▼                                ▼
@@ -67,8 +68,7 @@ for the threat model.
 | `sdk/sdk-core` | Rust | Cryptographic core — no I/O, no panics. Feeds wasm & (future) FFI. |
 | `sdk/sdk-wasm` | Rust → wasm-bindgen | Browser crypto kernel loaded by the Web Worker. |
 | `byo-relay` | Rust, Axum | Stateless relay (enrollment, SFTP, share pointers, stats). |
-| `byo` | TypeScript | `@wattcloud/sdk` — storage-provider dispatcher, vault journal, Web Worker client. |
-| `frontend` | Svelte + Vite | Browser SPA. |
+| `frontend` | Svelte + Vite | Browser SPA. `@wattcloud/sdk` lives at `frontend/src/lib/sdk/` — StorageProvider dispatcher, Web Worker client, vault journal. |
 | `scripts` | Bash | `deploy-vps.sh`, `release.sh`, `update.sh`, `ci.sh`. |
 
 ## Operator Quickstart
@@ -203,15 +203,13 @@ one-line description.
 ```bash
 make dev               # Vite dev server on :5173
 make build-sdk-wasm    # wasm-pack → frontend/src/pkg/
-make build-byo         # @wattcloud/sdk TS package
-make build-frontend    # Vite build → byo-relay/dist/
-make build             # all three, in order
+make build-frontend    # Vite build → byo-relay/dist/ (SPA + @wattcloud/sdk)
+make build             # wasm + frontend, in order
 
 make test              # cargo + npm across the repo
 make test-sdk          # sdk-core only (crypto + byo + providers)
-make test-byo-relay   # byo-relay only
-make test-byo          # @wattcloud/sdk only
-make test-frontend     # SPA only
+make test-byo-relay    # byo-relay only
+make test-frontend     # SPA + @wattcloud/sdk tests (frontend/tests/sdk/)
 
 make lint              # cargo clippy + eslint
 make fmt               # cargo fmt

@@ -12,8 +12,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { WasmStorageProviderShim } from '../src/providers/WasmStorageProviderShim';
-import { ConflictError, UnauthorizedError } from '../src/errors';
+import { WasmStorageProviderShim } from '../../src/lib/sdk/providers/WasmStorageProviderShim';
+import { ConflictError, UnauthorizedError } from '../../src/lib/sdk/errors';
 
 // ── Worker mock ───────────────────────────────────────────────────────────────
 

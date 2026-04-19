@@ -32,7 +32,6 @@ cd "$(dirname "$0")/.."
 command -v wasm-pack >/dev/null 2>&1 || { echo "wasm-pack not installed"; exit 2; }
 (cd sdk/sdk-wasm && wasm-pack build --release --target web \
     --out-dir ../../frontend/src/pkg --out-name wattcloud_sdk_wasm)
-(cd byo && npm ci --silent)
 (cd frontend && npm ci --silent && npm run build)
 
 # Dockerfile is byo-relay-centric (context = byo-relay/). `dist/` lives at

@@ -92,36 +92,13 @@ jobs:
       - name: cargo test (byo-relay)
         run: cargo test --manifest-path byo-relay/Cargo.toml
 
-  byo-package:
-    name: byo TS package (npm test)
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
-      # actions/setup-node@v4.0.4
-      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: byo/package-lock.json
-
-      - name: npm ci (byo)
-        working-directory: byo
-        run: npm ci
-
-      - name: npm test (byo)
-        working-directory: byo
-        run: npm test
-
-      - name: typecheck (byo)
-        working-directory: byo
-        run: npm run typecheck
-
   frontend:
     name: Frontend (lint + test + build)
     needs: sdk
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      # actions/setup-node@v4.0.4
       - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
         with:
           node-version: '20'
@@ -136,10 +113,6 @@ jobs:
 
       - name: npm ci (frontend)
         working-directory: frontend
-        run: npm ci
-
-      - name: npm ci (byo) — required for frontend import
-        working-directory: byo
         run: npm ci
 
       - name: eslint (frontend)

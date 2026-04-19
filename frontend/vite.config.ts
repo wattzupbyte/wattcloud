@@ -119,7 +119,7 @@ export default defineConfig({
       $lib: resolve(__dirname, 'src/lib'),
       '@wattcloud/wasm': resolve(__dirname, 'src/pkg/wattcloud_sdk_wasm.js'),
       // BYO storage package — resolved from source for development builds.
-      '@wattcloud/sdk': resolve(__dirname, '../byo/src/index.ts'),
+      '@wattcloud/sdk': resolve(__dirname, 'src/lib/sdk/index.ts'),
     },
   },
   // SECURITY: Workers must be emitted as ES modules for code-splitting compatibility.

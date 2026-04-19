@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { MockProvider } from './mocks/MockProvider';
-import { ConflictError, ProviderError } from '../src/errors';
+import { ConflictError, ProviderError } from '../../src/lib/sdk/errors';
 
 describe('MockProvider', () => {
   let provider: MockProvider;

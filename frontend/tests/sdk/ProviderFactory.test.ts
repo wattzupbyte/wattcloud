@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { createProvider, getProvider, registerProvider, clearProvider, clearAllProviders, getDisplayName } from '../src/ProviderFactory';
+import { createProvider, getProvider, registerProvider, clearProvider, clearAllProviders, getDisplayName } from '../../src/lib/sdk/ProviderFactory';
 
 describe('ProviderFactory', () => {
   afterEach(async () => {

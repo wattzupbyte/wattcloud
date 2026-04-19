@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { ProviderConfig } from '../src/types';
+import type { ProviderConfig } from '../../src/lib/sdk/types';
 
 // ── Relay auth mock ──────────────────────────────────────────────────────────
 

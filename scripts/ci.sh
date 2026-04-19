@@ -145,21 +145,7 @@ step "byo-relay — cargo audit"
 run_audit "byo-relay" "$APP_DIR/byo-relay/Cargo.lock"
 
 # =========================================================================
-# 3. byo package (@wattcloud/sdk): npm ci + vitest + typecheck
-# =========================================================================
-step "byo — npm test"
-if command -v npm &>/dev/null; then
-    if (cd "$APP_DIR/byo" && npm ci --silent && npm test && npm run typecheck) 2>&1; then
-        ok "byo package checks passed."
-    else
-        record_fail "byo package checks failed."
-    fi
-else
-    warn "npm not installed — skipping byo package tests."
-fi
-
-# =========================================================================
-# 4. Frontend: npm ci + eslint + vitest + vite build
+# 3. Frontend (incl. @wattcloud/sdk under src/lib/sdk): lint + test + build
 # =========================================================================
 step "Frontend — lint + test + build"
 if command -v npm &>/dev/null; then
@@ -174,7 +160,7 @@ else
 fi
 
 # =========================================================================
-# 5. Docker: build byo-relay image + optional smoke test
+# 4. Docker: build byo-relay image + optional smoke test
 # =========================================================================
 if [[ "${CI_SKIP_DOCKER:-0}" != "1" ]]; then
     step "Docker — build byo-relay image"

@@ -16,8 +16,7 @@ must not come back.
 | `/sdk/sdk-core` | Rust | Pure crypto + business logic. No I/O, no `unwrap`, no panics. |
 | `/sdk/sdk-wasm` | Rust → wasm-bindgen | Browser crypto kernel. Compiled with wasm-pack. |
 | `/byo-relay` | Rust, Axum | Stateless relay (enrollment, SFTP, share pointers, stats). |
-| `/byo` | TypeScript | `@wattcloud/sdk` — StorageProvider dispatcher, Web Worker client, vault journal. |
-| `/frontend` | Svelte + Vite | Browser SPA. Single entry point (`src/main.ts`, `index.html`). |
+| `/frontend` | Svelte + Vite | Browser SPA. `@wattcloud/sdk` lives at `frontend/src/lib/sdk/` (StorageProvider dispatcher, Web Worker client, vault journal). Single entry point (`src/main.ts`, `index.html`). |
 | `/scripts` | Bash | `deploy-vps.sh`, `update.sh` (VPS-side); `ci.sh`, `release.sh`, `byo-smoke.sh` (local dev). |
 
 ## Authoritative References
@@ -97,15 +96,13 @@ cargo test --manifest-path sdk/sdk-core/Cargo.toml
 # SDK WASM build (emits to frontend/src/pkg/)
 pnpm run build:sdk-wasm
 
-# BYO TS package
-cd byo && npm test
-
-# Frontend
+# Frontend (includes @wattcloud/sdk under src/lib/sdk/)
 cd frontend && npm run dev
+cd frontend && npm test
 cd frontend && npm run build
 
 # Convenience: same command sequence the CI workflow runs.
-./scripts/ci.sh --mode byo
+./scripts/ci.sh
 ```
 
 ## CI/CD
@@ -113,7 +110,7 @@ cd frontend && npm run build
 Canonical pipeline is **GitHub Actions**. Two workflows under `.github/workflows/`:
 
 - `ci.yml` — on push/PR: lint + test + build (sdk cargo test, byo-relay cargo
-  test, byo npm test, frontend npm test, wasm-pack build).
+  test, frontend npm test — includes @wattcloud/sdk, wasm-pack build).
 - `release.yml` — on `v*.*.*` tag: builds the image, pushes to
   `ghcr.io/wattzupbyte/wattcloud`, **sigstore/cosign keyless-signs** via
   Actions OIDC, emits the `@sha256:…` digest in the release notes. VPS then

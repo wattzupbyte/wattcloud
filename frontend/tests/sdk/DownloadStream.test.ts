@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ByoDownloadStream } from '../src/streaming/DownloadStream';
+import { ByoDownloadStream } from '../../src/lib/sdk/streaming/DownloadStream';
 
 // ── Worker mock ───────────────────────────────────────────────────────────────
 

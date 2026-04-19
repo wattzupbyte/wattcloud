@@ -5,7 +5,7 @@ import {
   validateRuntimeConfig,
   __resetRuntimeConfigForTests,
   type WattcloudRuntimeConfig,
-} from '../src/runtimeConfig';
+} from '../../src/lib/sdk/runtimeConfig';
 
 function validConfig(): unknown {
   return {

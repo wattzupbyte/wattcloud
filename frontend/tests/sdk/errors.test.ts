@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ProviderError, ConflictError, UnauthorizedError } from '../src/errors';
+import { ProviderError, ConflictError, UnauthorizedError } from '../../src/lib/sdk/errors';
 
 describe('errors', () => {
   describe('ProviderError', () => {

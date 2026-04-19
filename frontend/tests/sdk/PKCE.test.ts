@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
-import { generatePKCE, base64URLEncode } from '../src/oauth/PKCE';
+import { generatePKCE, base64URLEncode } from '../../src/lib/sdk/oauth/PKCE';
 
 // generatePKCE() delegates to the BYO Web Worker (Rust sdk-core).
 // The worker uses `new Worker(...)` which is not available in Node/Vitest.

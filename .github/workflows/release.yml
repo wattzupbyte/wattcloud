@@ -93,9 +93,6 @@ jobs:
       - name: wasm-pack build (sdk-wasm)
         run: wasm-pack build sdk/sdk-wasm --release --target web --out-dir ../../frontend/src/pkg --out-name wattcloud_sdk_wasm
 
-      - name: Build byo package + frontend into byo-relay/dist/
-        working-directory: byo
-        run: npm ci
       - name: Build frontend into byo-relay/dist/
         working-directory: frontend
         run: |

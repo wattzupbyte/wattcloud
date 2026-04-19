@@ -11,11 +11,11 @@
  */
 
 import { describe, it, expect, afterEach, vi, beforeEach } from 'vitest';
-import { WasmStorageProviderShim } from '../src/providers/WasmStorageProviderShim';
-import { SftpProvider } from '../src/providers/SftpProvider';
-import { createProvider, getDisplayName, clearAllProviders } from '../src/ProviderFactory';
-import { ProviderError } from '../src/errors';
-import type { ProviderType } from '../src/types';
+import { WasmStorageProviderShim } from '../../src/lib/sdk/providers/WasmStorageProviderShim';
+import { SftpProvider } from '../../src/lib/sdk/providers/SftpProvider';
+import { createProvider, getDisplayName, clearAllProviders } from '../../src/lib/sdk/ProviderFactory';
+import { ProviderError } from '../../src/lib/sdk/errors';
+import type { ProviderType } from '../../src/lib/sdk/types';
 
 // ── Mock worker client so init()/disconnect() work without a real worker ──────
 let handleCounter = 0;

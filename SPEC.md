@@ -66,12 +66,13 @@ This document is the authoritative technical reference for the BYO implementatio
 
 | Component | Path | Role |
 |-----------|------|------|
-| BYO frontend | `/byo/src/` | Svelte UI, OAuth popup, vault lifecycle orchestration |
-| BYO Web Worker | `byo/src/worker/byo.worker.ts` | All crypto; key isolation from main thread |
+| BYO frontend | `frontend/src/` | Svelte UI + vault lifecycle orchestration |
+| `@wattcloud/sdk` | `frontend/src/lib/sdk/` | StorageProvider dispatcher, OAuth popup, Web Worker client |
+| BYO Web Worker | `frontend/src/lib/sdk/worker/byo.worker.ts` | All crypto; key isolation from main thread |
 | sdk-wasm BYO bindings | `sdk/sdk-wasm/src/byo.rs`, `sdk-wasm/src/oauth.rs` | WASM exports used by the worker |
 | sdk-core BYO logic | `sdk/sdk-core/src/byo/` | Vault crypto, PKCE, OAuth builders, enrollment, providers |
 | sdk-core crypto | `sdk/sdk-core/src/crypto/` | V7 wire format, FooterTrimmer, constants |
-| BYO relay server | `byo/server/` | WebSocket relay for enrollment and SFTP |
+| BYO relay | `byo-relay/` (Rust) | WebSocket relay for enrollment, SFTP, share pointers |
 
 ---
 
@@ -515,7 +516,7 @@ On `invalid_grant` (refresh token revoked), the full OAuth flow is re-triggered.
 
 ### StorageProvider Interface
 
-All providers implement `StorageProvider` (defined in `byo/src/types.ts`; authoritative Rust trait in `sdk-core/src/byo/provider.rs`).
+All providers implement `StorageProvider` (defined in `frontend/src/lib/sdk/types.ts`; authoritative Rust trait in `sdk-core/src/byo/provider.rs`).
 
 **Lifecycle:**
 ```typescript
@@ -862,7 +863,7 @@ The Rust-side `download_stream_*` methods for every HTTP provider use `RangedDow
 
 ## BYO Web Worker
 
-The BYO Web Worker (`byo/src/worker/byo.worker.ts`) runs all cryptographic operations in an isolated context. Key material never crosses the `postMessage` boundary to the main thread.
+The BYO Web Worker (`frontend/src/lib/sdk/worker/byo.worker.ts`) runs all cryptographic operations in an isolated context. Key material never crosses the `postMessage` boundary to the main thread.
 
 ### Message Interface
 
@@ -1365,7 +1366,7 @@ Thrown on HTTP 409/412 from the provider. Contains `currentVersion` (ETag/rev), 
 make build-sdk-wasm
 
 # Build BYO TypeScript package
-cd byo && npm run build
+cd frontend && npm run build
 
 # Build BYO frontend (Svelte + Vite)
 cd frontend && npm run build:byo
@@ -1374,7 +1375,7 @@ cd frontend && npm run build:byo
 cd sdk && cargo test --features providers
 
 # TypeScript unit tests
-cd byo && npm test
+cd frontend && npm test  # includes frontend/tests/sdk/
 
 # WASM in-browser tests
 make test-sdk-wasm
@@ -1406,7 +1407,7 @@ Additional test coverage for the V7 + Range streaming path:
 - `byo::providers::pcloud::tests::download_stream_surface_unauthorized_after_second_403`: no infinite retry loop on persistent 403.
 
 **Frontend Vitest tests:**
-- `tests/byo/ByoDataProvider.test.ts`: `crossProviderMove` Phase 3a pipeTo path — verifies chunks flow through `pipeTo` without accumulation, blob name is opaque UUID (ZK-6), DB row is updated, source-delete best-effort.
+- `frontend/tests/byo/ByoDataProvider.test.ts`: `crossProviderMove` Phase 3a pipeTo path — verifies chunks flow through `pipeTo` without accumulation, blob name is opaque UUID (ZK-6), DB row is updated, source-delete best-effort.
 
 ### Memory Verification (Manual QA)
 

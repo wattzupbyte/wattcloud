@@ -16,8 +16,8 @@
     "paths": {
       "$lib": ["./src/lib"],
       "$lib/*": ["./src/lib/*"],
-      "@wattcloud/sdk": ["../byo/src/index.ts"],
-      "@wattcloud/sdk/*": ["../byo/src/*"]
+      "@wattcloud/sdk": ["./src/lib/sdk/index.ts"],
+      "@wattcloud/sdk/*": ["./src/lib/sdk/*"]
     }
   },
   "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.js", "src/**/*.svelte", "pkg/**/*.d.ts", "pkg/**/*.js"]

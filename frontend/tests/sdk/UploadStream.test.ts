@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ByoUploadStream } from '../src/streaming/UploadStream';
+import { ByoUploadStream } from '../../src/lib/sdk/streaming/UploadStream';
 import { MockProvider } from './mocks/MockProvider';
 
 // ── Constants ──────────────────────────────────────────────────────────────────

@@ -6,8 +6,8 @@
  * and unit tests for UploadStream/DownloadStream.
  */
 
-import type { StorageProvider, StorageEntry, ProviderConfig, UploadOptions, UploadResult } from '../../src/types';
-import { ProviderError, ConflictError } from '../../src/errors';
+import type { StorageProvider, StorageEntry, ProviderConfig, UploadOptions, UploadResult } from '../../../src/lib/sdk/types';
+import { ProviderError, ConflictError } from '../../../src/lib/sdk/errors';
 
 export class MockProvider implements StorageProvider {
   readonly type = 'mock' as any;

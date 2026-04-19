@@ -17,15 +17,13 @@ help:
 	@echo "$(YELLOW)dev$(RESET)"
 	@echo "  dev               Start the Vite dev server (frontend on :5173)"
 	@echo "  build-sdk-wasm    wasm-pack build → frontend/src/pkg/"
-	@echo "  build-byo         Build the @wattcloud/sdk TS package"
 	@echo "  build-frontend    Vite build of the SPA → byo-relay/dist/"
-	@echo "  build             build-sdk-wasm + build-byo + build-frontend"
+	@echo "  build             build-sdk-wasm + build-frontend"
 	@echo "  test              cargo + npm tests across the repo"
 	@echo "  test-sdk          cargo test sdk-core (crypto + byo + providers)"
-	@echo "  test-byo-relay   cargo test byo-relay"
-	@echo "  test-byo          npm test in byo/"
-	@echo "  test-frontend     npm test in frontend/"
-	@echo "  lint              cargo clippy + eslint on frontend/byo"
+	@echo "  test-byo-relay    cargo test byo-relay"
+	@echo "  test-frontend     npm test in frontend/ (incl. src/lib/sdk tests)"
+	@echo "  lint              cargo clippy + eslint"
 	@echo "  fmt               cargo fmt across both workspaces"
 	@echo "  ci                Full local CI (scripts/ci.sh)"
 	@echo
@@ -48,13 +46,10 @@ build-sdk-wasm:
 	cd sdk/sdk-wasm && wasm-pack build --release --target web \
 	  --out-dir ../../frontend/src/pkg --out-name wattcloud_sdk_wasm
 
-build-byo:
-	cd byo && npm ci --silent && npm run build
-
 build-frontend:
 	cd frontend && npm ci --silent && npm run build
 
-build: build-sdk-wasm build-byo build-frontend
+build: build-sdk-wasm build-frontend
 
 test-sdk:
 	cargo test --manifest-path sdk/sdk-core/Cargo.toml \
@@ -63,13 +58,10 @@ test-sdk:
 test-byo-relay:
 	cargo test --manifest-path byo-relay/Cargo.toml
 
-test-byo:
-	cd byo && npm ci --silent && npm test
-
 test-frontend:
 	cd frontend && npm ci --silent && npm test
 
-test: test-sdk test-byo-relay test-byo test-frontend
+test: test-sdk test-byo-relay test-frontend
 
 lint:
 	cargo clippy --manifest-path sdk/sdk-core/Cargo.toml \
@@ -111,8 +103,8 @@ clean:
 	cargo clean --manifest-path Cargo.toml || true
 	cargo clean --manifest-path byo-relay/Cargo.toml || true
 	rm -rf target byo-relay/target sdk/*/target
-	rm -rf node_modules byo/node_modules frontend/node_modules
-	rm -rf byo/dist frontend/dist byo-relay/dist
+	rm -rf node_modules frontend/node_modules
+	rm -rf frontend/dist byo-relay/dist
 	rm -rf frontend/src/pkg sdk/sdk-wasm/pkg
 	@echo "Done."
 
@@ -125,7 +117,7 @@ clean-docker:
 
 clean-all: clean clean-docker
 
-.PHONY: help dev build-sdk-wasm build-byo build-frontend build \
-        test test-sdk test-byo-relay test-byo test-frontend lint fmt ci \
+.PHONY: help dev build-sdk-wasm build-frontend build \
+        test test-sdk test-byo-relay test-frontend lint fmt ci \
         image smoke release-help \
         clean clean-docker clean-all
