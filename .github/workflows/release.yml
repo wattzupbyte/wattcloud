@@ -1,0 +1,124 @@
+name: Release
+
+# Fires on v*.*.* tag push only. Builds the byo-server image (with the SPA
+# bundle embedded in /dist), pushes it to ghcr.io/wattzupbyte/wattcloud, and
+# writes the resulting @sha256:... digest into the GitHub Release body so the
+# VPS operator can run `./scripts/update.sh <digest>` without guessing.
+#
+# Deploy is deliberately manual — we do NOT ssh into the VPS from Actions.
+# Every roll-out is hand-signed.
+#
+# Security notes:
+# - All third-party actions are pinned by commit SHA (see dependabot.yml for
+#   the version tags they correspond to).
+# - `run:` steps consume only validated git refs (github.ref_name, matched
+#   against a strict semver regex) and the immutable @sha256 digest emitted
+#   by docker/build-push-action. No issue titles, PR bodies, comment bodies,
+#   or commit messages are interpolated into shell commands — those are the
+#   classic workflow-injection surfaces and they are absent from this file.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write    # required to create the GitHub Release
+  packages: write    # required to push to GHCR
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/wattzupbyte/wattcloud
+  REF_NAME: ${{ github.ref_name }}
+
+jobs:
+  build-and-push:
+    name: Build + push + digest
+    runs-on: ubuntu-22.04
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          fetch-depth: 0
+
+      # docker/setup-buildx-action@v3.6.1
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db
+
+      # docker/login-action@v3.3.0
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate tag matches semver
+        run: |
+          if ! printf '%s' "$REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$'; then
+            echo "::error::tag $REF_NAME does not match v<maj>.<min>.<patch>[-prerelease]" >&2
+            exit 1
+          fi
+
+      - name: Build + push image
+        id: push
+        # docker/build-push-action@v6.7.0
+        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85
+        with:
+          context: .
+          file: byo-server/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.REF_NAME }}
+            ${{ env.IMAGE_NAME }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.REF_NAME }}
+          provenance: true
+          sbom: true
+
+      - name: Write release notes
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          {
+            echo "## Wattcloud $REF_NAME"
+            echo
+            echo "### Container image"
+            echo
+            echo '```'
+            echo "${IMAGE_NAME}@${DIGEST}"
+            echo '```'
+            echo
+            echo "### Roll-out on VPS"
+            echo
+            echo '```bash'
+            echo "./scripts/update.sh ${IMAGE_NAME}@${DIGEST}"
+            echo '```'
+            echo
+            echo "### Changes"
+            echo
+            # Last tag → this tag (skip the current tag itself). `git log`
+            # output is static text; we do not interpolate commit metadata
+            # into shell, only into the release body.
+            PREV_TAG=$(git tag --sort=-creatordate | grep -v "^$REF_NAME$" | head -n 1 || true)
+            if [ -n "$PREV_TAG" ]; then
+              git log --pretty=format:'- %s (%h)' "$PREV_TAG..$REF_NAME"
+            else
+              git log --pretty=format:'- %s (%h)' HEAD
+            fi
+          } > RELEASE_NOTES.md
+
+      # softprops/action-gh-release@v2.0.8
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191
+        with:
+          tag_name: ${{ env.REF_NAME }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

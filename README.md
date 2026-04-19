@@ -107,13 +107,30 @@ WebDAV, SFTP, and S3/R2 work without OAuth (user provides credentials directly).
 
 ## CI/CD
 
-No GitHub Actions. The project uses a home-grown bash pipeline:
+GitHub Actions is the canonical pipeline. Workflows live under
+`.github/workflows/`:
 
-- `scripts/ci.sh --mode byo` — lint + test + build the whole repo locally.
-- `scripts/release.sh <version>` — build the image, push to
-  `ghcr.io/wattzupbyte/wattcloud`, emit the resulting `@sha256:…` digest.
-- `scripts/update.sh <digest>` — on the VPS: update `docker-compose.byo-prod.yml`
-  to pin the new digest, `docker compose pull`, restart, health-check.
+- `ci.yml` — on every push and pull request: lint + test + build. Runs
+  `cargo test` for the sdk workspace and for byo-server, `npm test` for the
+  byo TypeScript package and the frontend, and `wasm-pack build` for the
+  browser kernel. Caches cargo + node for speed.
+- `release.yml` — on `v*.*.*` tag: builds the image, pushes to
+  `ghcr.io/wattzupbyte/wattcloud`, emits the resulting `@sha256:…` digest into
+  the GitHub release notes. The VPS side is a manual `./scripts/update.sh
+  <digest>` (we deliberately do *not* auto-deploy from Actions; every roll-out
+  is a hand-signed action).
+- `.github/dependabot.yml` keeps pinned action SHAs, Cargo deps, and
+  npm deps updated.
+
+All third-party actions are pinned by commit SHA (not by tag) to neutralize
+supply-chain risk.
+
+Local convenience wrappers (identical command sets):
+
+- `./scripts/ci.sh --mode byo` — run the whole CI pipeline locally.
+- `./scripts/release.sh <tag>` — build + push + emit digest without Actions.
+- `./scripts/update.sh <digest>` — VPS-side: pin compose to digest, pull,
+  restart, health-check `/health`.
 
 ## Deployment
 

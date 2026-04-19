@@ -98,9 +98,26 @@ cd byo && npm test
 cd frontend && npm run dev
 cd frontend && npm run build
 
-# Full CI (lint + test + build)
+# Convenience: same command sequence the CI workflow runs.
 ./scripts/ci.sh --mode byo
 ```
+
+## CI/CD
+
+Canonical pipeline is **GitHub Actions**. Two workflows under `.github/workflows/`:
+
+- `ci.yml` — on push/PR: lint + test + build (sdk cargo test, byo-server cargo
+  test, byo npm test, frontend npm test, wasm-pack build).
+- `release.yml` — on `v*.*.*` tag: builds the image, pushes to
+  `ghcr.io/wattzupbyte/wattcloud`, emits the `@sha256:…` digest in the release
+  notes. VPS then runs `./scripts/update.sh <digest>` to roll forward.
+
+All third-party actions are pinned by commit SHA (not by tag) to neutralize
+supply-chain risk. `.github/dependabot.yml` keeps those pinned SHAs current.
+
+`scripts/ci.sh` and `scripts/release.sh` remain as local convenience wrappers;
+they run the same commands the workflows invoke. `scripts/update.sh` runs on the
+VPS and is the only piece that is *not* invoked by Actions.
 
 ## Directory Rules
 
