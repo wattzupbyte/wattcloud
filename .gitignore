@@ -17,3 +17,7 @@ coverage/
 *.swp
 wasm-pack.log
 pkg/
+
+# Traefik ACME store — contains the private key + issued certificates.
+# Never commit. deploy-vps.sh creates an empty 0600 file at provision.
+traefik/acme.json

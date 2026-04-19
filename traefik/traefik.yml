@@ -1,0 +1,39 @@
+# Traefik v3 static config for the Wattcloud relay.
+# deploy-vps.sh sed-patches the `email:` line below at provision time with the
+# $EMAIL arg passed to the script. Leave the placeholder — Let's Encrypt will
+# refuse to issue certs for `admin@example.com`, so an un-patched config fails
+# fast instead of silently using a wrong address.
+
+api:
+  dashboard: false
+
+# No access log — R5 zero-logging. Client IPs must never be written to disk.
+accessLog: null
+
+# Errors only; everything else is dropped.
+log:
+  level: ERROR
+
+entryPoints:
+  web:
+    address: ":80"
+  websecure:
+    address: ":443"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: wattcloud-network
+  file:
+    filename: /etc/traefik/dynamic.yml
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      # deploy-vps.sh rewrites this at provision time. Do not commit a real
+      # email to git — leave the example placeholder.
+      email: admin@example.com
+      storage: /acme.json
+      httpChallenge:
+        entryPoint: web
