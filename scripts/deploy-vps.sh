@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy-vps.sh — Deploy Wattcloud to a bare Ubuntu 22.04+ VPS
-# Idempotent: safe to run multiple times.
+# deploy-vps.sh — Bootstrap a Wattcloud BYO relay on Ubuntu 22.04+. Idempotent.
+# Provisions the VPS, writes /config.json from .env, logs Docker into GHCR, and
+# optionally hands off to scripts/update.sh for the first image roll. Does not
+# build anything — GitHub Actions owns the image pipeline.
 # =============================================================================
 set -euo pipefail
 
@@ -29,52 +31,42 @@ SSH_PORT="${3:-2222}"
 BYO_DOMAIN="${4:-${DOMAIN}}"
 ALERT_EMAIL="${5:-${EMAIL}}"
 
-# Zero-logging hardening (BYO relay — R5 invariant); set BYO_HARDEN=0 to skip.
-BYO_HARDEN="${BYO_HARDEN:-1}"
+BYO_HARDEN="${BYO_HARDEN:-1}"                   # zero-logging R5 hardening; 0 to skip
+APPUSER_SSH_PUBKEY="${APPUSER_SSH_PUBKEY:-}"    # ed25519 pubkey for appuser (required)
 
-# Managed-mode services (backend/frontend/backup). BYO-only by default.
-# MANAGED_SET_BY_ENV=1 when the caller pre-set MANAGED in the environment.
-if [ -z "${MANAGED+x}" ]; then
-  MANAGED=""
-  MANAGED_SET_BY_ENV=0
-else
-  MANAGED_SET_BY_ENV=1
-fi
-
-# ed25519 public key for appuser. Required — pass via env for non-interactive runs.
-APPUSER_SSH_PUBKEY="${APPUSER_SSH_PUBKEY:-}"
-
-# SMTP relay credentials for system alerts (fail2ban, unattended-upgrades, AIDE).
-# Optional — leave blank to skip; alerts fall back to journal-only.
+# SMTP relay for alerts (fail2ban / unattended-upgrades / AIDE). Blank → journal-only.
 ALERT_SMTP_HOST="${ALERT_SMTP_HOST:-}"
 ALERT_SMTP_PORT="${ALERT_SMTP_PORT:-587}"
 ALERT_SMTP_USER="${ALERT_SMTP_USER:-}"
 ALERT_SMTP_PASS="${ALERT_SMTP_PASS:-}"
-# SPF/DMARC-safe From address. Must be a real email address on the SMTP relay's
-# domain. Defaults to ALERT_SMTP_USER when it looks like an email; otherwise
-# prompted (or set via ALERT_FROM env var for non-interactive runs).
+# SPF/DMARC-safe From: must match relay domain. Defaults to ALERT_SMTP_USER if
+# it contains "@"; otherwise prompted (or provide ALERT_FROM for non-interactive).
 ALERT_FROM="${ALERT_FROM:-}"
 
-# GitHub repo URL for origin reconcile gate in the CD post-receive hook.
-# The bare repo's origin remote is set to this URL so the hook can verify that
-# every pushed SHA is already an ancestor of origin/main (upstream PR gate).
-ORIGIN_URL="${ORIGIN_URL:-}"
+# GHCR auth for pulling ghcr.io/wattzupbyte/wattcloud (any read:packages PAT).
+GHCR_USER="${GHCR_USER:-}"
+GHCR_PAT="${GHCR_PAT:-}"
+
+# Optional first-image roll: INITIAL_DIGEST=ghcr.io/wattzupbyte/wattcloud@sha256:...
+INITIAL_DIGEST="${INITIAL_DIGEST:-}"
 
 if [ -z "$DOMAIN" ]; then
-  echo "Usage: $0 DOMAIN [EMAIL] [SSH_PORT] [BYO_DOMAIN] [ALERT_EMAIL]"
-  echo "  DOMAIN       — required (e.g. cloud.example.com)"
-  echo "  EMAIL        — for Let's Encrypt (default: admin@DOMAIN)"
-  echo "  SSH_PORT     — SSH port (default: 2222)"
-  echo "  BYO_DOMAIN   — BYO relay domain (default: DOMAIN)"
-  echo "  ALERT_EMAIL  — alert recipient for fail2ban/upgrades/AIDE (default: EMAIL)"
-  echo ""
-  echo "  Env vars:"
-  echo "    APPUSER_SSH_PUBKEY          — ed25519 public key for appuser (prompted if unset)"
-  echo "    MANAGED=1                   — also start managed backend/frontend/backup"
-  echo "    BYO_HARDEN=0                — skip zero-logging OS hardening"
-  echo "    ALERT_SMTP_HOST/PORT/USER/PASS — SMTP relay for alerts (prompted if unset)"
-  echo "    ALERT_FROM                  — From: address for alert mail (SPF/DMARC-safe)"
-  echo "    ORIGIN_URL                  — GitHub repo URL for CD origin reconcile gate (prompted if unset)"
+  cat <<USAGE
+Usage: $0 DOMAIN [EMAIL] [SSH_PORT] [BYO_DOMAIN] [ALERT_EMAIL]
+  DOMAIN       required (e.g. cloud.example.com)
+  EMAIL        for Let's Encrypt (default: admin@DOMAIN)
+  SSH_PORT     SSH port (default: 2222)
+  BYO_DOMAIN   BYO relay domain (default: DOMAIN)
+  ALERT_EMAIL  alert recipient (default: EMAIL)
+
+  Env vars:
+    APPUSER_SSH_PUBKEY              ed25519 public key for appuser (prompted if unset)
+    BYO_HARDEN=0                    skip zero-logging OS hardening
+    ALERT_SMTP_HOST/PORT/USER/PASS  SMTP relay for alerts (prompted if unset)
+    ALERT_FROM                      From: address for alert mail (SPF/DMARC-safe)
+    GHCR_USER / GHCR_PAT            GitHub username + read:packages PAT (prompted if unset)
+    INITIAL_DIGEST                  ghcr.io/...@sha256:... to roll immediately after provision
+USAGE
   exit 1
 fi
 
@@ -83,47 +75,17 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Mode selection — D1: interactive when TTY; non-interactive defaults to BYO
-# ---------------------------------------------------------------------------
-if [ "$MANAGED_SET_BY_ENV" -eq 0 ]; then
-  if [ -t 0 ]; then
-    echo ""
-    printf "Deployment mode: [B]YO only / [M]anaged (default: B): "
-    read -r _mode_choice
-    case "${_mode_choice,,}" in
-      m|managed) MANAGED=1 ;;
-      *)         MANAGED=0 ;;
-    esac
-  else
-    info "Non-interactive: defaulting to BYO-only mode. Set MANAGED=1 to override."
-    MANAGED=0
-  fi
-fi
-
-# ---------------------------------------------------------------------------
 # Prompt for appuser SSH pubkey if not supplied
 # ---------------------------------------------------------------------------
 if [ -z "$APPUSER_SSH_PUBKEY" ] && [ -t 0 ]; then
-  echo ""
-  echo "Paste the ed25519 public key for appuser"
-  echo "(starts with 'ssh-ed25519' or 'sk-ssh-ed25519@openssh.com'):"
+  echo "Paste the ed25519 public key for appuser (ssh-ed25519 or sk-ssh-ed25519@openssh.com):"
   read -r APPUSER_SSH_PUBKEY
 fi
-
-if [ -z "$APPUSER_SSH_PUBKEY" ] || \
-   ! echo "$APPUSER_SSH_PUBKEY" | grep -qE "^(ssh-ed25519|sk-ssh-ed25519@openssh\.com) AAAA"; then
-  die "APPUSER_SSH_PUBKEY must be a valid ed25519 public key. Got: '${APPUSER_SSH_PUBKEY:-<empty>}'"
-fi
+echo "$APPUSER_SSH_PUBKEY" | grep -qE "^(ssh-ed25519|sk-ssh-ed25519@openssh\.com) AAAA" \
+  || die "APPUSER_SSH_PUBKEY must be a valid ed25519 public key. Got: '${APPUSER_SSH_PUBKEY:-<empty>}'"
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-info "App directory: $APP_DIR"
-info "Domain:        $DOMAIN"
-info "BYO domain:    $BYO_DOMAIN"
-info "Email:         $EMAIL"
-info "Alert email:   $ALERT_EMAIL"
-info "SSH port:      $SSH_PORT"
-info "Zero-logging:  $([ "$BYO_HARDEN" = "1" ] && echo enabled || echo disabled)"
-info "Managed mode:  $([ "$MANAGED" = "1" ] && echo yes || echo "no (BYO-only)")"
+info "App=$APP_DIR domain=$DOMAIN byo=$BYO_DOMAIN email=$EMAIL alert=$ALERT_EMAIL ssh=$SSH_PORT harden=$([ "$BYO_HARDEN" = "1" ] && echo on || echo off)"
 echo ""
 
 # =========================================================================
@@ -140,7 +102,7 @@ apt-get upgrade -y -qq
 ok "Packages updated."
 
 info "Installing base packages..."
-apt-get install -y -qq ca-certificates curl gnupg git > /dev/null
+apt-get install -y -qq ca-certificates curl gnupg git jq > /dev/null
 ok "Base packages installed."
 
 info "Installing unattended-upgrades..."
@@ -219,19 +181,9 @@ ok "UFW configured (ports $SSH_PORT, 80, 443; logging off)."
 # 5. SSH hardening  [after UFW — new port already open before sshd restarts]
 # =========================================================================
 info "Hardening SSH (port=$SSH_PORT)..."
-
-if [ ! -f /etc/ssh/sshd_config.bak ]; then
-  cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
-  ok "sshd_config backed up to /etc/ssh/sshd_config.bak"
-fi
-
-# Port must be changed in the main file — multiple Port directives are additive,
-# so a drop-in Port would cause sshd to listen on both 22 AND $SSH_PORT.
+[ -f /etc/ssh/sshd_config.bak ] || cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+# Port in main file (drop-in Port would be additive); everything else in drop-in.
 sed -i "s/^#\?Port .*/Port $SSH_PORT/" /etc/ssh/sshd_config
-
-# All other directives live exclusively in the drop-in (survives dist-upgrade).
-# PermitRootLogin and PasswordAuthentication are intentionally NOT set via sed
-# on the main file — the drop-in wins and there is no stale conflicting value.
 mkdir -p /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/99-wattcloud.conf <<SSHD
 # Managed by deploy-vps.sh — do not edit manually
@@ -253,12 +205,9 @@ systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null
 ok "SSH hardened (port=$SSH_PORT, ed25519-only, appuser-only)."
 
 if [ -t 0 ]; then
-  echo ""
-  printf "Root password is kept for Hetzner rescue console break-glass. Change it now? [y/N]: "
+  printf "\nRoot password kept for Hetzner rescue-console break-glass. Change it now? [y/N]: "
   read -r _root_pw_choice
-  if [ "${_root_pw_choice,,}" = "y" ]; then
-    passwd root
-  fi
+  [ "${_root_pw_choice,,}" = "y" ] && passwd root || true
 fi
 
 # =========================================================================
@@ -267,8 +216,7 @@ fi
 info "Installing fail2ban..."
 apt-get install -y -qq fail2ban > /dev/null
 
-# Sender will be updated after msmtp is configured (Section 8).
-# Use root@DOMAIN as placeholder; msmtp section overwrites with SMTP user.
+# Sender updated below once msmtp resolves ALERT_FROM (Section 8 overwrites).
 FAIL2BAN_SENDER="${ALERT_SMTP_USER:-root@$DOMAIN}"
 
 cat > /etc/fail2ban/jail.local <<JAIL
@@ -328,11 +276,7 @@ SYSCTL
     systemctl disable --now rsyslog 2>/dev/null || true
     ok "rsyslog disabled."
   fi
-else
-  warn "BYO zero-logging hardening skipped (BYO_HARDEN=0)."
-fi
 
-if [ "$BYO_HARDEN" = "1" ]; then
   HARDEN_FAIL=0
   [ -f /etc/systemd/journald.conf.d/byo-volatile.conf ] \
     || { err "journald volatile config missing"; HARDEN_FAIL=1; }
@@ -340,6 +284,8 @@ if [ "$BYO_HARDEN" = "1" ]; then
     || { err "sysctl nolog config missing"; HARDEN_FAIL=1; }
   [ "$HARDEN_FAIL" -eq 1 ] && die "Zero-logging hardening verification failed."
   ok "Zero-logging hardening verified."
+else
+  warn "BYO zero-logging hardening skipped (BYO_HARDEN=0)."
 fi
 
 # =========================================================================
@@ -352,32 +298,22 @@ MSMTP_CONFIGURED=0
 if [ -z "$ALERT_SMTP_HOST" ] && [ -t 0 ]; then
   echo ""
   echo "SMTP relay for system alerts (leave blank to skip):"
-  printf "  Host (e.g. smtp.gmail.com): "
-  read -r ALERT_SMTP_HOST
+  printf "  Host (e.g. smtp.gmail.com): "; read -r ALERT_SMTP_HOST
   if [ -n "$ALERT_SMTP_HOST" ]; then
-    printf "  Port [587]: "
-    read -r _port_in
-    ALERT_SMTP_PORT="${_port_in:-587}"
-    printf "  Username: "
-    read -r ALERT_SMTP_USER
-    printf "  Password: "
-    read -rs ALERT_SMTP_PASS
-    echo
+    printf "  Port [587]: ";    read -r _port_in; ALERT_SMTP_PORT="${_port_in:-587}"
+    printf "  Username: ";      read -r ALERT_SMTP_USER
+    printf "  Password: ";      read -rs ALERT_SMTP_PASS; echo
   fi
 fi
 
-# Resolve SPF/DMARC-safe From address.
-# ALERT_SMTP_USER may be a non-email token (e.g. SendGrid "apikey", SES AKID).
-# We need a real email address in the From header that matches the relay domain.
-if [ -n "$ALERT_SMTP_HOST" ] && [ -n "$ALERT_SMTP_USER" ]; then
-  if [ -z "$ALERT_FROM" ]; then
-    if echo "$ALERT_SMTP_USER" | grep -q "@"; then
-      ALERT_FROM="$ALERT_SMTP_USER"
-    elif [ -t 0 ]; then
-      echo ""
-      printf "  From address for alert mail (e.g. alerts@yourdomain.com): "
-      read -r ALERT_FROM
-    fi
+# SPF/DMARC-safe From address — ALERT_SMTP_USER may be a non-email token
+# (e.g. SendGrid "apikey", SES AKID); prompt if no email-looking value.
+if [ -n "$ALERT_SMTP_HOST" ] && [ -n "$ALERT_SMTP_USER" ] && [ -z "$ALERT_FROM" ]; then
+  if echo "$ALERT_SMTP_USER" | grep -q "@"; then
+    ALERT_FROM="$ALERT_SMTP_USER"
+  elif [ -t 0 ]; then
+    printf "  From address for alert mail (e.g. alerts@yourdomain.com): "
+    read -r ALERT_FROM
   fi
   [ -z "$ALERT_FROM" ] && ALERT_FROM="$ALERT_SMTP_USER"
 fi
@@ -385,30 +321,25 @@ fi
 if [ -n "$ALERT_SMTP_HOST" ] && [ -n "$ALERT_SMTP_USER" ]; then
   cat > /etc/msmtprc <<MSMTPRC
 defaults
-auth           on
-tls            on
+auth on
+tls on
 tls_trust_file /etc/ssl/certs/ca-certificates.crt
-
-account        default
-host           $ALERT_SMTP_HOST
-port           $ALERT_SMTP_PORT
-from           $ALERT_FROM
-user           $ALERT_SMTP_USER
-password       $ALERT_SMTP_PASS
-
+account default
+host $ALERT_SMTP_HOST
+port $ALERT_SMTP_PORT
+from $ALERT_FROM
+user $ALERT_SMTP_USER
+password $ALERT_SMTP_PASS
 account default : default
 MSMTPRC
-  chmod 600 /etc/msmtprc
-  chown root:root /etc/msmtprc
-
-  # Update fail2ban sender (must match the msmtp From address — SPF/DMARC-safe)
+  chmod 600 /etc/msmtprc; chown root:root /etc/msmtprc
+  # fail2ban sender must match msmtp From (SPF/DMARC).
   sed -i "s|^sender.*|sender    = $ALERT_FROM|" /etc/fail2ban/jail.local
   systemctl restart fail2ban 2>/dev/null || true
-
   echo "Wattcloud alert relay configured on $(hostname) at $(date -u)" \
     | mail -s "Wattcloud: msmtp relay test on $(hostname)" "$ALERT_EMAIL" 2>/dev/null \
     && ok "msmtp configured; test mail sent to $ALERT_EMAIL." \
-    || warn "msmtp configured but test mail failed — check relay credentials in /etc/msmtprc."
+    || warn "msmtp configured but test mail failed — check /etc/msmtprc."
   MSMTP_CONFIGURED=1
 else
   warn "No SMTP relay configured — system alerts are journal-only."
@@ -416,19 +347,16 @@ else
 fi
 
 # =========================================================================
-# 9. AIDE + rkhunter (D3: file integrity + rootkit detection)
+# 9. AIDE + rkhunter (file integrity + rootkit detection)
 # =========================================================================
 info "Installing AIDE and rkhunter..."
 apt-get install -y -qq aide rkhunter > /dev/null
 
-# Store ALERT_EMAIL for use by cron scripts
-cat > /etc/wattcloud-deploy.conf <<DEPLOYCONF
-# Written by deploy-vps.sh — used by cron alert scripts
-ALERT_EMAIL=$ALERT_EMAIL
-DEPLOYCONF
+# Store ALERT_EMAIL for cron scripts.
+echo "ALERT_EMAIL=$ALERT_EMAIL" > /etc/wattcloud-deploy.conf
 chmod 644 /etc/wattcloud-deploy.conf
 
-# Daily cron: mail ONLY when aide finds changes (exit non-zero means diff found)
+# Daily cron: mail only when aide --check finds changes (non-zero exit).
 cat > /etc/cron.daily/aide-check <<'AIDECRON'
 #!/bin/sh
 set -eu
@@ -441,10 +369,8 @@ fi
 AIDECRON
 chmod 755 /etc/cron.daily/aide-check
 
-# DPkg::Post-Invoke: auto-rebaseline after apt package changes.
-# Prevents a flood of "every binary changed" alerts after unattended-upgrades.
-# Trade-off: a package compromise between two apt runs would be masked by the
-# rebaseline. Acceptable for a single-tenant BYO VPS; document it.
+# Auto-rebaseline AIDE after apt changes — trade-off accepted for BYO VPS;
+# weekly golden-baseline cron below catches drift between apt runs.
 cat > /etc/apt/apt.conf.d/99-aide-rebaseline <<'AIDEAPT'
 DPkg::Post-Invoke { "if [ -x /usr/bin/aide ]; then /usr/bin/aide --update >/dev/null 2>&1 && mv -f /var/lib/aide/aide.db.new /var/lib/aide/aide.db 2>/dev/null || true; fi"; };
 AIDEAPT
@@ -462,12 +388,7 @@ else
   ok "AIDE baseline already exists — skipping re-init."
 fi
 
-# Golden baseline: a snapshot NOT overwritten by the DPkg::Post-Invoke rebaseline.
-# The daily cron diffs against aide.db (catches changes since last apt run).
-# The weekly cron diffs against aide.db.golden (catches cumulative drift and
-# package compromises between apt runs — the rebaseline trade-off blind spot).
-# Operator manually updates golden after reviewing weekly report:
-#   cp /var/lib/aide/aide.db /var/lib/aide/aide.db.golden
+# Golden baseline: untouched by the apt auto-rebaseline; weekly cron diffs it.
 if [ -f /var/lib/aide/aide.db ] && [ ! -f /var/lib/aide/aide.db.golden ]; then
   cp /var/lib/aide/aide.db /var/lib/aide/aide.db.golden
   ok "AIDE golden baseline saved to aide.db.golden."
@@ -478,7 +399,6 @@ cat > /etc/cron.weekly/aide-golden-check <<'AIDEGOLDEN'
 set -eu
 . /etc/wattcloud-deploy.conf 2>/dev/null || ALERT_EMAIL=root
 [ -f /var/lib/aide/aide.db.golden ] || exit 0
-# Find the AIDE config file (location varies by distro)
 AIDE_CONF=""
 for f in /etc/aide/aide.conf /etc/aide.conf; do
     [ -f "$f" ] && AIDE_CONF="$f" && break
@@ -487,7 +407,6 @@ done
 out=$(mktemp)
 TMPCONF=$(mktemp)
 trap 'rm -f "$out" "$TMPCONF"' EXIT
-# Point database at golden baseline (not the auto-rebaselined daily DB)
 sed 's|^database=file:.*|database=file:/var/lib/aide/aide.db.golden|' "$AIDE_CONF" > "$TMPCONF"
 if ! aide --check --config="$TMPCONF" > "$out" 2>&1; then
     mail -s "AIDE golden-baseline drift on $(hostname)" "$ALERT_EMAIL" < "$out"
@@ -498,236 +417,105 @@ ok "AIDE weekly golden-baseline check cron installed."
 
 rkhunter --update > /dev/null 2>&1 || true
 rkhunter --propupd > /dev/null 2>&1 || true
-
-if grep -q "^CRON_DAILY_RUN=" /etc/default/rkhunter 2>/dev/null; then
-  sed -i 's|^CRON_DAILY_RUN=.*|CRON_DAILY_RUN="true"|' /etc/default/rkhunter
-else
-  echo 'CRON_DAILY_RUN="true"' >> /etc/default/rkhunter
-fi
-
-if grep -q "^REPORT_EMAIL=" /etc/rkhunter.conf 2>/dev/null; then
-  sed -i "s|^REPORT_EMAIL=.*|REPORT_EMAIL=$ALERT_EMAIL|" /etc/rkhunter.conf
-else
-  echo "REPORT_EMAIL=$ALERT_EMAIL" >> /etc/rkhunter.conf
-fi
+# Idempotent set-or-append a KEY=VALUE line in a config file.
+set_kv() { local f="$1" k="$2" v="$3"
+  if grep -q "^${k}=" "$f" 2>/dev/null; then sed -i "s|^${k}=.*|${k}=${v}|" "$f"; else echo "${k}=${v}" >> "$f"; fi
+}
+set_kv /etc/default/rkhunter CRON_DAILY_RUN '"true"'
+set_kv /etc/rkhunter.conf    REPORT_EMAIL   "$ALERT_EMAIL"
 ok "rkhunter configured (daily scan; alerts → $ALERT_EMAIL)."
 
 # =========================================================================
-# 10. Bare git repo + post-receive hook for push-to-deploy CD
+# 10. allowed_signers for SSH-signed commits made from the VPS itself.
+#     No bare-repo / push-to-deploy — CD runs via GH Actions + GHCR now.
 # =========================================================================
-info "Setting up bare git repo for CD at /home/appuser/wattcloud.git..."
-if [ ! -d /home/appuser/wattcloud.git ]; then
-  sudo -u appuser git init --bare /home/appuser/wattcloud.git
-  ok "Bare repo initialised."
-else
-  ok "Bare repo already exists."
-fi
-chmod 700 /home/appuser/wattcloud.git
-
-# Configure git signing infrastructure for appuser — global config
-sudo -u appuser git config --global gpg.format ssh
-sudo -u appuser git config --global gpg.ssh.allowedSignersFile /home/appuser/.config/git/allowed_signers
-
-# Also set on the bare repo directly so post-receive verify-commit works even if
-# appuser's global config is absent or misconfigured (P1-8: GIT_SSH_ALLOWED_SIGNERS
-# env var is not recognised by git; repo-level config is authoritative).
-git --git-dir=/home/appuser/wattcloud.git config gpg.format ssh
-git --git-dir=/home/appuser/wattcloud.git config gpg.ssh.allowedSignersFile /home/appuser/.config/git/allowed_signers
-
 install -d -m 755 -o appuser -g appuser /home/appuser/.config/git
-
 ALLOWED_SIGNERS_FILE=/home/appuser/.config/git/allowed_signers
-if [ ! -f "$ALLOWED_SIGNERS_FILE" ] || ! grep -qF "$APPUSER_SSH_PUBKEY" "$ALLOWED_SIGNERS_FILE" 2>/dev/null; then
-  # Wildcard principal matches any git commit author email
+if ! grep -qF "$APPUSER_SSH_PUBKEY" "$ALLOWED_SIGNERS_FILE" 2>/dev/null; then
   printf "* %s\n" "$APPUSER_SSH_PUBKEY" >> "$ALLOWED_SIGNERS_FILE"
   chown appuser:appuser "$ALLOWED_SIGNERS_FILE"
-  ok "allowed_signers seeded."
 fi
-
-# Install post-receive hook if the template exists
-HOOK_SRC="$APP_DIR/scripts/post-receive.sh"
-HOOK_DST=/home/appuser/wattcloud.git/hooks/post-receive
-if [ -f "$HOOK_SRC" ]; then
-  install -m 755 -o appuser -g appuser "$HOOK_SRC" "$HOOK_DST"
-  ok "post-receive hook installed."
-else
-  warn "scripts/post-receive.sh not found — CD hook not installed yet."
-  warn "Re-run deploy-vps.sh after adding scripts/post-receive.sh to the repo."
-fi
-
-# Write CD config for origin reconcile (configurable; defaults to origin/main)
-CD_CONF=/home/appuser/.wattcloud-cd.conf
-if [ ! -f "$CD_CONF" ]; then
-  cat > "$CD_CONF" <<'CDCONF'
-# CD configuration — edited by operator to point to the upstream remote.
-# ORIGIN_REMOTE: pushed SHA must be an ancestor of ORIGIN_REMOTE/ORIGIN_BRANCH.
-ORIGIN_REMOTE=origin
-# Change to byo-release if using a dedicated BYO-only deploy branch.
-ORIGIN_BRANCH=main
-CDCONF
-  chown appuser:appuser "$CD_CONF"
-  ok "CD config written to $CD_CONF."
-fi
-
-# Prompt for GitHub origin URL and wire it up on the bare repo (P0-1).
-# The post-receive hook fails closed if no origin remote is configured, so this
-# is a required step — not optional. Operator can skip by setting ORIGIN_URL=""
-# explicitly only if they plan to configure origin manually later.
-if [ -z "$ORIGIN_URL" ] && [ -t 0 ]; then
-  echo ""
-  echo "GitHub repo URL for CD origin reconcile gate (required)."
-  echo "The hook verifies every pushed SHA is an ancestor of this remote before deploying."
-  printf "  URL (e.g. https://github.com/wattzupbyte/wattcloud.git): "
-  read -r ORIGIN_URL
-fi
-
-if [ -n "$ORIGIN_URL" ]; then
-  if git --git-dir=/home/appuser/wattcloud.git remote get-url origin > /dev/null 2>&1; then
-    git --git-dir=/home/appuser/wattcloud.git remote set-url origin "$ORIGIN_URL"
-    ok "Bare repo origin updated to $ORIGIN_URL."
-  else
-    git --git-dir=/home/appuser/wattcloud.git remote add origin "$ORIGIN_URL"
-    ok "Bare repo origin added: $ORIGIN_URL."
-  fi
-  chown -R appuser:appuser /home/appuser/wattcloud.git
-else
-  warn "ORIGIN_URL not set. The post-receive CD hook will fail-closed on every push."
-  warn "Add origin manually: git -C /home/appuser/wattcloud.git remote add origin <URL>"
-  warn "Or re-run deploy-vps.sh with ORIGIN_URL env var."
-fi
+sudo -u appuser git config --global gpg.format ssh
+sudo -u appuser git config --global gpg.ssh.allowedSignersFile "$ALLOWED_SIGNERS_FILE"
+ok "allowed_signers wired for appuser."
 
 # =========================================================================
-# 11. PATH persistence — cargo + wasm-pack for CD hook and appuser sessions
+# 11. PATH persistence for appuser sessions
 # =========================================================================
-cat > /etc/profile.d/wattcloud.sh <<'PROFILE'
-# Added by deploy-vps.sh
-export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
-PROFILE
+echo 'export PATH="/usr/local/bin:$PATH"' > /etc/profile.d/wattcloud.sh
 ok "PATH profile.d entry written."
 
 # =========================================================================
-# 12. Rust toolchain + cargo-audit
+# 12. GHCR docker login (as appuser — update.sh runs as appuser)
 # =========================================================================
-if command -v cargo &>/dev/null; then
-  ok "Rust already installed: $(rustc --version)"
+info "Configuring GHCR login for appuser..."
+if [ -z "$GHCR_USER" ] && [ -t 0 ]; then
+  printf "\nGitHub username for GHCR pulls: "; read -r GHCR_USER
+fi
+if [ -z "$GHCR_PAT" ] && [ -t 0 ]; then
+  printf "GitHub PAT with read:packages scope: "; read -rs GHCR_PAT; echo
+fi
+
+if [ -n "$GHCR_USER" ] && [ -n "$GHCR_PAT" ]; then
+  install -d -m 700 -o appuser -g appuser /home/appuser/.docker
+  if printf '%s' "$GHCR_PAT" | sudo -u appuser docker login ghcr.io -u "$GHCR_USER" --password-stdin > /dev/null 2>&1; then
+    ok "docker login ghcr.io succeeded (user: $GHCR_USER)."
+  else
+    die "docker login ghcr.io failed. Check GHCR_USER / GHCR_PAT (needs read:packages)."
+  fi
 else
-  info "Installing Rust toolchain..."
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-  ok "Rust installed."
-fi
-export PATH="$HOME/.cargo/bin:$PATH"
-
-if ! command -v cargo-audit &>/dev/null; then
-  info "Installing cargo-audit..."
-  cargo install cargo-audit
+  warn "GHCR_USER/GHCR_PAT not provided — run 'docker login ghcr.io' as appuser before update.sh."
 fi
 
 # =========================================================================
-# 13. Cargo audit
-# =========================================================================
-info "Running cargo audit on backend..."
-AUDIT_FAIL=0
-if [ -f "$APP_DIR/backend/Cargo.lock" ]; then
-  AUDIT_OUTPUT=$(cargo audit --file "$APP_DIR/backend/Cargo.lock" 2>&1) || true
-  if echo "$AUDIT_OUTPUT" | grep -qi "critical"; then
-    err "CRITICAL advisory in backend dependencies!"
-    echo "$AUDIT_OUTPUT"
-    AUDIT_FAIL=1
-  elif echo "$AUDIT_OUTPUT" | grep -qi "warning\|unmaintained\|unsound"; then
-    warn "Non-critical advisories in backend (continuing):"
-    echo "$AUDIT_OUTPUT" | head -20
-  else
-    ok "Backend audit clean."
-  fi
-fi
-
-info "Running cargo audit on SDK..."
-if [ -f "$APP_DIR/sdk/Cargo.lock" ]; then
-  AUDIT_OUTPUT=$(cargo audit --file "$APP_DIR/sdk/Cargo.lock" 2>&1) || true
-  if echo "$AUDIT_OUTPUT" | grep -qi "critical"; then
-    err "CRITICAL advisory in SDK dependencies!"
-    echo "$AUDIT_OUTPUT"
-    AUDIT_FAIL=1
-  elif echo "$AUDIT_OUTPUT" | grep -qi "warning\|unmaintained\|unsound"; then
-    warn "Non-critical advisories in SDK (continuing):"
-    echo "$AUDIT_OUTPUT" | head -20
-  else
-    ok "SDK audit clean."
-  fi
-fi
-
-[ "$AUDIT_FAIL" -eq 1 ] && die "Aborting: CRITICAL security advisories. Fix them before deploying."
-
-# =========================================================================
-# 14. Generate secrets & create .env
+# 13. Generate secrets & create .env
 # =========================================================================
 ENV_FILE="$APP_DIR/.env"
 if [ -f "$ENV_FILE" ]; then
-  warn ".env already exists — preserving existing file."
-  warn "Delete it manually and re-run if you want fresh secrets."
+  warn ".env already exists — preserving. Delete manually and re-run for fresh secrets."
 else
   info "Generating secrets..."
+  [ -f "$APP_DIR/.env.example" ] || die ".env.example not found at $APP_DIR/.env.example"
+  cp "$APP_DIR/.env.example" "$ENV_FILE"
 
-  if [ -f "$APP_DIR/.env.example" ]; then
-    cp "$APP_DIR/.env.example" "$ENV_FILE"
-  else
-    die ".env.example not found at $APP_DIR/.env.example"
-  fi
-
-  RELAY_SIGNING_KEY=$(openssl rand -base64 48)
-  RELAY_SHARE_SIGNING_KEY=$(openssl rand -base64 48)
-  BYO_STATS_HMAC_KEY=$(openssl rand -base64 48)
-
-  sed -i "s|^RELAY_SIGNING_KEY=.*|RELAY_SIGNING_KEY=$RELAY_SIGNING_KEY|" "$ENV_FILE"
-  sed -i "s|^RELAY_SHARE_SIGNING_KEY=.*|RELAY_SHARE_SIGNING_KEY=$RELAY_SHARE_SIGNING_KEY|" "$ENV_FILE"
-  sed -i "s|^BYO_STATS_HMAC_KEY=.*|BYO_STATS_HMAC_KEY=$BYO_STATS_HMAC_KEY|" "$ENV_FILE"
-  sed -i "s|^BYO_DOMAIN=.*|BYO_DOMAIN=$BYO_DOMAIN|"           "$ENV_FILE"
-  sed -i "s|^VITE_BYO_BASE_URL=.*|VITE_BYO_BASE_URL=https://$BYO_DOMAIN|" "$ENV_FILE"
-  sed -i "s|^ENVIRONMENT=.*|ENVIRONMENT=production|"           "$ENV_FILE"
-  sed -i "s|^RUST_LOG=.*|RUST_LOG=warn|"                      "$ENV_FILE"
-
-  if [ "$MANAGED" = "1" ]; then
-    info "Generating managed-mode secrets..."
-    MASTER_KEY=$(openssl rand -base64 32)
-    JWT_SECRET=$(openssl rand -base64 32)
-    BACKUP_API_KEY=$(openssl rand -hex 32)
-    sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$JWT_SECRET|"               "$ENV_FILE"
-    sed -i "s|^MASTER_KEY=.*|MASTER_KEY=$MASTER_KEY|"               "$ENV_FILE"
-    sed -i "s|^BACKUP_API_KEY=.*|BACKUP_API_KEY=$BACKUP_API_KEY|"   "$ENV_FILE"
-    sed -i "s|^ALLOWED_ORIGINS=.*|ALLOWED_ORIGINS=https://$DOMAIN|" "$ENV_FILE"
-    sed -i "s|^APP_BASE_URL=.*|APP_BASE_URL=https://$DOMAIN|"       "$ENV_FILE"
-    sed -i "s|^SMTP_FROM=.*|SMTP_FROM=noreply@$DOMAIN|"             "$ENV_FILE"
-    ok "Managed secrets generated."
-  fi
-
-  chmod 600 "$ENV_FILE"
+  sed -i "s|^RELAY_SIGNING_KEY=.*|RELAY_SIGNING_KEY=$(openssl rand -base64 48)|"             "$ENV_FILE"
+  sed -i "s|^RELAY_SHARE_SIGNING_KEY=.*|RELAY_SHARE_SIGNING_KEY=$(openssl rand -base64 48)|" "$ENV_FILE"
+  sed -i "s|^BYO_STATS_HMAC_KEY=.*|BYO_STATS_HMAC_KEY=$(openssl rand -hex 32)|"              "$ENV_FILE"
+  sed -i "s|^BYO_DOMAIN=.*|BYO_DOMAIN=$BYO_DOMAIN|"                                          "$ENV_FILE"
+  sed -i "s|^BYO_BASE_URL=.*|BYO_BASE_URL=https://$BYO_DOMAIN|"                              "$ENV_FILE"
+  sed -i "s|^ENVIRONMENT=.*|ENVIRONMENT=production|"                                         "$ENV_FILE"
+  chmod 600 "$ENV_FILE"; chown appuser:appuser "$ENV_FILE"
   ok "Secrets generated and .env created."
-  warn "OAuth client IDs not set — fill VITE_BYO_{GDRIVE,DROPBOX,ONEDRIVE}_CLIENT_ID in .env"
-  warn "before the BYO SPA is functional. See docs/BYO-DEPLOYMENT.md."
+
+  # Warn on operator-supplied OAuth client IDs still empty.
+  EMPTY_IDS=()
+  for var in BYO_GDRIVE_CLIENT_ID BYO_DROPBOX_CLIENT_ID BYO_ONEDRIVE_CLIENT_ID BYO_BOX_CLIENT_ID BYO_PCLOUD_CLIENT_ID; do
+    val=$(grep -E "^${var}=" "$ENV_FILE" | head -1 | cut -d= -f2-)
+    [ -z "$val" ] && EMPTY_IDS+=("$var")
+  done
+  [ "${#EMPTY_IDS[@]}" -gt 0 ] && warn "OAuth IDs empty: ${EMPTY_IDS[*]} — fill $ENV_FILE and re-run to refresh /config.json."
 fi
 
 # =========================================================================
-# 15. Update Traefik config with domain and email
+# 14. Traefik config update (domain + Let's Encrypt email)
 # =========================================================================
 info "Updating Traefik configuration..."
 TRAEFIK_STATIC="$APP_DIR/traefik/traefik.yml"
 if [ -f "$TRAEFIK_STATIC" ]; then
   sed -i "s|email:.*|email: $EMAIL|" "$TRAEFIK_STATIC"
   ok "Traefik ACME email set to $EMAIL."
-fi
-
-COMPOSE_FILE="$APP_DIR/docker-compose.yml"
-if [ -f "$COMPOSE_FILE" ]; then
-  sed -i "s|routers\.frontend\.rule=Host(\`[^\`]*\`)|routers.frontend.rule=Host(\`$DOMAIN\`)|g" "$COMPOSE_FILE"
-  ok "docker-compose.yml managed frontend domain set to $DOMAIN."
+else
+  warn "traefik/traefik.yml not found — skipping (will be populated by the image)."
 fi
 
 ACME_FILE="$APP_DIR/traefik/acme.json"
-[ -f "$ACME_FILE" ] || touch "$ACME_FILE"
-chmod 600 "$ACME_FILE"
+if [ -d "$APP_DIR/traefik" ]; then
+  [ -f "$ACME_FILE" ] || touch "$ACME_FILE"
+  chmod 600 "$ACME_FILE"
+fi
 
 # =========================================================================
-# 16. Docker log rotation
+# 15. Docker log rotation
 # =========================================================================
 info "Configuring Docker log rotation..."
 mkdir -p /etc/docker
@@ -744,100 +532,62 @@ systemctl restart docker 2>/dev/null || true
 ok "Docker daemon log rotation configured."
 
 # =========================================================================
-# 17. Swap file (if < 2GB RAM)
+# 16. Swap file (if < 2GB RAM)
 # =========================================================================
-TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-TOTAL_RAM_MB=$((TOTAL_RAM_KB / 1024))
-if [ "$TOTAL_RAM_MB" -lt 2048 ]; then
-  if [ -f /swapfile ]; then
-    ok "Swap file already exists."
-  else
-    info "Creating 2GB swap file (RAM: ${TOTAL_RAM_MB}MB)..."
-    fallocate -l 2G /swapfile
-    chmod 600 /swapfile
-    mkswap /swapfile > /dev/null
-    swapon /swapfile
-    grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
-    ok "2GB swap file created and enabled."
+TOTAL_RAM_MB=$(($(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024))
+if [ "$TOTAL_RAM_MB" -lt 2048 ] && [ ! -f /swapfile ]; then
+  info "Creating 2GB swap file (RAM: ${TOTAL_RAM_MB}MB)..."
+  fallocate -l 2G /swapfile && chmod 600 /swapfile
+  mkswap /swapfile > /dev/null && swapon /swapfile
+  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  ok "2GB swap file created."
+else
+  ok "Swap: ${TOTAL_RAM_MB}MB RAM$([ -f /swapfile ] && echo ', /swapfile present' || echo ', no swap needed')."
+fi
+
+# =========================================================================
+# 17. Write /config.json for the SPA — regenerated every run from .env.
+#     TODO(operator): Traefik/byo-server must serve this at /config.json with
+#     `Cache-Control: no-store`. The image owns the routing; the VPS only owns
+#     the file on disk.
+# =========================================================================
+info "Writing config.json from .env..."
+install -d -m 755 -o appuser -g appuser /var/www/wattcloud
+# shellcheck disable=SC1090
+set -a; . "$ENV_FILE"; set +a
+CONFIG_JSON=/var/www/wattcloud/config.json
+cat > "$CONFIG_JSON" <<CONFIG
+{
+  "baseUrl": "https://${BYO_DOMAIN}",
+  "clientIds": {
+    "gdrive":   "${BYO_GDRIVE_CLIENT_ID:-}",
+    "dropbox":  "${BYO_DROPBOX_CLIENT_ID:-}",
+    "onedrive": "${BYO_ONEDRIVE_CLIENT_ID:-}",
+    "box":      "${BYO_BOX_CLIENT_ID:-}",
+    "pcloud":   "${BYO_PCLOUD_CLIENT_ID:-}"
+  }
+}
+CONFIG
+chmod 0644 "$CONFIG_JSON"; chown appuser:appuser "$CONFIG_JSON"
+if command -v jq &>/dev/null; then
+  jq -e . < "$CONFIG_JSON" > /dev/null || die "Generated $CONFIG_JSON is not valid JSON — check .env quoting."
+fi
+ok "/config.json written ($CONFIG_JSON)."
+
+# =========================================================================
+# 18. Roll the first image via scripts/update.sh, if INITIAL_DIGEST supplied
+# =========================================================================
+UPDATE_SH="$APP_DIR/scripts/update.sh"
+if [ -n "$INITIAL_DIGEST" ]; then
+  if [ ! -x "$UPDATE_SH" ]; then
+    die "INITIAL_DIGEST provided but $UPDATE_SH missing/not-executable."
   fi
+  info "Rolling initial image: $INITIAL_DIGEST"
+  sudo -u appuser -H bash -c "cd '$APP_DIR' && '$UPDATE_SH' '$INITIAL_DIGEST'" \
+    || die "update.sh failed — check 'docker compose logs byo-server'."
+  ok "Initial image deployed."
 else
-  ok "RAM: ${TOTAL_RAM_MB}MB — swap not needed."
-fi
-
-# =========================================================================
-# 18. Build BYO SPA
-# =========================================================================
-info "Building BYO SPA..."
-
-if ! command -v node &>/dev/null || ! node --version | grep -q "^v2[0-9]"; then
-  info "Installing Node.js 20..."
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash - > /dev/null 2>&1
-  apt-get install -y -qq nodejs > /dev/null
-  ok "Node.js installed: $(node --version)"
-else
-  ok "Node.js already installed: $(node --version)"
-fi
-
-if ! command -v wasm-pack &>/dev/null; then
-  info "Installing wasm-pack..."
-  curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh > /dev/null 2>&1
-  ok "wasm-pack installed."
-fi
-
-WASM_PKG="$APP_DIR/sdk/sdk-wasm/pkg"
-WASM_SRC="$APP_DIR/sdk/sdk-wasm/src"
-if [ ! -d "$WASM_PKG" ] || [ "$WASM_SRC" -nt "$WASM_PKG" ]; then
-  info "Building BYO-only WASM package..."
-  (cd "$APP_DIR/sdk/sdk-wasm" && wasm-pack build --target web --release \
-    -- --no-default-features --features "crypto byo providers") \
-    || die "WASM build failed."
-  ok "WASM package built."
-else
-  ok "WASM package is up-to-date."
-fi
-
-# Remove destination first to avoid cp -r nesting on re-run:
-# if dst/ already exists, plain `cp -r src/ dst/` copies into dst/src/ instead of dst/.
-rm -rf "$APP_DIR/frontend/src/pkg"
-cp -r "$WASM_PKG" "$APP_DIR/frontend/src/pkg"
-
-(cd "$APP_DIR/frontend" && npm ci --silent && npm run build:byo) \
-  || die "BYO SPA build failed."
-ok "BYO SPA built at byo-server/dist/."
-
-if [ -f "$APP_DIR/scripts/verify-byo-bundle.sh" ]; then
-  bash "$APP_DIR/scripts/verify-byo-bundle.sh" || die "BYO bundle verification failed."
-fi
-
-# =========================================================================
-# 19. Build and start BYO Docker image
-# =========================================================================
-info "Building BYO Docker image..."
-cd "$APP_DIR"
-BYO_SHA=$(git -C "$APP_DIR" rev-parse --short HEAD 2>/dev/null || echo "local")
-
-BYO_IMAGE="byo-server:$BYO_SHA" \
-  docker compose \
-    -f "$APP_DIR/docker-compose.yml" \
-    -f "$APP_DIR/docker-compose.byo-prod.yml" \
-    --profile byo \
-    build byo-server
-ok "BYO Docker image built (tag: byo-server:$BYO_SHA)."
-
-info "Starting BYO stack (traefik + byo-server)..."
-BYO_IMAGE="byo-server:$BYO_SHA" \
-  docker compose \
-    -f "$APP_DIR/docker-compose.yml" \
-    -f "$APP_DIR/docker-compose.byo-prod.yml" \
-    --profile byo \
-    up -d byo-server
-ok "BYO stack started (image: byo-server:$BYO_SHA)."
-
-if [ "$MANAGED" = "1" ]; then
-  info "Building and starting managed stack..."
-  docker compose --profile managed build backend frontend backup
-  docker compose --profile managed up -d
-  ok "Managed stack started."
+  warn "INITIAL_DIGEST not supplied — byo-server is NOT running yet."
 fi
 
 # =========================================================================
@@ -845,57 +595,24 @@ fi
 # =========================================================================
 echo ""
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN} Wattcloud BYO deployed!${NC}"
+echo -e "${GREEN} Wattcloud BYO VPS provisioned!${NC}"
 echo -e "${GREEN}========================================${NC}"
-echo ""
 echo "  BYO domain:   https://$BYO_DOMAIN"
 echo "  SSH port:     $SSH_PORT"
-echo "  App dir:      $APP_DIR"
-echo "  Alert email:  $ALERT_EMAIL"
-echo "  msmtp:        $([ "$MSMTP_CONFIGURED" -eq 1 ] && echo "configured (from: ${ALERT_FROM})" || echo "NOT configured (journal-only alerts)")"
-echo "  AIDE:         $([ -f /var/lib/aide/aide.db ] && echo "baseline ready" || echo "baseline pending — run aideinit")"
-echo "  AIDE golden:  $([ -f /var/lib/aide/aide.db.golden ] && echo "saved" || echo "pending")"
-echo "  CD bare repo: /home/appuser/wattcloud.git"
-echo "  CD origin:    $(git --git-dir=/home/appuser/wattcloud.git remote get-url origin 2>/dev/null || echo "NOT set — hook will fail-closed")"
-echo "  CD hook:      $([ -f /home/appuser/wattcloud.git/hooks/post-receive ] && echo "installed" || echo "NOT installed — re-run after adding scripts/post-receive.sh")"
+echo "  .env:         $ENV_FILE"
+echo "  /config.json: $CONFIG_JSON"
+echo "  msmtp:        $([ "$MSMTP_CONFIGURED" -eq 1 ] && echo "configured (from: ${ALERT_FROM})" || echo "journal-only")"
+echo "  AIDE:         $([ -f /var/lib/aide/aide.db ] && echo "baseline ready" || echo "pending")"
 echo ""
-echo -e "${YELLOW}On your dev machine — add the VPS remote:${NC}"
-echo "  git remote add vps ssh://appuser@<VPS-IP>:$SSH_PORT/home/appuser/wattcloud.git"
-echo ""
-echo -e "${YELLOW}Recommended ~/.ssh/config entry (copy to dev machine):${NC}"
-cat <<SSHCONFIG
-  Host vps
-    HostName <VPS-IP>
-    Port $SSH_PORT
-    User appuser
-    ForwardAgent no
-    IdentitiesOnly yes
-    IdentityFile ~/.ssh/id_ed25519
-SSHCONFIG
-echo ""
-echo -e "${RED}SECURITY:${NC} Never set ForwardAgent yes for the vps Host entry."
-echo ""
-echo -e "${YELLOW}Enable commit signing on dev machine (required for CD):${NC}"
-echo "  git config --global gpg.format ssh"
-echo "  git config --global user.signingkey ~/.ssh/id_ed25519.pub"
-echo "  git config --global commit.gpgsign true"
-echo "  git config --global gpg.ssh.allowedSignersFile ~/.config/git/allowed_signers"
-echo "  mkdir -p ~/.config/git"
-echo "  echo \"* \$(cat ~/.ssh/id_ed25519.pub)\" >> ~/.config/git/allowed_signers"
-echo ""
-echo -e "${YELLOW}Mandatory next steps (external):${NC}"
-echo "  1. Point DNS A/AAAA for $BYO_DOMAIN to this server's IP"
-echo "  2. Sign Hetzner DPA/AVV — https://accounts.hetzner.com/gdpr"
-echo "  3. Register OAuth consent screens — see docs/BYO-DEPLOYMENT.md Section 3"
-echo "  4. Verify HTTPS:  curl -I https://$BYO_DOMAIN"
-echo "  5. Verify CSP:    curl -sI https://$BYO_DOMAIN | grep content-security-policy"
-echo ""
-echo "  Logs:     docker compose logs -f"
-echo "  Status:   docker compose ps"
-echo "  Rollback: BYO_IMAGE=byo-server:<old-sha> docker compose \\"
-echo "              -f $APP_DIR/docker-compose.yml \\"
-echo "              -f $APP_DIR/docker-compose.byo-prod.yml \\"
-echo "              --profile byo up -d byo-server"
-echo ""
-echo "  Full deployment guide: $APP_DIR/docs/BYO-DEPLOYMENT.md"
+if [ -z "$INITIAL_DIGEST" ]; then
+  echo -e "${YELLOW}First-time deploy:${NC} push a v*.*.* tag to GitHub; release.yml publishes to"
+  echo "  ghcr.io/wattzupbyte/wattcloud and prints the digest. Then on the VPS as appuser:"
+  echo "    cd $APP_DIR && ./scripts/update.sh ghcr.io/wattzupbyte/wattcloud@sha256:<digest>"
+  echo ""
+fi
+echo -e "${YELLOW}External next steps:${NC}"
+echo "  1. DNS A/AAAA for $BYO_DOMAIN → this server's IP"
+echo "  2. Sign Hetzner DPA/AVV (https://accounts.hetzner.com/gdpr)"
+echo "  3. Register OAuth consents, fill BYO_*_CLIENT_ID in $ENV_FILE, re-run deploy-vps.sh"
+echo "  4. Verify: curl -I https://$BYO_DOMAIN && curl -s https://$BYO_DOMAIN/config.json | jq ."
 echo ""
