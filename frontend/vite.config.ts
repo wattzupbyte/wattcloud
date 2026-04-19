@@ -102,14 +102,14 @@ function jsSriPlugin(): Plugin {
   };
 }
 
-// Build-time mode flag. VITE_MODE=byo for BYO build, default is managed.
-const viteMode = process.env.VITE_MODE || 'managed';
+// Wattcloud is BYO-only — __BYO_MODE__ is always true. Kept as a compile-time
+// flag so existing `if (__BYO_MODE__)` guards in copied code are a no-op
+// rather than needing source edits.
 
 export default defineConfig({
   plugins: [svelte(), wasmSriPlugin(), jsSriPlugin()],
   define: {
-    // Tree-shaking flag: BYO-specific code is dead-code eliminated in managed builds.
-    __BYO_MODE__: JSON.stringify(viteMode === 'byo'),
+    __BYO_MODE__: JSON.stringify(true),
     // Test-mode flag: exposes MockProvider in ProviderPicker for E2E tests.
     // Set BYO_TEST_MODE=true when running the dev server for BYO E2E tests.
     __BYO_TEST_MODE__: JSON.stringify(process.env.BYO_TEST_MODE === 'true'),
@@ -162,11 +162,8 @@ export default defineConfig({
   build: {
     sourcemap: false,
     chunkSizeWarningLimit: 1200,
-    rollupOptions: viteMode === 'byo' ? {
-      // Hard BYO-only entry: managed component graph never enters the bundle.
-      // Only index.byo.html → main-byo.ts → ByoApp.svelte is reachable.
-      input: resolve(__dirname, 'index.byo.html'),
-    } : undefined,
+    // Single entry: index.html → src/main.ts → ByoApp.svelte. There is no
+    // managed code path in this repo, so no conditional rollup input.
   },
   test: {
     // Playwright E2E specs must run via `npm run test:e2e`, not under Vitest.

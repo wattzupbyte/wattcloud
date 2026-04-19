@@ -9,7 +9,7 @@
 #   2. cosign verify — assert the image at this digest was signed by the
 #      wattzupbyte/wattcloud release.yml workflow running on a v*.*.* tag,
 #      using the Actions OIDC issuer. A swap at the registry fails here.
-#   3. Pin the digest into docker-compose.byo-prod.yml.
+#   3. Pin the digest into docker-compose.yml.
 #   4. docker compose pull (anonymous — GHCR image is public; no PAT needed).
 #   5. docker compose up -d, then health-check /health on 127.0.0.1:8443.
 #
@@ -72,17 +72,24 @@ echo "OK: signature verified (identity matches release.yml @ v*.*.*)."
 
 cd "$(dirname "$0")/.."
 
-if ! [[ -f docker-compose.byo-prod.yml ]]; then
-  echo "ERROR: docker-compose.byo-prod.yml not found" >&2
+if ! [[ -f docker-compose.yml ]]; then
+  echo "ERROR: docker-compose.yml not found" >&2
   exit 2
 fi
 
-# Idempotent sed — re-running with the same digest is a no-op.
-sed -i -E "s|(^\s*image:\s*).*|\1${DIGEST}|" docker-compose.byo-prod.yml
+# Idempotent sed — only rewrites the byo-server image line (matches any
+# existing ghcr.io/wattzupbyte/wattcloud:TAG or @sha256:… reference, plus the
+# legacy ${BYO_IMAGE:-…} placeholder we ship in docker-compose.yml). Traefik's
+# image line does NOT match this pattern and is preserved.
+sed -i -E "s|^(\s*image:\s*).*(ghcr\.io/wattzupbyte/wattcloud|BYO_IMAGE:-).*$|\1${DIGEST}|" docker-compose.yml
+if ! grep -qF "$DIGEST" docker-compose.yml; then
+  echo "ERROR: failed to pin digest into docker-compose.yml (byo-server image line not found or regex mismatch)" >&2
+  exit 5
+fi
 echo "Pinned compose image to: $DIGEST"
 
-docker compose -f docker-compose.byo-prod.yml pull
-docker compose -f docker-compose.byo-prod.yml up -d
+docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml up -d
 
 sleep 5
 if curl -fsS http://127.0.0.1:8443/health >/dev/null 2>&1; then

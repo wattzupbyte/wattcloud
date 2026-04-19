@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # =============================================================================
-# ci.sh — Local CI pipeline for Wattcloud
+# ci.sh — Local CI pipeline for Wattcloud (mirrors .github/workflows/ci.yml).
 # Run manually or wire into a git hook (see bottom of file).
-# Excludes: /android
 #
 # Usage:
-#   ./scripts/ci.sh              # full mode (default)
-#   ./scripts/ci.sh --mode byo   # BYO-only mode (skips backend + managed images)
-#   ./scripts/ci.sh --mode full  # explicit full mode
+#   ./scripts/ci.sh              # BYO (default; this repo has no other mode)
+#   ./scripts/ci.sh --mode byo   # explicit
+#
+# The --mode full branches reference /backend and /android paths that were
+# pruned in the carveout. They remain as dead code so pre-existing hook
+# invocations don't break, but nothing here validates them.
 # =============================================================================
 set -euo pipefail
 
@@ -30,7 +32,7 @@ ERRORS=0
 # ---------------------------------------------------------------------------
 # Parse --mode flag
 # ---------------------------------------------------------------------------
-MODE="full"
+MODE="byo"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --mode)
@@ -200,7 +202,7 @@ if [[ "$MODE" == "byo" ]]; then
 fi
 
 step "SDK — cargo audit"
-run_audit "SDK" "$APP_DIR/sdk/Cargo.lock"
+run_audit "SDK" "$APP_DIR/Cargo.lock"
 
 step "SDK — WASM build"
 if command -v wasm-pack &>/dev/null; then

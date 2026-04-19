@@ -61,6 +61,48 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate tag matches semver
+        run: |
+          if ! printf '%s' "$REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$'; then
+            echo "::error::tag $REF_NAME does not match v<maj>.<min>.<patch>[-prerelease]" >&2
+            exit 1
+          fi
+
+      # Build the WASM + SPA first so the resulting dist/ can be copied into
+      # byo-server's Docker context. The Dockerfile is byo-server-centric
+      # (context = byo-server/, expects dist/ next to Cargo.toml), so we
+      # stage the bundle under byo-server/dist/ before docker build.
+
+      # dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@c5a29ddb4d9d194e7c84ec8c3fba61b1c31fee8a
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      # Swatinem/rust-cache@v2.7.3
+      - uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84
+
+      # actions/setup-node@v4.0.4
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
+        with:
+          node-version: '20'
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh -s -- --version 0.12.1
+
+      - name: wasm-pack build (sdk-wasm)
+        run: wasm-pack build sdk/sdk-wasm --release --target web --out-dir ../../frontend/src/pkg --out-name wattcloud_sdk_wasm
+
+      - name: Build byo package + frontend into byo-server/dist/
+        working-directory: byo
+        run: npm ci
+      - name: Build frontend into byo-server/dist/
+        working-directory: frontend
+        run: |
+          npm ci
+          # package.json's build script already emits to ../byo-server/dist.
+          npm run build
+
       # docker/setup-buildx-action@v3.6.1
       - name: Set up Buildx
         uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db
@@ -74,19 +116,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Validate tag matches semver
-        run: |
-          if ! printf '%s' "$REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$'; then
-            echo "::error::tag $REF_NAME does not match v<maj>.<min>.<patch>[-prerelease]" >&2
-            exit 1
-          fi
-
       - name: Build + push image
         id: push
         # docker/build-push-action@v6.7.0
         uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85
         with:
-          context: .
+          context: byo-server
           file: byo-server/Dockerfile
           push: true
           tags: |
@@ -109,8 +144,10 @@ jobs:
       - name: Keyless-sign image with cosign
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
-          COSIGN_YES: "true"
-        run: cosign sign "${IMAGE_NAME}@${DIGEST}"
+        # --yes is the official v2 flag to skip the interactive confirm. The
+        # deprecated COSIGN_EXPERIMENTAL env var + absence of --yes would hang
+        # in a non-TTY CI environment.
+        run: cosign sign --yes "${IMAGE_NAME}@${DIGEST}"
 
       - name: Write release notes
         env:

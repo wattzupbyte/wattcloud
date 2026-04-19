@@ -1,0 +1,84 @@
+# Wattcloud BYO production compose — standalone (no base file).
+#
+# Services:
+#   traefik    — reverse proxy + Let's Encrypt
+#   byo-server — stateless BYO relay; serves the SPA bundle + /config.json
+#
+# scripts/update.sh rewrites the byo-server image line to a digest-pinned
+# reference (ghcr.io/wattzupbyte/wattcloud@sha256:…) before every roll.
+# scripts/byo-smoke.sh layers docker-compose.byo-smoke.yml on top.
+
+services:
+  traefik:
+    image: traefik:v3.6
+    container_name: wattcloud-traefik
+    restart: unless-stopped
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+      - "--log.level=ERROR"
+      - "--accesslog=false"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/acme.json:/acme.json
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+    networks:
+      - wattcloud-network
+
+  byo-server:
+    # update.sh pins this to ghcr.io/wattzupbyte/wattcloud@sha256:…
+    image: ${BYO_IMAGE:-ghcr.io/wattzupbyte/wattcloud:latest}
+    container_name: wattcloud-byo-server
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - BIND_ADDR=0.0.0.0:8443
+      - SPA_DIR=/app/dist
+      - STATS_DB_PATH=/var/lib/byo-server/stats.sqlite3
+      - RUST_LOG=warn
+    volumes:
+      - byo-stats-data:/var/lib/byo-server
+      # deploy-vps.sh writes the SPA runtime config here; served same-origin.
+      - /var/www/wattcloud/config.json:/app/dist/config.json:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.byo.rule=Host(`${BYO_DOMAIN}`)"
+      - "traefik.http.routers.byo.entrypoints=websecure"
+      - "traefik.http.routers.byo.tls=true"
+      - "traefik.http.routers.byo.tls.certresolver=letsencrypt"
+      - "traefik.http.services.byo.loadbalancer.server.port=8443"
+      # Block /health and /ready from the public internet. The container's
+      # HEALTHCHECK hits 127.0.0.1 directly and never goes via Traefik.
+      - "traefik.http.routers.byo-probe-block.rule=Host(`${BYO_DOMAIN}`) && (Path(`/health`) || Path(`/ready`))"
+      - "traefik.http.routers.byo-probe-block.entrypoints=websecure"
+      - "traefik.http.routers.byo-probe-block.tls=true"
+      - "traefik.http.routers.byo-probe-block.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.byo-probe-block.service=noop@internal"
+      - "traefik.http.routers.byo-probe-block.priority=200"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8443/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    deploy:
+      resources:
+        reservations:
+          memory: 64M
+    networks:
+      - wattcloud-network
+
+networks:
+  wattcloud-network:
+    driver: bridge
+
+volumes:
+  byo-stats-data:

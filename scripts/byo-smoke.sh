@@ -38,7 +38,6 @@ compose() {
     docker compose \
         --env-file "$ENV_SMOKE" \
         -f "$APP_DIR/docker-compose.yml" \
-        -f "$APP_DIR/docker-compose.byo-prod.yml" \
         -f "$APP_DIR/docker-compose.byo-smoke.yml" \
         --profile byo \
         "$@"

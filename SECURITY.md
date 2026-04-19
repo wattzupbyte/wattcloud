@@ -67,7 +67,7 @@ only the BYO code path is compiled; the managed modules were deleted.
 ```
 Password (user input, never stored)
     │
-    ▼ Argon2id(m=65536, t=3, p=4, output=64 bytes, salt=auth_salt)
+    ▼ Argon2id(m=131072, t=3, p=4, output=64 bytes, salt=auth_salt)  # BYO = 128 MB
 argon_output[0:64]
     │                               │
     │ argon_output[0:32]            │ argon_output[32:64]
@@ -437,17 +437,13 @@ pub trait KeyStorage: Send + Sync {
 | Web (WASM) | `WebKeyStorage` in sdk-wasm | Web Worker memory (WeakMap, never crosses to main thread) |
 | Android (future) | `AndroidKeyStorage` in sdk-ffi | Android Keystore |
 
-### `TokenStorage` (sdk-core::session)
+### `TokenStorage`
 
-```rust
-pub trait TokenStorage: Send + Sync {
-    fn store_refresh_token(&self, token: &str) -> Result<(), SdkError>;
-    fn retrieve_refresh_token(&self) -> Result<Option<String>, SdkError>;
-    fn clear_refresh_token(&self) -> Result<(), SdkError>;
-}
-```
-
-Web implementation: access tokens in memory only; refresh tokens are `HttpOnly; Secure; SameSite=Strict` cookies managed by the browser (not accessible to JavaScript).
+The `TokenStorage` trait lived in `sdk-core::session` upstream. That module was
+deleted in the Wattcloud carveout (BYO has no login session against a managed
+backend — OAuth access/refresh tokens for each user's storage provider live in
+the encrypted manifest body instead, see §12). No `TokenStorage` implementation
+exists in this repo.
 
 ---
 

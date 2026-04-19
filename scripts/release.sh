@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# release.sh — build Wattcloud image, push to GHCR, emit the digest.
+# release.sh — LOCAL build + push of the Wattcloud image. Does NOT cosign-sign
+# (keyless signing needs the Actions OIDC token, which is only available inside
+# .github/workflows/release.yml). An image pushed by this script will fail
+# `cosign verify` on the VPS — use only for development or emergency manual
+# roll-outs where you accept skipping the signature check.
+#
+# For production, prefer: push a v*.*.* tag → Actions runs release.yml.
 #
 # Usage: scripts/release.sh <version-tag>
-#   e.g. scripts/release.sh v0.1.0
+#   e.g. scripts/release.sh v0.1.0-manual
 #
-# Prerequisite: you have pushed an SSH-signed commit that matches the tag, AND
-# you have run `docker login ghcr.io` with a PAT that has write:packages scope.
-#
-# Output: prints the image digest (sha256:...) to stdout on success. Capture
-# this and pass it to scripts/update.sh on the VPS for digest-pinned rollout.
+# Prerequisite: `docker login ghcr.io` with a PAT that has write:packages scope
+# (only for this local-push path; the GHCR image served to end-users is still
+# public anonymous-pull).
 
 set -euo pipefail
 
@@ -21,18 +25,26 @@ fi
 IMAGE="ghcr.io/wattzupbyte/wattcloud"
 FULL_TAG="${IMAGE}:${TAG}"
 
-# Build byo-server image (the Rust binary carries the SPA bundle in /dist).
 cd "$(dirname "$0")/.."
-docker build -t "$FULL_TAG" -f byo-server/Dockerfile .
 
+# Frontend + WASM build. Writes into byo-server/dist/ so the Dockerfile's
+# `COPY dist/ /app/dist/` step has something to copy.
+command -v wasm-pack >/dev/null 2>&1 || { echo "wasm-pack not installed"; exit 2; }
+(cd sdk/sdk-wasm && wasm-pack build --release --target web \
+    --out-dir ../../frontend/src/pkg --out-name wattcloud_sdk_wasm)
+(cd byo && npm ci --silent)
+(cd frontend && npm ci --silent && npm run build)
+
+# Dockerfile is byo-server-centric (context = byo-server/). `dist/` lives at
+# byo-server/dist/ (emitted by the vite build above).
+docker build -t "$FULL_TAG" -f byo-server/Dockerfile byo-server
 docker push "$FULL_TAG"
 
-# Resolve to a sha256 digest so compose can pin by immutable reference.
 DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$FULL_TAG")
 
 echo
 echo "Pushed: $FULL_TAG"
 echo "Digest: $DIGEST"
 echo
-echo "On the VPS, run:"
-echo "  scripts/update.sh $DIGEST"
+echo "WARNING: this image is NOT cosign-signed. update.sh will reject it."
+echo "Use Actions (tag-triggered release.yml) for production deploys."
