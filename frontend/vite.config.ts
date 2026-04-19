@@ -117,9 +117,9 @@ export default defineConfig({
   resolve: {
     alias: {
       $lib: resolve(__dirname, 'src/lib'),
-      'secure-cloud-wasm': resolve(__dirname, 'src/pkg/secure_cloud_sdk_wasm.js'),
+      '@wattcloud/wasm': resolve(__dirname, 'src/pkg/secure_cloud_sdk_wasm.js'),
       // BYO storage package — resolved from source for development builds.
-      '@secure-cloud/byo': resolve(__dirname, '../byo/src/index.ts'),
+      '@wattcloud/sdk': resolve(__dirname, '../byo/src/index.ts'),
     },
   },
   // SECURITY: Workers must be emitted as ES modules for code-splitting compatibility.
@@ -156,7 +156,7 @@ export default defineConfig({
   },
   optimizeDeps: {
     // Exclude WASM modules from Vite's dependency pre-bundling.
-    exclude: ['secure-cloud-wasm', 'sql.js'],
+    exclude: ['@wattcloud/wasm', 'sql.js'],
     force: true,
   },
   build: {

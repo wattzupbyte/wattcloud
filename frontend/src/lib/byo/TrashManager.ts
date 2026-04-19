@@ -13,8 +13,8 @@
  * See BYO_PLAN §1.5 (trash table), §6.4 (ByoTrash component notes).
  */
 
-import type { StorageProvider } from '@secure-cloud/byo';
-import { ProviderError } from '@secure-cloud/byo';
+import type { StorageProvider } from '@wattcloud/sdk';
+import { ProviderError } from '@wattcloud/sdk';
 import type { TrashEntry } from './DataProvider';
 import { queryRows } from './ConflictResolver';
 

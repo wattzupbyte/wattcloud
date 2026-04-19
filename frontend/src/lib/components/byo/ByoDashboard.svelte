@@ -24,7 +24,7 @@
   import { OfflineDetector } from '../../byo/OfflineDetector';
   import { getProviders, getPrimaryProviderId } from '../../byo/VaultLifecycle';
   import { TrashManager } from '../../byo/TrashManager';
-  import type { StorageProvider } from '@secure-cloud/byo';
+  import type { StorageProvider } from '@wattcloud/sdk';
   import House from 'phosphor-svelte/lib/House';
   import CaretRight from 'phosphor-svelte/lib/CaretRight';
   import FolderSimple from 'phosphor-svelte/lib/FolderSimple';

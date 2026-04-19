@@ -13,7 +13,7 @@
   import { createEventDispatcher, tick } from 'svelte';
   import type { ProviderMeta } from '../../byo/stores/vaultStore';
   import { renameProvider, setAsPrimaryProvider, removeProvider, reconnectSftpProvider } from '../../byo/VaultLifecycle';
-  import * as byoWorker from '@secure-cloud/byo';
+  import * as byoWorker from '@wattcloud/sdk';
 
   export let provider: ProviderMeta;
   export let isOnlyProvider = false;

@@ -94,7 +94,7 @@ class MockSftpSession {
 
 let lastSession: MockSftpSession;
 
-vi.mock('secure-cloud-wasm', () => ({
+vi.mock('@wattcloud/wasm', () => ({
   SftpSessionWasm: vi.fn((...args: any[]) => {
     lastSession = new MockSftpSession(...(args as [any, any, any]));
     return lastSession;

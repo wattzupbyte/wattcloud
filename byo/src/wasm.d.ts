@@ -1,10 +1,10 @@
 /**
- * Type declarations for the secure-cloud-wasm module.
+ * Type declarations for the @wattcloud/wasm module.
  *
  * This module is built by wasm-pack from sdk-wasm and loaded at runtime.
  * The actual types are defined in the pkg directory after building.
  */
-declare module 'secure-cloud-wasm' {
+declare module '@wattcloud/wasm' {
   export function init(module_or_path?: string | URL | Request): Promise<void>;
 
   // BYO streaming flows (replaces V7StreamDecryptorWasm+FooterTrimmer and V7StreamEncryptorWasm)

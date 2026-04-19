@@ -1,5 +1,7 @@
 [workspace]
 members = ["sdk/sdk-core", "sdk/sdk-wasm"]
+# byo-server has its own workspace (conflicting ml-kem transitive from russh).
+exclude = ["byo-server"]
 resolver = "2"
 
 [workspace.package]

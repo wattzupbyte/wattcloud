@@ -16,9 +16,9 @@
  * Retries up to MAX_RETRIES times on repeated conflicts.
  */
 
-import type { StorageProvider } from '@secure-cloud/byo';
-import { ConflictError } from '@secure-cloud/byo';
-import * as byoWorker from '@secure-cloud/byo';
+import type { StorageProvider } from '@wattcloud/sdk';
+import { ConflictError } from '@wattcloud/sdk';
+import * as byoWorker from '@wattcloud/sdk';
 import { bytesToBase64, base64ToBytes } from './base64';
 
 // ── Constants ──────────────────────────────────────────────────────────────

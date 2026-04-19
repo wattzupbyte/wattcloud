@@ -65,7 +65,7 @@ export class SftpProvider implements StorageProvider {
     await acquireSftpRelayCookie(this.host, this.port);
 
     // Load SftpSessionWasm from the WASM module (already initialised by the worker).
-    const wasmModule = await import('secure-cloud-wasm') as any;
+    const wasmModule = await import('@wattcloud/wasm') as any;
     const SftpSessionWasm = wasmModule.SftpSessionWasm;
 
     const wsUrl = `/relay/ws?mode=sftp&host=${encodeURIComponent(this.host)}&port=${encodeURIComponent(String(this.port))}`;

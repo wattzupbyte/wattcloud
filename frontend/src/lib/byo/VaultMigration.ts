@@ -8,7 +8,7 @@
  * runMigrations() is a no-op kept for call-site compatibility.
  */
 
-import type { ProviderType } from '@secure-cloud/byo';
+import type { ProviderType } from '@wattcloud/sdk';
 
 /**
  * No-op for R6 greenfield vaults. Kept for call-site compatibility.

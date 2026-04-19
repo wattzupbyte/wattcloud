@@ -10,11 +10,11 @@
    *     Used from ByoApp instead of the now-deleted ProviderPicker.
    */
   import { createEventDispatcher, getContext } from 'svelte';
-  import type { StorageProvider, ProviderType, ProviderConfig } from '@secure-cloud/byo';
-  import { createProvider, SftpProvider } from '@secure-cloud/byo';
-  import * as byoWorker from '@secure-cloud/byo';
+  import type { StorageProvider, ProviderType, ProviderConfig } from '@wattcloud/sdk';
+  import { createProvider, SftpProvider } from '@wattcloud/sdk';
+  import * as byoWorker from '@wattcloud/sdk';
   import { addProvider, getPrimaryProviderId } from '../../byo/VaultLifecycle';
-  import { initiateOAuthFlow } from '@secure-cloud/byo';
+  import { initiateOAuthFlow } from '@wattcloud/sdk';
   import { vaultStore } from '../../byo/stores/vaultStore';
   import HexShield from '../HexShield.svelte';
 
@@ -223,7 +223,7 @@
     {#if firstRun}
       <div class="first-run-brand">
         <HexShield size={64} variant="check" color="var(--accent, #2EB860)" fillColor="var(--accent-muted, #1B3627)" />
-        <h1 class="first-run-title">Secure Cloud</h1>
+        <h1 class="first-run-title">Wattcloud</h1>
         <p class="first-run-sub">Your files stay encrypted — only you hold the keys.</p>
       </div>
     {/if}

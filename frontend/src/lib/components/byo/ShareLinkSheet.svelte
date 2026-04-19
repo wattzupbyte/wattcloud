@@ -19,7 +19,7 @@
   import { quintOut } from 'svelte/easing';
   import { getContext } from 'svelte';
   import type { DataProvider, FileEntry, ShareVariant, ShareEntry } from '../../byo/DataProvider';
-  import type { StorageProvider } from '@secure-cloud/byo';
+  import type { StorageProvider } from '@wattcloud/sdk';
   import { SHARE_EXPLAINER_ITEMS, SHARE_EXPLAINER_HEADER } from '../../byo/copy/share-explainer';
   import ShieldCheck from 'phosphor-svelte/lib/ShieldCheck';
   import Link from 'phosphor-svelte/lib/Link';
@@ -79,7 +79,7 @@
     { id: 'A',  label: 'Public',    icon: Globe,        desc: 'Key in link fragment' },
     { id: 'A+', label: 'Password',  icon: Lock,         desc: 'Argon2id-protected' },
     { id: 'B1', label: 'Timed',     icon: Clock,        desc: 'Presigned URL', requiresPresign: true },
-    { id: 'B2', label: 'Relayed',   icon: UploadSimple, desc: 'Via SecureCloud relay' },
+    { id: 'B2', label: 'Relayed',   icon: UploadSimple, desc: 'Via Wattcloud relay' },
   ];
 
   const ttlOptions = [
@@ -271,7 +271,7 @@
             </div>
           </div>
           {#if selectedVariant === 'B2'}
-            <p class="form-hint">Your encrypted file will be uploaded to SecureCloud's relay so recipients without provider access can still download it. The relay never sees the encryption key.</p>
+            <p class="form-hint">Your encrypted file will be uploaded to Wattcloud's relay so recipients without provider access can still download it. The relay never sees the encryption key.</p>
           {/if}
         {/if}
 

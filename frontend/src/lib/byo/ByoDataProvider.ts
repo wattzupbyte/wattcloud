@@ -23,11 +23,11 @@
  * See BYO_PLAN §6.1, §3.2 (OAuth), §4.5 (offline).
  */
 
-import type { StorageProvider } from '@secure-cloud/byo';
-import { UnauthorizedError, ProviderError, acquireRelayCookie, recordEvent, addShareRelayBandwidth } from '@secure-cloud/byo';
-import { ByoUploadStream } from '@secure-cloud/byo';
-import { ByoDownloadStream } from '@secure-cloud/byo';
-import * as byoWorker from '@secure-cloud/byo';
+import type { StorageProvider } from '@wattcloud/sdk';
+import { UnauthorizedError, ProviderError, acquireRelayCookie, recordEvent, addShareRelayBandwidth } from '@wattcloud/sdk';
+import { ByoUploadStream } from '@wattcloud/sdk';
+import { ByoDownloadStream } from '@wattcloud/sdk';
+import * as byoWorker from '@wattcloud/sdk';
 import type {
   DataProvider,
   FileEntry,

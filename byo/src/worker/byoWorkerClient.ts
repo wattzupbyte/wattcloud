@@ -620,7 +620,7 @@ type WasmSftpModule = {
 };
 
 async function wasm(): Promise<WasmSftpModule> {
-  return (await import('secure-cloud-wasm')) as unknown as WasmSftpModule;
+  return (await import('@wattcloud/wasm')) as unknown as WasmSftpModule;
 }
 
 /** Store an SFTP password in the main-thread WASM heap. Returns an opaque handle. */

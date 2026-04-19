@@ -1,8 +1,8 @@
 <script lang="ts">
   import { getContext, onMount } from 'svelte';
   import type { DataProvider, StorageUsage } from '../../byo/DataProvider';
-  import type { StorageProvider } from '@secure-cloud/byo';
-  import * as byoWorker from '@secure-cloud/byo';
+  import type { StorageProvider } from '@wattcloud/sdk';
+  import * as byoWorker from '@wattcloud/sdk';
   import {
     getDb,
     getVaultSessionId,

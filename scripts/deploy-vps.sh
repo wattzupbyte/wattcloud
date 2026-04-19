@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy-vps.sh — Deploy Secure Cloud to a bare Ubuntu 22.04+ VPS
+# deploy-vps.sh — Deploy Wattcloud to a bare Ubuntu 22.04+ VPS
 # Idempotent: safe to run multiple times.
 # =============================================================================
 set -euo pipefail
@@ -233,7 +233,7 @@ sed -i "s/^#\?Port .*/Port $SSH_PORT/" /etc/ssh/sshd_config
 # PermitRootLogin and PasswordAuthentication are intentionally NOT set via sed
 # on the main file — the drop-in wins and there is no stale conflicting value.
 mkdir -p /etc/ssh/sshd_config.d
-cat > /etc/ssh/sshd_config.d/99-secure-cloud.conf <<SSHD
+cat > /etc/ssh/sshd_config.d/99-wattcloud.conf <<SSHD
 # Managed by deploy-vps.sh — do not edit manually
 PermitRootLogin no
 PasswordAuthentication no
@@ -248,7 +248,7 @@ X11Forwarding no
 AllowAgentForwarding no
 SSHD
 
-sshd -t || die "sshd config test failed — check /etc/ssh/sshd_config.d/99-secure-cloud.conf"
+sshd -t || die "sshd config test failed — check /etc/ssh/sshd_config.d/99-wattcloud.conf"
 systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null
 ok "SSH hardened (port=$SSH_PORT, ed25519-only, appuser-only)."
 
@@ -405,8 +405,8 @@ MSMTPRC
   sed -i "s|^sender.*|sender    = $ALERT_FROM|" /etc/fail2ban/jail.local
   systemctl restart fail2ban 2>/dev/null || true
 
-  echo "Secure Cloud alert relay configured on $(hostname) at $(date -u)" \
-    | mail -s "SecureCloud: msmtp relay test on $(hostname)" "$ALERT_EMAIL" 2>/dev/null \
+  echo "Wattcloud alert relay configured on $(hostname) at $(date -u)" \
+    | mail -s "Wattcloud: msmtp relay test on $(hostname)" "$ALERT_EMAIL" 2>/dev/null \
     && ok "msmtp configured; test mail sent to $ALERT_EMAIL." \
     || warn "msmtp configured but test mail failed — check relay credentials in /etc/msmtprc."
   MSMTP_CONFIGURED=1
@@ -422,17 +422,17 @@ info "Installing AIDE and rkhunter..."
 apt-get install -y -qq aide rkhunter > /dev/null
 
 # Store ALERT_EMAIL for use by cron scripts
-cat > /etc/secure-cloud-deploy.conf <<DEPLOYCONF
+cat > /etc/wattcloud-deploy.conf <<DEPLOYCONF
 # Written by deploy-vps.sh — used by cron alert scripts
 ALERT_EMAIL=$ALERT_EMAIL
 DEPLOYCONF
-chmod 644 /etc/secure-cloud-deploy.conf
+chmod 644 /etc/wattcloud-deploy.conf
 
 # Daily cron: mail ONLY when aide finds changes (exit non-zero means diff found)
 cat > /etc/cron.daily/aide-check <<'AIDECRON'
 #!/bin/sh
 set -eu
-. /etc/secure-cloud-deploy.conf 2>/dev/null || ALERT_EMAIL=root
+. /etc/wattcloud-deploy.conf 2>/dev/null || ALERT_EMAIL=root
 out=$(mktemp)
 trap 'rm -f "$out"' EXIT
 if ! aide --check > "$out" 2>&1; then
@@ -476,7 +476,7 @@ fi
 cat > /etc/cron.weekly/aide-golden-check <<'AIDEGOLDEN'
 #!/bin/sh
 set -eu
-. /etc/secure-cloud-deploy.conf 2>/dev/null || ALERT_EMAIL=root
+. /etc/wattcloud-deploy.conf 2>/dev/null || ALERT_EMAIL=root
 [ -f /var/lib/aide/aide.db.golden ] || exit 0
 # Find the AIDE config file (location varies by distro)
 AIDE_CONF=""
@@ -515,14 +515,14 @@ ok "rkhunter configured (daily scan; alerts → $ALERT_EMAIL)."
 # =========================================================================
 # 10. Bare git repo + post-receive hook for push-to-deploy CD
 # =========================================================================
-info "Setting up bare git repo for CD at /home/appuser/secure-cloud.git..."
-if [ ! -d /home/appuser/secure-cloud.git ]; then
-  sudo -u appuser git init --bare /home/appuser/secure-cloud.git
+info "Setting up bare git repo for CD at /home/appuser/wattcloud.git..."
+if [ ! -d /home/appuser/wattcloud.git ]; then
+  sudo -u appuser git init --bare /home/appuser/wattcloud.git
   ok "Bare repo initialised."
 else
   ok "Bare repo already exists."
 fi
-chmod 700 /home/appuser/secure-cloud.git
+chmod 700 /home/appuser/wattcloud.git
 
 # Configure git signing infrastructure for appuser — global config
 sudo -u appuser git config --global gpg.format ssh
@@ -531,8 +531,8 @@ sudo -u appuser git config --global gpg.ssh.allowedSignersFile /home/appuser/.co
 # Also set on the bare repo directly so post-receive verify-commit works even if
 # appuser's global config is absent or misconfigured (P1-8: GIT_SSH_ALLOWED_SIGNERS
 # env var is not recognised by git; repo-level config is authoritative).
-git --git-dir=/home/appuser/secure-cloud.git config gpg.format ssh
-git --git-dir=/home/appuser/secure-cloud.git config gpg.ssh.allowedSignersFile /home/appuser/.config/git/allowed_signers
+git --git-dir=/home/appuser/wattcloud.git config gpg.format ssh
+git --git-dir=/home/appuser/wattcloud.git config gpg.ssh.allowedSignersFile /home/appuser/.config/git/allowed_signers
 
 install -d -m 755 -o appuser -g appuser /home/appuser/.config/git
 
@@ -546,7 +546,7 @@ fi
 
 # Install post-receive hook if the template exists
 HOOK_SRC="$APP_DIR/scripts/post-receive.sh"
-HOOK_DST=/home/appuser/secure-cloud.git/hooks/post-receive
+HOOK_DST=/home/appuser/wattcloud.git/hooks/post-receive
 if [ -f "$HOOK_SRC" ]; then
   install -m 755 -o appuser -g appuser "$HOOK_SRC" "$HOOK_DST"
   ok "post-receive hook installed."
@@ -556,7 +556,7 @@ else
 fi
 
 # Write CD config for origin reconcile (configurable; defaults to origin/main)
-CD_CONF=/home/appuser/.secure-cloud-cd.conf
+CD_CONF=/home/appuser/.wattcloud-cd.conf
 if [ ! -f "$CD_CONF" ]; then
   cat > "$CD_CONF" <<'CDCONF'
 # CD configuration — edited by operator to point to the upstream remote.
@@ -577,29 +577,29 @@ if [ -z "$ORIGIN_URL" ] && [ -t 0 ]; then
   echo ""
   echo "GitHub repo URL for CD origin reconcile gate (required)."
   echo "The hook verifies every pushed SHA is an ancestor of this remote before deploying."
-  printf "  URL (e.g. https://github.com/you/secure-cloud.git): "
+  printf "  URL (e.g. https://github.com/wattzupbyte/wattcloud.git): "
   read -r ORIGIN_URL
 fi
 
 if [ -n "$ORIGIN_URL" ]; then
-  if git --git-dir=/home/appuser/secure-cloud.git remote get-url origin > /dev/null 2>&1; then
-    git --git-dir=/home/appuser/secure-cloud.git remote set-url origin "$ORIGIN_URL"
+  if git --git-dir=/home/appuser/wattcloud.git remote get-url origin > /dev/null 2>&1; then
+    git --git-dir=/home/appuser/wattcloud.git remote set-url origin "$ORIGIN_URL"
     ok "Bare repo origin updated to $ORIGIN_URL."
   else
-    git --git-dir=/home/appuser/secure-cloud.git remote add origin "$ORIGIN_URL"
+    git --git-dir=/home/appuser/wattcloud.git remote add origin "$ORIGIN_URL"
     ok "Bare repo origin added: $ORIGIN_URL."
   fi
-  chown -R appuser:appuser /home/appuser/secure-cloud.git
+  chown -R appuser:appuser /home/appuser/wattcloud.git
 else
   warn "ORIGIN_URL not set. The post-receive CD hook will fail-closed on every push."
-  warn "Add origin manually: git -C /home/appuser/secure-cloud.git remote add origin <URL>"
+  warn "Add origin manually: git -C /home/appuser/wattcloud.git remote add origin <URL>"
   warn "Or re-run deploy-vps.sh with ORIGIN_URL env var."
 fi
 
 # =========================================================================
 # 11. PATH persistence — cargo + wasm-pack for CD hook and appuser sessions
 # =========================================================================
-cat > /etc/profile.d/secure-cloud.sh <<'PROFILE'
+cat > /etc/profile.d/wattcloud.sh <<'PROFILE'
 # Added by deploy-vps.sh
 export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
 PROFILE
@@ -845,7 +845,7 @@ fi
 # =========================================================================
 echo ""
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN} Secure Cloud BYO deployed!${NC}"
+echo -e "${GREEN} Wattcloud BYO deployed!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "  BYO domain:   https://$BYO_DOMAIN"
@@ -855,12 +855,12 @@ echo "  Alert email:  $ALERT_EMAIL"
 echo "  msmtp:        $([ "$MSMTP_CONFIGURED" -eq 1 ] && echo "configured (from: ${ALERT_FROM})" || echo "NOT configured (journal-only alerts)")"
 echo "  AIDE:         $([ -f /var/lib/aide/aide.db ] && echo "baseline ready" || echo "baseline pending — run aideinit")"
 echo "  AIDE golden:  $([ -f /var/lib/aide/aide.db.golden ] && echo "saved" || echo "pending")"
-echo "  CD bare repo: /home/appuser/secure-cloud.git"
-echo "  CD origin:    $(git --git-dir=/home/appuser/secure-cloud.git remote get-url origin 2>/dev/null || echo "NOT set — hook will fail-closed")"
-echo "  CD hook:      $([ -f /home/appuser/secure-cloud.git/hooks/post-receive ] && echo "installed" || echo "NOT installed — re-run after adding scripts/post-receive.sh")"
+echo "  CD bare repo: /home/appuser/wattcloud.git"
+echo "  CD origin:    $(git --git-dir=/home/appuser/wattcloud.git remote get-url origin 2>/dev/null || echo "NOT set — hook will fail-closed")"
+echo "  CD hook:      $([ -f /home/appuser/wattcloud.git/hooks/post-receive ] && echo "installed" || echo "NOT installed — re-run after adding scripts/post-receive.sh")"
 echo ""
 echo -e "${YELLOW}On your dev machine — add the VPS remote:${NC}"
-echo "  git remote add vps ssh://appuser@<VPS-IP>:$SSH_PORT/home/appuser/secure-cloud.git"
+echo "  git remote add vps ssh://appuser@<VPS-IP>:$SSH_PORT/home/appuser/wattcloud.git"
 echo ""
 echo -e "${YELLOW}Recommended ~/.ssh/config entry (copy to dev machine):${NC}"
 cat <<SSHCONFIG

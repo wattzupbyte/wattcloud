@@ -16,9 +16,9 @@
  * derived inside WASM; plaintext SQLite bytes never touch IndexedDB.
  */
 
-import type { StorageProvider, ProviderConfig, ProviderType } from '@secure-cloud/byo';
-import { ConflictError, recordEvent, classifyErr, bucketLog2, SftpProvider, getShareRelayBandwidthAndReset } from '@secure-cloud/byo';
-import * as byoWorker from '@secure-cloud/byo';
+import type { StorageProvider, ProviderConfig, ProviderType } from '@wattcloud/sdk';
+import { ConflictError, recordEvent, classifyErr, bucketLog2, SftpProvider, getShareRelayBandwidthAndReset } from '@wattcloud/sdk';
+import * as byoWorker from '@wattcloud/sdk';
 import { runMigrations, providerDisplayName } from './VaultMigration';
 import type { ProviderMeta } from './stores/vaultStore';
 import {
@@ -1219,7 +1219,7 @@ async function initializeProviderFromConfig(
 ): Promise<StorageProvider | null> {
   try {
     const config = JSON.parse(entry.config_json) as ProviderConfig;
-    const { initializeProvider } = await import('@secure-cloud/byo');
+    const { initializeProvider } = await import('@wattcloud/sdk');
     return await initializeProvider(entry.provider_type as any, { ...config, providerId: entry.provider_id } as any);
   } catch {
     return null;

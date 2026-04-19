@@ -10,8 +10,8 @@
    * - shard is encrypted with non-extractable CryptoKey before IndexedDB storage
    */
   import { createEventDispatcher } from 'svelte';
-  import type { StorageProvider } from '@secure-cloud/byo';
-  import * as byoWorker from '@secure-cloud/byo';
+  import type { StorageProvider } from '@wattcloud/sdk';
+  import * as byoWorker from '@wattcloud/sdk';
   import { bytesToBase64, base64ToBytes, MANIFEST_FILE, VAULT_BODY_PATH_PREFIX } from '../../byo/VaultLifecycle';
   import { generateDeviceCryptoKey, setDeviceRecord } from '../../byo/DeviceKeyStore';
   import { vaultStore } from '../../byo/stores/vaultStore';
@@ -376,7 +376,7 @@
       <h2 class="step-title">Create your vault passphrase</h2>
       <p class="step-sub">
         This passphrase protects your vault. Choose something long and memorable —
-        you'll need it every time you open SecureCloud on this device.
+        you'll need it every time you open Wattcloud on this device.
       </p>
       <p class="zk-disclaimer">
         Your passphrase never leaves this device. Forgetting it and losing your recovery key means permanent data loss — we cannot reset this.

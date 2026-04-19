@@ -78,13 +78,13 @@ done
 # ---------------------------------------------------------------------------
 # WASM JS glue scan — grep the wasm-bindgen JS file for managed export names.
 #
-# `wasm-pack build --target web` produces frontend/src/pkg/secure_cloud_wasm.js
+# `wasm-pack build --target web` produces frontend/src/pkg/wattcloud_sdk_wasm.js
 # with each Rust #[wasm_bindgen] export as a named JS export.  These names are
 # preserved verbatim by the bindgen contract and survive wasm-opt / --release.
 # Scanning the JS glue is more reliable than grepping the raw .wasm binary
 # (where debug/module-path strings are stripped by wasm-opt in release builds).
 # ---------------------------------------------------------------------------
-JS_GLUE="$APP_DIR/frontend/src/pkg/secure_cloud_sdk_wasm.js"
+JS_GLUE="$APP_DIR/frontend/src/pkg/wattcloud_sdk_wasm.js"
 if [ -f "$JS_GLUE" ]; then
     echo "[VERIFY] Scanning WASM JS glue for managed Rust exports..."
     # These exports belong to features that are stripped in BYO WASM builds
@@ -102,7 +102,7 @@ if [ -f "$JS_GLUE" ]; then
         fi
     done
 else
-    echo -e "${YELLOW}[WARN]${NC} WASM JS glue not found at frontend/src/pkg/secure_cloud_wasm.js — skipping WASM scan."
+    echo -e "${YELLOW}[WARN]${NC} WASM JS glue not found at frontend/src/pkg/wattcloud_sdk_wasm.js — skipping WASM scan."
     echo -e "${YELLOW}[WARN]${NC} Run 'make byo-prod-wasm' before verify for a complete check."
 fi
 

@@ -14,9 +14,9 @@
    */
 
   import { setContext, onMount } from 'svelte';
-  import type { StorageProvider, ProviderType, ProviderConfig } from '@secure-cloud/byo';
-  import { createProvider, MockProvider, initStatsClient } from '@secure-cloud/byo';
-  import * as byoWorker from '@secure-cloud/byo';
+  import type { StorageProvider, ProviderType, ProviderConfig } from '@wattcloud/sdk';
+  import { createProvider, MockProvider, initStatsClient } from '@wattcloud/sdk';
+  import * as byoWorker from '@wattcloud/sdk';
   import { unlockVault, lockVault, getProviders, getPrimaryProviderId } from '../../byo/VaultLifecycle';
   import { ByoDataProvider } from '../../byo/ByoDataProvider';
   import { setByoSearchDataProvider } from '../../byo/stores/byoSearch';

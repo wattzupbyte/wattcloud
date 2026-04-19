@@ -10,8 +10,8 @@
    * - All slots (device + old passphrase) cleared before new keys are written
    */
   import { createEventDispatcher, onDestroy } from 'svelte';
-  import type { StorageProvider } from '@secure-cloud/byo';
-  import * as byoWorker from '@secure-cloud/byo';
+  import type { StorageProvider } from '@wattcloud/sdk';
+  import * as byoWorker from '@wattcloud/sdk';
   import { bytesToBase64, base64ToBytes } from '../../byo/VaultLifecycle';
   // recoverySessionId is stored between the verify and rekey steps
   let recoverySessionId: number | null = null;

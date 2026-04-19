@@ -347,17 +347,17 @@ info "Step 12: AIDE..."
 apt-get install -y -qq aide > /dev/null
 
 # Store ALERT_EMAIL for cron scripts
-cat > /etc/secure-cloud-deploy.conf <<DEPLOYCONF
+cat > /etc/wattcloud-deploy.conf <<DEPLOYCONF
 # Written by harden-dev.sh — used by cron alert scripts
 ALERT_EMAIL=$ALERT_EMAIL
 DEPLOYCONF
-chmod 644 /etc/secure-cloud-deploy.conf
+chmod 644 /etc/wattcloud-deploy.conf
 
 # Daily cron: mail only when aide finds changes (exit non-zero = diff found)
 cat > /etc/cron.daily/aide-check <<'AIDECRON'
 #!/bin/sh
 set -eu
-. /etc/secure-cloud-deploy.conf 2>/dev/null || ALERT_EMAIL=root
+. /etc/wattcloud-deploy.conf 2>/dev/null || ALERT_EMAIL=root
 out=$(mktemp)
 trap 'rm -f "$out"' EXIT
 if ! aide --check > "$out" 2>&1; then
@@ -396,7 +396,7 @@ fi
 cat > /etc/cron.weekly/aide-golden-check <<'AIDEGOLDEN'
 #!/bin/sh
 set -eu
-. /etc/secure-cloud-deploy.conf 2>/dev/null || ALERT_EMAIL=root
+. /etc/wattcloud-deploy.conf 2>/dev/null || ALERT_EMAIL=root
 [ -f /var/lib/aide/aide.db.golden ] || exit 0
 AIDE_CONF=""
 for f in /etc/aide/aide.conf /etc/aide.conf; do
@@ -443,7 +443,7 @@ apt-get install -y -qq chkrootkit > /dev/null
 cat > /etc/cron.daily/chkrootkit-check <<'CHKROOTKIT'
 #!/bin/sh
 set -eu
-. /etc/secure-cloud-deploy.conf 2>/dev/null || ALERT_EMAIL=root
+. /etc/wattcloud-deploy.conf 2>/dev/null || ALERT_EMAIL=root
 out=$(chkrootkit 2>&1) || true
 if echo "$out" | grep -qiE "INFECTED|WARNING"; then
     echo "$out" | mail -s "chkrootkit alert on $(hostname)" "$ALERT_EMAIL"
@@ -514,7 +514,7 @@ MSMTPRC
   systemctl restart fail2ban 2>/dev/null || true
 
   echo "harden-dev.sh msmtp test on $(hostname) at $(date -u)" \
-    | mail -s "SecureCloud dev: msmtp test on $(hostname)" "$ALERT_EMAIL" 2>/dev/null \
+    | mail -s "Wattcloud dev: msmtp test on $(hostname)" "$ALERT_EMAIL" 2>/dev/null \
     && ok "msmtp configured; test mail sent to $ALERT_EMAIL." \
     || warn "msmtp configured but test mail failed — check /etc/msmtprc."
   MSMTP_CONFIGURED=1

@@ -19,7 +19,7 @@ MAX_WAIT=90
 
 # Namespace the Compose project so volumes/networks are isolated from any real
 # deployment running on the same host.  -v in cleanup only destroys this project's
-# named volumes (byo-smoke-<pid>_byo-stats-data), never prod's secure-cloud_byo-stats-data.
+# named volumes (byo-smoke-<pid>_byo-stats-data), never prod's wattcloud_byo-stats-data.
 export COMPOSE_PROJECT_NAME="byo-smoke-$$"
 
 # The smoke overlay uses `!override` / `!reset null` (Compose ≥ 2.24) to:

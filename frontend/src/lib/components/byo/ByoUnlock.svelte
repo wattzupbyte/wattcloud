@@ -7,7 +7,7 @@
    * Handles rollback warnings and backup prompts from vaultStore.
    */
   import { createEventDispatcher } from 'svelte';
-  import type { StorageProvider } from '@secure-cloud/byo';
+  import type { StorageProvider } from '@wattcloud/sdk';
   import { unlockVault } from '../../byo/VaultLifecycle';
   import { vaultStore } from '../../byo/stores/vaultStore';
   import ByoPassphraseInput from './ByoPassphraseInput.svelte';

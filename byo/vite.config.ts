@@ -5,14 +5,14 @@ export default defineConfig({
   build: {
     lib: {
       entry: resolve(__dirname, 'src/index.ts'),
-      name: 'SecureCloudBYO',
+      name: 'WattcloudSDK',
       formats: ['es'],
       fileName: () => 'index.js',
     },
     rollupOptions: {
       external: (id: string) => {
-        // Don't bundle secure-cloud-wasm — it's loaded at runtime
-        return id === 'secure-cloud-wasm';
+        // Don't bundle @wattcloud/wasm — it's loaded at runtime
+        return id === '@wattcloud/wasm';
       },
     },
     sourcemap: true,
@@ -21,7 +21,7 @@ export default defineConfig({
   resolve: {
     alias: {
       // SDK WASM package — resolves to the built pkg directory
-      'secure-cloud-wasm': resolve(__dirname, '../sdk/sdk-wasm/pkg/secure_cloud_wasm.js'),
+      '@wattcloud/wasm': resolve(__dirname, '../sdk/sdk-wasm/pkg/secure_cloud_wasm.js'),
     },
   },
   worker: {

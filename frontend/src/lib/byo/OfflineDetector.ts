@@ -17,8 +17,8 @@
  *      otherwise falls back to getVersion(vault_manifest.sc).
  */
 
-import type { StorageProvider } from '@secure-cloud/byo';
-import { UnauthorizedError } from '@secure-cloud/byo';
+import type { StorageProvider } from '@wattcloud/sdk';
+import { UnauthorizedError } from '@wattcloud/sdk';
 import { vaultStore } from './stores/vaultStore';
 import type { ProviderMeta } from './stores/vaultStore';
 

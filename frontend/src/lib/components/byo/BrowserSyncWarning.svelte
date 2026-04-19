@@ -18,7 +18,7 @@
   <ul class="list">
     <li>Your vault is saved to your cloud provider (Google Drive, Dropbox, etc.).</li>
     <li>Closing this tab mid-save may leave an incomplete vault file.</li>
-    <li>SecureCloud will replay any unsaved changes on next open using the mutation journal.</li>
+    <li>Wattcloud will replay any unsaved changes on next open using the mutation journal.</li>
     <li>For best results, wait for the "Saved" indicator before closing.</li>
   </ul>
 

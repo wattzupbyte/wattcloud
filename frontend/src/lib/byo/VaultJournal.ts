@@ -13,8 +13,8 @@
  * See BYO_PLAN §4.2, §4.3.
  */
 
-import type { StorageProvider } from '@secure-cloud/byo';
-import * as byoWorker from '@secure-cloud/byo';
+import type { StorageProvider } from '@wattcloud/sdk';
+import * as byoWorker from '@wattcloud/sdk';
 import { bytesToBase64, base64ToBytes } from './base64';
 
 // ── Types ─────────────────────────────────────────────────────────────────────

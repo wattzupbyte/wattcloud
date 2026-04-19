@@ -401,7 +401,7 @@ async function initWasm(): Promise<void> {
 
   initPromise = (async () => {
     // Dynamic import — resolves to sdk-wasm pkg directory at build time
-    const wasmModule = await import('secure-cloud-wasm') as any;
+    const wasmModule = await import('@wattcloud/wasm') as any;
 
     init = wasmModule.default || wasmModule.init;
     V7StreamDecryptorWasm = wasmModule.V7StreamDecryptorWasm;

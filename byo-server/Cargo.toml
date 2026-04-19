@@ -3,6 +3,11 @@ name = "byo-server"
 version = "0.1.0"
 edition = "2021"
 
+# Standalone workspace — russh pulls ml-kem>=0.3.0-rc.6 which requires a newer
+# `kem` crate version than sdk-core's pinned 0.3.0-pre.0. Keeping byo-server in
+# its own workspace prevents cargo's resolver from colliding them.
+[workspace]
+
 [[bin]]
 name = "byo-server"
 path = "src/main.rs"

@@ -12,7 +12,7 @@
  */
 
 import { writable, derived, type Readable } from 'svelte/store';
-import type { ProviderType } from '@secure-cloud/byo';
+import type { ProviderType } from '@wattcloud/sdk';
 
 // ── Provider metadata ──────────────────────────────────────────────────────
 

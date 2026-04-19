@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# ci.sh — Local CI pipeline for Secure Cloud
+# ci.sh — Local CI pipeline for Wattcloud
 # Run manually or wire into a git hook (see bottom of file).
 # Excludes: /android
 #
@@ -408,8 +408,8 @@ fi
 #
 #   Post-receive hook (for a bare repo on the VPS):
 #     #!/bin/bash
-#     WORK_TREE=/opt/secure-cloud
-#     GIT_DIR=/opt/secure-cloud.git
+#     WORK_TREE=/opt/wattcloud
+#     GIT_DIR=/opt/wattcloud.git
 #     git --work-tree=$WORK_TREE --git-dir=$GIT_DIR checkout -f
 #     cd $WORK_TREE && ./scripts/ci.sh --mode byo && ./scripts/deploy.sh
 # =========================================================================

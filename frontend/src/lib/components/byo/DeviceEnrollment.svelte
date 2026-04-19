@@ -11,9 +11,9 @@
    * - All ephemeral keys cleared on destroy / error / mismatch
    */
   import { createEventDispatcher, onDestroy } from 'svelte';
-  import * as byoWorker from '@secure-cloud/byo';
-  import { acquireEnrollmentRelayCookie, evictEnrollmentRelayCookieCache } from '@secure-cloud/byo';
-  import type { StorageProvider } from '@secure-cloud/byo';
+  import * as byoWorker from '@wattcloud/sdk';
+  import { acquireEnrollmentRelayCookie, evictEnrollmentRelayCookieCache } from '@wattcloud/sdk';
+  import type { StorageProvider } from '@wattcloud/sdk';
   import { generateDeviceCryptoKey, setDeviceRecord } from '../../byo/DeviceKeyStore';
   import { unlockVault, getVaultSessionId, MANIFEST_FILE, bytesToBase64, base64ToBytes } from '../../byo/VaultLifecycle';
   import { vaultStore } from '../../byo/stores/vaultStore';
@@ -123,7 +123,7 @@
       typeof (payload as Record<string, unknown>).ch !== 'string' ||
       typeof (payload as Record<string, unknown>).pk !== 'string'
     ) {
-      error = 'Invalid QR code — not a SecureCloud enrollment code.';
+      error = 'Invalid QR code — not a Wattcloud enrollment code.';
       step = 'error';
       return;
     }

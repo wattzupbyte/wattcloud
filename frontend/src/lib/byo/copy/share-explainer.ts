@@ -18,7 +18,7 @@ export const SHARE_EXPLAINER_ITEMS: ExplainerItem[] = [
   {
     icon: 'ShieldCheck',
     heading: 'Your file stays encrypted.',
-    body: 'SecureCloud and your cloud provider only ever see scrambled ciphertext. The decryption key never leaves your device.',
+    body: 'Wattcloud and your cloud provider only ever see scrambled ciphertext. The decryption key never leaves your device.',
   },
   {
     icon: 'Link',

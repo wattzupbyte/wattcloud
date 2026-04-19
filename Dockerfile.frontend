@@ -8,7 +8,7 @@ RUN npm ci
 
 COPY frontend/ ./
 COPY sdk/sdk-wasm/pkg ./src/pkg
-# BYO package is imported by ByoApp.svelte via @secure-cloud/byo alias (../byo/src)
+# BYO package is imported by ByoApp.svelte via @wattcloud/sdk alias (../byo/src)
 COPY byo/ /byo/
 RUN cd /byo && npm ci --silent
 
