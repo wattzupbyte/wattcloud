@@ -1,0 +1,1100 @@
+<script lang="ts">
+  import { getContext, onMount } from 'svelte';
+  import type { DataProvider, StorageUsage } from '../../byo/DataProvider';
+  import type { StorageProvider } from '@secure-cloud/byo';
+  import * as byoWorker from '@secure-cloud/byo';
+  import {
+    getDb,
+    getVaultSessionId,
+    getVaultId,
+    getProvider,
+    saveVault,
+    markDirty,
+    bytesToBase64,
+    base64ToBytes,
+  } from '../../byo/VaultLifecycle';
+  import { getDeviceRecord } from '../../byo/DeviceKeyStore';
+  import { vaultStore } from '../../byo/stores/vaultStore';
+  import type { ProviderMeta } from '../../byo/stores/vaultStore';
+  import { queryRows } from '../../byo/ConflictResolver';
+  import ByoPassphraseInput from './ByoPassphraseInput.svelte';
+  import Argon2Progress from './Argon2Progress.svelte';
+  import Icon from '../Icons.svelte';
+  import ConfirmModal from '../ConfirmModal.svelte';
+  import ActiveSharesList from './ActiveSharesList.svelte';
+  import ProviderContextSheet from './ProviderContextSheet.svelte';
+  import AddProviderSheet from './AddProviderSheet.svelte';
+  import { byoSoundEnabled, setByoSoundEnabled, playSealThunk } from '../../byo/soundFx';
+
+  export let onBack: () => void;
+  export let onEnrollDevice: () => void;
+  export let onUseRecovery: (() => void) | undefined = undefined;
+
+  const dataProvider = getContext<DataProvider>('byo:dataProvider');
+
+  // ── Vault header byte offsets (vault_format.rs, v2 format) ───────────────
+  const SLOT_COUNT = 8;
+  const SLOT_SIZE = 125;
+  const DEVICE_SLOTS_OFFSET = 191;
+  const NUM_SLOTS_OFFSET = 190;
+  const HEADER_SIZE = 1227;
+  const HMAC_OFFSET = 1195;
+  const MASTER_SALT_OFFSET = 22;
+  const PASS_WRAP_IV_OFFSET = 70;
+  const PASS_WRAPPED_VAULT_KEY_OFFSET = 82;
+
+  // ── State ──────────────────────────────────────────────────────────────
+
+  // Devices
+  interface EnrolledDevice {
+    device_id: string;
+    device_name: string;
+    enrolled_at: string;
+  }
+  let enrolledDevices: EnrolledDevice[] = [];
+  let currentDeviceId = '';
+  let devicesLoading = true;
+
+  // Passphrase section
+  let passphraseExpanded = false;
+  let passphraseStep: 'input' | 'changing' | 'done' = 'input';
+  let argonDone = false;
+  let passphraseError = '';
+
+  // Sharing section
+  let sharesExpanded = false;
+
+  // Browser-sync warning toggle
+  let syncWarningAck = typeof localStorage !== 'undefined'
+    ? localStorage.getItem('sc-byo-sync-warning-ack') === '1'
+    : false;
+
+  // Provider context sheet
+  let contextProvider: ProviderMeta | null = null;
+  let showAddProvider = false;
+
+  // About
+  let storageUsage: StorageUsage | null = null;
+  let fileCount = 0;
+  let vaultVersion = '';
+  let vaultId = '';
+  let aboutLoading = true;
+  let downloadingBackup = false;
+  let backupError = '';
+
+  // Confirm modal
+  let confirmOpen = false;
+  let confirmTitle = '';
+  let confirmMessage = '';
+  let confirmAction: (() => Promise<void>) | null = null;
+  let confirmDanger = false;
+
+  // Error
+  let globalError = '';
+
+  onMount(async () => {
+    await loadDevices();
+    loadAbout(); // fire-and-forget; aboutLoading covers the spinner
+  });
+
+  async function loadDevices() {
+    devicesLoading = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const rows = queryRows(db, "SELECT value FROM vault_meta WHERE key = 'enrolled_devices'");
+      if (rows.length > 0) {
+        enrolledDevices = JSON.parse(rows[0]['value'] as string) as EnrolledDevice[];
+      }
+      const vaultHexId = getVaultId();
+      const record = await getDeviceRecord(vaultHexId);
+      currentDeviceId = record?.device_id ?? '';
+    } catch (e: any) {
+      globalError = e.message ?? 'Failed to load devices';
+    } finally {
+      devicesLoading = false;
+    }
+  }
+
+  async function loadAbout() {
+    aboutLoading = true;
+    try {
+      const db = getDb();
+      if (!db) return;
+      const countRows = queryRows(db, 'SELECT COUNT(*) as cnt FROM files');
+      fileCount = (countRows[0]?.['cnt'] as number) ?? 0;
+      const vRows = queryRows(db, "SELECT value FROM vault_meta WHERE key = 'vault_version'");
+      vaultVersion = (vRows[0]?.['value'] as string) ?? '—';
+      vaultId = getVaultId();
+      storageUsage = await dataProvider.getStorageUsage();
+    } catch (e: any) {
+      globalError = e.message ?? 'Failed to load vault info';
+    } finally {
+      aboutLoading = false;
+    }
+  }
+
+  // ── Device revocation ──────────────────────────────────────────────────
+
+  function confirmRevokeDevice(device: EnrolledDevice) {
+    if (device.device_id === currentDeviceId) {
+      globalError = 'Cannot revoke the current device.';
+      return;
+    }
+    showConfirm(
+      'Revoke Device',
+      `Revoke access for "${device.device_name}"? This device will no longer be able to unlock the vault.`,
+      () => doRevokeDevice(device.device_id),
+      true,
+    );
+  }
+
+  async function doRevokeDevice(deviceId: string) {
+    const provider = getProvider();
+    const vaultSessionId = getVaultSessionId();
+    if (!provider || vaultSessionId === null) { globalError = 'Vault not unlocked'; return; }
+
+    try {
+      const { data: vaultBytes } = await provider.download('SecureCloud/vault_manifest.sc');
+      const header = new Uint8Array(vaultBytes.slice(0, HEADER_SIZE));
+
+      for (let i = 0; i < SLOT_COUNT; i++) {
+        const offset = DEVICE_SLOTS_OFFSET + i * SLOT_SIZE;
+        if (header[offset] !== 0x01) continue;
+        const slotDeviceId = Array.from(header.slice(offset + 1, offset + 17))
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+        if (slotDeviceId === deviceId) {
+          header.fill(0, offset, offset + SLOT_SIZE);
+          if (header[NUM_SLOTS_OFFSET] > 0) header[NUM_SLOTS_OFFSET]--;
+          break;
+        }
+      }
+
+      const headerPrefixB64 = bytesToBase64(header.slice(0, HMAC_OFFSET));
+      const { hmac } = await byoWorker.Worker.byoVaultComputeHeaderHmac(vaultSessionId, headerPrefixB64);
+      header.set(base64ToBytes(hmac), HMAC_OFFSET);
+
+      const body = vaultBytes.slice(HEADER_SIZE);
+      const assembled = new Uint8Array(header.length + body.length);
+      assembled.set(header, 0);
+      assembled.set(body, header.length);
+      await provider.upload('SecureCloud/vault_manifest.sc', 'vault_manifest.sc', assembled);
+
+      const db = getDb();
+      if (db) {
+        const updated = enrolledDevices.filter((d) => d.device_id !== deviceId);
+        db.run(
+          "UPDATE vault_meta SET value = ? WHERE key = 'enrolled_devices'",
+          [JSON.stringify(updated)],
+        );
+        markDirty();
+        enrolledDevices = updated;
+      }
+    } catch (e: any) {
+      globalError = e.message ?? 'Revoke failed';
+    }
+  }
+
+  // ── Passphrase change ──────────────────────────────────────────────────
+
+  async function handlePassphraseSubmit(event: CustomEvent<string>) {
+    const newPassphrase = event.detail;
+    const provider = getProvider();
+    const vaultSessionId = getVaultSessionId();
+    if (!provider || vaultSessionId === null) { passphraseError = 'Vault not unlocked'; return; }
+
+    passphraseStep = 'changing';
+    argonDone = false;
+    passphraseError = '';
+
+    try {
+      const passSlot = await byoWorker.Worker.byoVaultRewrapWithPassphrase(
+        vaultSessionId,
+        newPassphrase,
+        131072, 3, 4,
+      );
+      argonDone = true;
+
+      const { data: vaultBytes } = await provider.download('SecureCloud/vault_manifest.sc');
+      const header = new Uint8Array(vaultBytes.slice(0, HEADER_SIZE));
+      header.set(base64ToBytes(passSlot.masterSaltB64), MASTER_SALT_OFFSET);
+      header.set(base64ToBytes(passSlot.wrapIvB64), PASS_WRAP_IV_OFFSET);
+      header.set(base64ToBytes(passSlot.wrappedKeyB64), PASS_WRAPPED_VAULT_KEY_OFFSET);
+
+      const headerPrefixB64 = bytesToBase64(header.slice(0, HMAC_OFFSET));
+      const { hmac } = await byoWorker.Worker.byoVaultComputeHeaderHmac(vaultSessionId, headerPrefixB64);
+      header.set(base64ToBytes(hmac), HMAC_OFFSET);
+
+      const body = vaultBytes.slice(HEADER_SIZE);
+      const assembled = new Uint8Array(header.length + body.length);
+      assembled.set(header, 0);
+      assembled.set(body, header.length);
+      await provider.upload('SecureCloud/vault_manifest.sc', 'vault_manifest.sc', assembled);
+
+      passphraseStep = 'done';
+    } catch (e: any) {
+      passphraseError = e.message ?? 'Passphrase change failed';
+      passphraseStep = 'input';
+    }
+  }
+
+  // ── Backup download ────────────────────────────────────────────────────
+
+  async function handleDownloadBackup() {
+    const provider = getProvider();
+    if (!provider) { backupError = 'Vault not unlocked'; return; }
+
+    downloadingBackup = true;
+    backupError = '';
+    try {
+      const { data } = await provider.download('SecureCloud/vault_manifest.sc');
+      const blob = new Blob([data as unknown as BlobPart], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `vault-manifest-backup-${new Date().toISOString().slice(0, 10)}.sc`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      backupError = e.message ?? 'Download failed';
+    } finally {
+      downloadingBackup = false;
+    }
+  }
+
+  // ── Confirm modal helpers ──────────────────────────────────────────────
+
+  function showConfirm(
+    title: string,
+    message: string,
+    action: () => Promise<void>,
+    danger = false,
+  ) {
+    confirmTitle = title;
+    confirmMessage = message;
+    confirmAction = action;
+    confirmDanger = danger;
+    confirmOpen = true;
+  }
+
+  async function handleConfirm() {
+    confirmOpen = false;
+    if (confirmAction) {
+      try {
+        await confirmAction();
+      } catch (e: any) {
+        globalError = e.message ?? 'Operation failed';
+      }
+      confirmAction = null;
+    }
+  }
+
+  // ── Provider helpers ───────────────────────────────────────────────────
+
+  function providerIcon(type: string): string {
+    const icons: Record<string, string> = {
+      gdrive: 'G', dropbox: 'D', onedrive: 'O', webdav: 'W', sftp: 'S', box: 'B', pcloud: 'P', s3: 'S3',
+    };
+    return icons[type] ?? '?';
+  }
+
+  function statusLabel(status: ProviderMeta['status']): string {
+    const labels: Record<string, string> = {
+      connected: 'Connected', syncing: 'Syncing', offline: 'Offline',
+      offline_os: 'No network', error: 'Error', unauthorized: 'Token expired',
+    };
+    return labels[status] ?? status;
+  }
+
+  function statusDotColor(status: ProviderMeta['status']): string {
+    if (status === 'connected') return 'var(--accent, #2EB860)';
+    if (status === 'syncing') return 'var(--accent-warm, #E0A320)';
+    if (status === 'error' || status === 'unauthorized') return 'var(--danger, #D64545)';
+    return 'var(--text-disabled, #616161)';
+  }
+
+  function statusTooltip(p: ProviderMeta): string {
+    if (p.status === 'connected' || p.status === 'syncing') return '';
+    if (p.status === 'offline_os') return 'Reconnect when your network is back.';
+    if (p.status === 'unauthorized') {
+      const agoMs = p.lastPingTs ? Date.now() - p.lastPingTs : 0;
+      const agoH = Math.floor(agoMs / 3_600_000);
+      return agoH > 0 ? `Token expired ${agoH}h ago — tap to reconnect.` : 'Token expired — tap to reconnect.';
+    }
+    if (p.status === 'offline' && p.failCount > 0) {
+      // Compute approximate next retry delay (1.5^failCount, capped at 5 min).
+      const backoffFactor = Math.min(p.failCount, 6);
+      const intervalMs = Math.min(30_000 * Math.pow(1.5, backoffFactor), 300_000);
+      const elapsed = p.lastPingTs ? Date.now() - p.lastPingTs : 0;
+      const remainingMs = Math.max(0, intervalMs - elapsed);
+      if (remainingMs < 10_000) return 'Retrying…';
+      const remainingSec = Math.round(remainingMs / 1_000);
+      return `Retry in ${remainingSec}s (attempt ${p.failCount}).`;
+    }
+    return '';
+  }
+
+  function toggleSyncWarning() {
+    syncWarningAck = !syncWarningAck;
+    if (syncWarningAck) {
+      localStorage.setItem('sc-byo-sync-warning-ack', '1');
+    } else {
+      localStorage.removeItem('sc-byo-sync-warning-ack');
+    }
+  }
+
+  function toggleSounds() {
+    const next = !$byoSoundEnabled;
+    setByoSoundEnabled(next);
+    // On enable: audition the thunk so the user hears what they signed up
+    // for and the AudioContext unlocks under this click gesture.
+    if (next) playSealThunk();
+  }
+
+  // ── Formatters ─────────────────────────────────────────────────────────
+
+  function formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+
+  function formatDate(iso: string): string {
+    try {
+      return new Date(iso).toLocaleDateString(undefined, {
+        month: 'short', day: 'numeric', year: 'numeric',
+      });
+    } catch {
+      return iso;
+    }
+  }
+</script>
+
+<div class="byo-settings">
+  <div class="settings-header">
+    <button class="back-btn" on:click={onBack} aria-label="Back">
+      <Icon name="arrowLeft" size={20} />
+    </button>
+    <h2 class="settings-title">Settings</h2>
+  </div>
+
+  {#if globalError}
+    <div class="error-banner">
+      {globalError}
+      <button class="dismiss-btn" on:click={() => globalError = ''}>
+        <Icon name="close" size={14} />
+      </button>
+    </div>
+  {/if}
+
+  <div class="settings-scroll">
+
+    <!-- ── Devices ── -->
+    <div class="settings-group">
+      <h3 class="group-title">Devices</h3>
+      <div class="group-body">
+        <button class="settings-row" on:click={onEnrollDevice}>
+          <span class="row-icon"><Icon name="plus" size={16} /></span>
+          <span class="row-label">Enroll New Device</span>
+          <span class="row-chevron"><Icon name="chevronRight" size={14} /></span>
+        </button>
+        {#if devicesLoading}
+          <div class="loading-inline"><div class="spinner-sm"></div></div>
+        {:else if enrolledDevices.length === 0}
+          <p class="group-empty">No enrolled devices.</p>
+        {:else}
+          {#each enrolledDevices as device (device.device_id)}
+            <div class="device-row" class:current={device.device_id === currentDeviceId}>
+              <div class="device-icon-wrap"><Icon name="device" size={18} /></div>
+              <div class="device-info">
+                <span class="device-name">
+                  {device.device_name}
+                  {#if device.device_id === currentDeviceId}
+                    <span class="current-badge">This device</span>
+                  {/if}
+                </span>
+                <span class="device-meta">Enrolled {formatDate(device.enrolled_at)}</span>
+              </div>
+              {#if device.device_id !== currentDeviceId}
+                <button
+                  class="revoke-btn"
+                  on:click={() => confirmRevokeDevice(device)}
+                  aria-label="Revoke {device.device_name}"
+                >Revoke</button>
+              {/if}
+            </div>
+          {/each}
+        {/if}
+      </div>
+    </div>
+
+    <!-- ── Providers ── -->
+    <div class="settings-group">
+      <h3 class="group-title">Providers</h3>
+      <div class="group-body">
+        {#each $vaultStore.providers as p (p.providerId)}
+          <button
+            class="settings-row"
+            on:click={() => contextProvider = p}
+            aria-label="Manage {p.displayName}"
+            title={statusTooltip(p)}
+          >
+            <span class="prow-icon" aria-hidden="true">{providerIcon(p.type)}</span>
+            <span class="row-label">
+              {p.displayName}
+              {#if p.isPrimary}<span class="primary-badge">Primary</span>{/if}
+            </span>
+            {#if p.status !== 'offline_os'}
+              <span class="status-dot" style:background-color={statusDotColor(p.status)} aria-hidden="true"></span>
+              <span class="status-label" style:color={statusDotColor(p.status)}>{statusLabel(p.status)}</span>
+            {/if}
+            <span class="row-chevron"><Icon name="chevronRight" size={14} /></span>
+          </button>
+        {/each}
+        {#if $vaultStore.providers.some((p) => p.status === 'offline_os')}
+          <div class="offline-os-banner" role="status">
+            You're offline — changes will sync when your network is back.
+          </div>
+        {/if}
+        {#if $vaultStore.providers.length === 0}
+          <p class="group-empty">No providers connected.</p>
+        {/if}
+        <button class="settings-row" on:click={() => showAddProvider = true}>
+          <span class="row-icon"><Icon name="plus" size={16} /></span>
+          <span class="row-label">Add another provider</span>
+          <span class="row-chevron"><Icon name="chevronRight" size={14} /></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- ── Sharing ── -->
+    <div class="settings-group">
+      <h3 class="group-title">Sharing</h3>
+      <div class="group-body">
+        <button
+          class="settings-row"
+          on:click={() => sharesExpanded = !sharesExpanded}
+          aria-expanded={sharesExpanded}
+        >
+          <span class="row-icon"><Icon name="share" size={16} /></span>
+          <span class="row-label">Active shares</span>
+          <span class="row-chevron" class:rotated={sharesExpanded}><Icon name="chevronRight" size={14} /></span>
+        </button>
+        {#if sharesExpanded}
+          <div class="row-content">
+            <ActiveSharesList />
+          </div>
+        {/if}
+      </div>
+    </div>
+
+    <!-- ── Security ── -->
+    <div class="settings-group">
+      <h3 class="group-title">Security</h3>
+      <div class="group-body">
+        <!-- Change Passphrase -->
+        <button
+          class="settings-row"
+          on:click={() => { passphraseExpanded = !passphraseExpanded; passphraseStep = 'input'; passphraseError = ''; }}
+          aria-expanded={passphraseExpanded}
+        >
+          <span class="row-icon"><Icon name="lock" size={16} /></span>
+          <span class="row-label">Change Passphrase</span>
+          <span class="row-chevron" class:rotated={passphraseExpanded}><Icon name="chevronRight" size={14} /></span>
+        </button>
+        {#if passphraseExpanded}
+          <div class="row-content">
+            {#if passphraseStep === 'input'}
+              {#if passphraseError}
+                <div class="inline-error">{passphraseError}</div>
+              {/if}
+              <p class="row-desc">Enter a new passphrase. All enrolled devices will continue to work.</p>
+              <ByoPassphraseInput mode="change" on:submit={handlePassphraseSubmit} />
+            {:else if passphraseStep === 'changing'}
+              <Argon2Progress done={argonDone} />
+              {#if argonDone}<p class="status-msg">Updating vault…</p>{/if}
+            {:else if passphraseStep === 'done'}
+              <div class="success-card">
+                <Icon name="check" size={20} />
+                <div>
+                  <p class="success-title">Passphrase updated</p>
+                  <p class="success-desc">Your vault is now protected by the new passphrase.</p>
+                </div>
+              </div>
+              <button class="primary-btn" on:click={() => passphraseStep = 'input'}>Change Again</button>
+            {/if}
+          </div>
+        {/if}
+
+        <!-- Rotate Recovery Key -->
+        {#if onUseRecovery}
+          <button class="settings-row" on:click={onUseRecovery}>
+            <span class="row-icon"><Icon name="key" size={16} /></span>
+            <span class="row-label">Rotate Recovery Key</span>
+            <span class="row-chevron"><Icon name="chevronRight" size={14} /></span>
+          </button>
+        {:else}
+          <div class="settings-row settings-row-disabled" title="Recovery key rotation is available from the login screen">
+            <span class="row-icon"><Icon name="key" size={16} /></span>
+            <span class="row-label">Rotate Recovery Key</span>
+            <span class="row-value">Log out to use</span>
+          </div>
+        {/if}
+
+        <!-- Browser-sync warning toggle -->
+        <label class="settings-row settings-row-label">
+          <span class="row-icon"><Icon name="warning" size={16} /></span>
+          <span class="row-label">Browser Sync Warning</span>
+          <span class="row-desc-inline">Shown before saving if acknowledgement expired</span>
+          <button
+            class="toggle-btn"
+            class:active={syncWarningAck}
+            role="switch"
+            aria-checked={syncWarningAck}
+            on:click={toggleSyncWarning}
+          >
+            <span class="toggle-knob"></span>
+          </button>
+        </label>
+
+        <!-- Vault sounds toggle (§29.6 — opt-in audio identity) -->
+        <label class="settings-row settings-row-label">
+          <span class="row-icon"><Icon name="bell" size={16} /></span>
+          <span class="row-label">Vault sounds</span>
+          <span class="row-desc-inline">Soft click on unlock; thunk on seal</span>
+          <button
+            class="toggle-btn"
+            class:active={$byoSoundEnabled}
+            role="switch"
+            aria-checked={$byoSoundEnabled}
+            on:click={toggleSounds}
+          >
+            <span class="toggle-knob"></span>
+          </button>
+        </label>
+      </div>
+    </div>
+
+    <!-- ── About ── -->
+    <div class="settings-group">
+      <h3 class="group-title">About</h3>
+      <div class="group-body">
+        {#if aboutLoading}
+          <div class="loading-inline"><div class="spinner-sm"></div></div>
+        {:else}
+          <div class="info-row">
+            <span class="info-label">Vault ID</span>
+            <span class="info-value mono">{vaultId ? vaultId.slice(0, 16) + '…' : '—'}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Vault Version</span>
+            <span class="info-value">{vaultVersion}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">File Count</span>
+            <span class="info-value">{fileCount.toLocaleString()}</span>
+          </div>
+          {#if storageUsage}
+            <div class="info-row">
+              <span class="info-label">Storage Used</span>
+              <span class="info-value">{formatBytes(storageUsage.used)}</span>
+            </div>
+            {#if storageUsage.quota}
+              <div class="info-row">
+                <span class="info-label">Quota</span>
+                <span class="info-value">{formatBytes(storageUsage.quota)}</span>
+              </div>
+            {/if}
+          {/if}
+        {/if}
+
+        <div class="about-actions">
+          <button
+            class="primary-btn"
+            on:click={handleDownloadBackup}
+            disabled={downloadingBackup}
+          >
+            <Icon name="download" size={14} />
+            {downloadingBackup ? 'Downloading…' : 'Download Vault Backup'}
+          </button>
+          {#if backupError}
+            <div class="inline-error">{backupError}</div>
+          {/if}
+          <p class="row-desc">
+            A vault backup is the encrypted vault_manifest.sc file. Restore it by selecting
+            the same provider and using your passphrase or recovery key.
+          </p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+{#if contextProvider}
+  <ProviderContextSheet
+    provider={contextProvider}
+    isOnlyProvider={$vaultStore.providers.length <= 1}
+    on:close={() => contextProvider = null}
+    on:change={() => { contextProvider = null; }}
+  />
+{/if}
+
+{#if showAddProvider}
+  <AddProviderSheet
+    on:added={() => showAddProvider = false}
+    on:close={() => showAddProvider = false}
+  />
+{/if}
+
+<ConfirmModal
+  isOpen={confirmOpen}
+  title={confirmTitle}
+  message={confirmMessage}
+  confirmText={confirmDanger ? 'Revoke' : 'Confirm'}
+  confirmClass={confirmDanger ? 'btn-danger' : 'btn-primary'}
+  on:confirm={handleConfirm}
+  on:cancel={() => { confirmOpen = false; confirmAction = null; }}
+/>
+
+<style>
+  .byo-settings {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .settings-header {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm, 8px);
+    padding: var(--sp-md, 16px);
+    border-bottom: 1px solid var(--border, #2E2E2E);
+    flex-shrink: 0;
+  }
+
+  .back-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    background: none;
+    border: 1px solid var(--border, #2E2E2E);
+    border-radius: var(--r-pill, 9999px);
+    color: var(--text-secondary, #999999);
+    cursor: pointer;
+    transition: all 150ms;
+  }
+  .back-btn:hover {
+    background: var(--bg-surface-hover, #2E2E2E);
+    color: var(--text-primary, #EDEDED);
+  }
+
+  .settings-title {
+    flex: 1;
+    margin: 0;
+    font-size: var(--t-title-size, 1rem);
+    font-weight: 600;
+    color: var(--text-primary, #EDEDED);
+  }
+
+  .error-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm, 8px);
+    margin: var(--sp-sm, 8px) var(--sp-md, 16px);
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px);
+    background: var(--danger-muted, #3D1F1F);
+    border: 1px solid var(--danger, #D64545);
+    border-radius: var(--r-input, 12px);
+    color: var(--danger, #D64545);
+    font-size: var(--t-body-sm-size, 0.8125rem);
+  }
+
+  .dismiss-btn {
+    background: none;
+    border: none;
+    color: var(--danger, #D64545);
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    margin-left: auto;
+  }
+
+  /* ── Scroll container ── */
+  .settings-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--sp-md, 16px);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-lg, 24px);
+  }
+
+  /* ── Group ── */
+  .settings-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .group-title {
+    font-size: var(--t-label-size, 0.75rem);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-secondary, #999999);
+    /* §18.1: 32dp top margin, 8dp bottom, 16dp left padding. */
+    margin: 0 0 var(--sp-sm, 8px);
+    padding: 0 var(--sp-md, 16px);
+  }
+
+  .settings-group:first-child .group-title { margin-top: 0; }
+
+  .group-body {
+    display: flex;
+    flex-direction: column;
+    /* §18.1: grouped rows share a container with --r-card; dividers
+       between rows are 1px --border, inset from the left. */
+    background: var(--bg-surface, #1C1C1C);
+    border: 1px solid var(--border, #2E2E2E);
+    border-radius: var(--r-card, 16px);
+    overflow: hidden;
+  }
+
+  .group-empty {
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px);
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    color: var(--text-disabled, #616161);
+    margin: 0;
+  }
+
+  /* ── Settings row (§18.1 — fixed 56dp height) ── */
+  .settings-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm, 8px);
+    /* Vertical centering via flex; min-height 56dp per spec. */
+    padding: 0 var(--sp-md, 16px);
+    min-height: 56px;
+    background: none;
+    border: none;
+    border-top: 1px solid var(--border, #2E2E2E);
+    color: var(--text-primary, #EDEDED);
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+    transition: background 120ms;
+  }
+  .settings-row:first-child { border-top: none; }
+  .settings-row:hover { background: var(--bg-surface-hover, #2E2E2E); }
+  .settings-row-disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .settings-row-disabled:hover { background: none; }
+  .settings-row-label {
+    cursor: pointer;
+  }
+
+  .row-icon {
+    display: flex;
+    align-items: center;
+    color: var(--text-secondary, #999999);
+    flex-shrink: 0;
+    width: 20px;
+    justify-content: center;
+  }
+
+  .row-label {
+    flex: 1;
+    /* §18.1: Label uses --t-body (default body), not body-sm. */
+    font-size: var(--t-body-size, 0.9375rem);
+    color: var(--text-primary, #EDEDED);
+  }
+
+  .row-value {
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    color: var(--text-secondary, #999999);
+    flex-shrink: 0;
+  }
+
+  .row-desc-inline {
+    font-size: var(--t-label-size, 0.75rem);
+    color: var(--text-disabled, #616161);
+    flex-shrink: 0;
+  }
+
+  .row-chevron {
+    display: flex;
+    align-items: center;
+    color: var(--text-disabled, #616161);
+    flex-shrink: 0;
+    transition: transform 200ms;
+  }
+  .row-chevron.rotated { transform: rotate(90deg); }
+
+  .row-content {
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px) var(--sp-md, 16px);
+    border-top: 1px solid var(--border, #2E2E2E);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-sm, 8px);
+  }
+
+  .row-desc {
+    margin: 0;
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    color: var(--text-secondary, #999999);
+    line-height: 1.5;
+  }
+
+  /* ── Provider rows ── */
+  .prow-icon {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    background: var(--bg-surface, rgba(255,255,255,0.06));
+    font-size: 0.65rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    color: var(--text-secondary, #999);
+  }
+
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .status-label {
+    font-size: var(--t-label-size, 0.75rem);
+    flex-shrink: 0;
+  }
+
+  .offline-os-banner {
+    margin: var(--sp-xs, 4px) var(--sp-sm, 8px);
+    padding: var(--sp-xs, 4px) var(--sp-sm, 8px);
+    border-radius: var(--r-md, 6px);
+    background: var(--surface-elevated, #1E1E1E);
+    color: var(--text-secondary, #999999);
+    font-size: var(--t-body-sm-size, 0.8125rem);
+  }
+
+  .primary-badge {
+    font-size: var(--t-label-size, 0.75rem);
+    background: var(--accent-muted, #1B3627);
+    border: 1px solid var(--accent, #2EB860);
+    border-radius: var(--r-pill, 9999px);
+    color: var(--accent-text, #5FDB8A);
+    padding: 1px 6px;
+    margin-left: var(--sp-xs, 4px);
+  }
+
+  /* ── Device rows (§18.1) ── */
+  .device-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm, 8px);
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px);
+    border-top: 1px solid var(--border, #2E2E2E);
+    min-height: 56px;
+  }
+  .device-row:first-child { border-top: none; }
+
+  .device-icon-wrap {
+    color: var(--text-disabled, #616161);
+    flex-shrink: 0;
+  }
+
+  .device-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .device-name {
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    color: var(--text-primary, #EDEDED);
+    display: flex;
+    align-items: center;
+    gap: var(--sp-xs, 4px);
+    flex-wrap: wrap;
+  }
+
+  .current-badge {
+    font-size: var(--t-label-size, 0.75rem);
+    background: var(--accent-muted, #1B3627);
+    border: 1px solid var(--accent, #2EB860);
+    border-radius: var(--r-pill, 9999px);
+    color: var(--accent-text, #5FDB8A);
+    padding: 1px 6px;
+  }
+
+  .device-meta {
+    font-size: var(--t-label-size, 0.75rem);
+    color: var(--text-disabled, #616161);
+  }
+
+  .revoke-btn {
+    padding: 4px var(--sp-sm, 8px);
+    background: none;
+    border: 1px solid var(--danger, #D64545);
+    border-radius: var(--r-pill, 9999px);
+    color: var(--danger, #D64545);
+    font-size: var(--t-label-size, 0.75rem);
+    cursor: pointer;
+    flex-shrink: 0;
+    min-height: 28px;
+    transition: all 150ms;
+  }
+  .revoke-btn:hover { background: var(--danger-muted, #3D1F1F); }
+
+  /* ── Toggle button ── */
+  .toggle-btn {
+    position: relative;
+    width: 40px;
+    height: 24px;
+    background: var(--border, #2E2E2E);
+    border: none;
+    border-radius: 12px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 200ms;
+    padding: 0;
+  }
+  .toggle-btn.active { background: var(--accent, #2EB860); }
+
+  .toggle-knob {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 18px;
+    height: 18px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 200ms;
+    pointer-events: none;
+  }
+  .toggle-btn.active .toggle-knob { transform: translateX(16px); }
+
+  /* ── About ── */
+  .info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--sp-xs, 4px) var(--sp-md, 16px);
+    border-top: 1px solid var(--border, #2E2E2E);
+    min-height: 40px;
+  }
+  .info-row:first-child { border-top: none; }
+
+  .info-label {
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    color: var(--text-secondary, #999999);
+  }
+
+  .info-value {
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    color: var(--text-primary, #EDEDED);
+  }
+
+  .info-value.mono {
+    font-family: var(--font-mono, monospace);
+    font-size: var(--t-label-size, 0.75rem);
+  }
+
+  .about-actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-sm, 8px);
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px) var(--sp-md, 16px);
+    border-top: 1px solid var(--border, #2E2E2E);
+  }
+
+  /* ── Shared ── */
+  .inline-error {
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px);
+    background: var(--danger-muted, #3D1F1F);
+    border: 1px solid var(--danger, #D64545);
+    border-radius: var(--r-input, 12px);
+    color: var(--danger, #D64545);
+    font-size: var(--t-body-sm-size, 0.8125rem);
+  }
+
+  .status-msg {
+    margin: 0;
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    color: var(--text-secondary, #999999);
+    text-align: center;
+  }
+
+  .success-card {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--sp-sm, 8px);
+    padding: var(--sp-md, 16px);
+    background: var(--accent-muted, #1B3627);
+    border: 1px solid var(--accent, #2EB860);
+    border-radius: var(--r-input, 12px);
+    color: var(--accent-text, #5FDB8A);
+  }
+
+  .success-title {
+    margin: 0;
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    font-weight: 600;
+    color: var(--accent-text, #5FDB8A);
+  }
+
+  .success-desc {
+    margin: 2px 0 0;
+    font-size: var(--t-label-size, 0.75rem);
+    color: var(--text-secondary, #999999);
+  }
+
+  .primary-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-xs, 4px);
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px);
+    background: var(--accent, #2EB860);
+    border: none;
+    border-radius: var(--r-pill, 9999px);
+    color: var(--text-inverse, #000);
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 150ms;
+    width: fit-content;
+  }
+  .primary-btn:hover:not(:disabled) { background: var(--accent-hover, #3DD870); }
+  .primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .loading-inline {
+    display: flex;
+    justify-content: center;
+    padding: var(--sp-lg, 24px);
+  }
+
+  .spinner-sm {
+    width: 22px;
+    height: 22px;
+    border: 2px solid var(--border, #2E2E2E);
+    border-top-color: var(--accent, #2EB860);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>

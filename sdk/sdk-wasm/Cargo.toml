@@ -1,0 +1,37 @@
+[package]
+# Wattcloud WASM SDK — BYO-only.
+name = "wattcloud-sdk-wasm"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+
+[dependencies]
+sdk-core = { path = "../sdk-core", default-features = false, features = ["crypto", "byo", "providers"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+wasm-bindgen-futures = "0.4"
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+# getrandom "js" feature must be activated here (not in sdk-core) so OsRng works
+# in WASM via crypto.getRandomValues(). Feature unification propagates it to sdk-core.
+getrandom = { workspace = true }
+# Base64 encode/decode at the WASM boundary (sdk-core works with raw bytes only).
+base64 = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+zeroize = { workspace = true }
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "console",
+    "Window",
+]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

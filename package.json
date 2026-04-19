@@ -1,0 +1,15 @@
+{
+  "name": "wattcloud-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Wattcloud — self-hosted, zero-knowledge BYO cloud storage. Monorepo root.",
+  "scripts": {
+    "build:sdk-wasm": "cd sdk/sdk-wasm && wasm-pack build --release --target web --out-dir ../../frontend/src/pkg --out-name secure_cloud_wasm",
+    "build:byo": "pnpm --filter @wattcloud/sdk build",
+    "build:frontend": "pnpm --filter wattcloud-frontend build",
+    "build": "pnpm run build:sdk-wasm && pnpm run build:byo && pnpm run build:frontend",
+    "dev": "pnpm --filter wattcloud-frontend dev",
+    "test": "pnpm -r test"
+  },
+  "packageManager": "pnpm@9.0.0"
+}

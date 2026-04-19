@@ -1,0 +1,85 @@
+[package]
+name = "byo-server"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "byo-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "byo-admin"
+path = "src/bin/admin.rs"
+
+[lib]
+name = "byo_server"
+path = "src/lib.rs"
+
+[dependencies]
+# Web framework — same version as /backend
+axum = { version = "0.7", features = ["ws", "macros"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Tower middleware
+tower = { version = "0.4", features = ["util", "timeout"] }
+tower-http = { version = "0.5", features = ["fs", "timeout"] }
+
+# TLS — same stack as backend
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = { version = "0.23", features = ["ring"] }
+
+# JWT (relay auth cookie)
+jsonwebtoken = "9.3"
+
+# Cookies
+tower-cookies = "0.10"
+time = "0.3"
+
+# Random
+rand = "0.8"
+uuid = { version = "1.0", features = ["v4"] }
+
+# HTTP types
+http = "1.0"
+
+# Logging (minimal — zero-logging means no request middleware)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# DNS resolution with SSRF protection
+hickory-resolver = { version = "0.24", features = ["tokio-runtime"] }
+
+# SSH/SFTP client for SFTP relay gateway
+russh = "0.60"
+russh-sftp = "2.1"
+
+# Base64 decoding for channel ID
+base64 = "0.21"
+
+# SHA-256 for PoW verification and HMAC for share ownership tokens + stats device hashing
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+
+# Stats: bundled SQLite (no system lib dependency)
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# byo-admin CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+[dev-dependencies]
+tokio-test = "0.4"
+reqwest = { version = "0.12", features = ["cookies", "rustls-tls"], default-features = false }
+tokio-tungstenite = "0.23"

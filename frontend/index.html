@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Secure Cloud Storage</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <!-- Loading styles - external for CSP nonce support -->
+  <link rel="stylesheet" href="/loading.css">
+  <!-- CSP nonce will be applied by backend middleware -->
+</head>
+<body>
+  <div id="app">
+    <div class="loading-fallback" id="loading">
+      <div class="loading-logo">
+        <!-- Hex-shield vault motif (DESIGN.md §29.1) -->
+        <svg viewBox="0 0 48 48" width="72" height="72" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M24 4 L40 14 L40 34 L24 44 L8 34 L8 14 Z" stroke="hsl(142,60%,45%)" stroke-width="2.5" fill="none"/>
+        </svg>
+      </div>
+      <div class="loading-title">Secure Cloud</div>
+      <div class="loading-subtitle">Your files, encrypted & secure</div>
+      <div class="loading-bar-container">
+        <div class="loading-bar"></div>
+      </div>
+    </div>
+  </div>
+  <!-- BYO-only application entry — no managed code in this bundle -->
+  <script type="module" src="/src/main-byo.ts" crossorigin></script>
+  <!-- Loading screen hide logic -->
+  <script>
+    (function() {
+      var loading = document.getElementById('loading');
+      var app = document.getElementById('app');
+
+      function hideLoading() {
+        if (loading && !loading.classList.contains('fade-out')) {
+          loading.classList.add('fade-out');
+          setTimeout(function() {
+            loading.style.display = 'none';
+          }, 400);
+        }
+      }
+
+      // Check for Svelte app mounting
+      var checkInterval = setInterval(function() {
+        if (app && app.children.length > 1) {
+          clearInterval(checkInterval);
+          // Small delay for smooth transition
+          setTimeout(hideLoading, 100);
+        }
+      }, 50);
+
+      // Fallback: hide after 2 seconds max
+      setTimeout(hideLoading, 2000);
+    })();
+  </script>
+</body>
+</html>

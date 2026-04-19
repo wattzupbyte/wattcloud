@@ -1,0 +1,10 @@
+# Smoke-test overlay — used only by scripts/byo-smoke.sh.
+# Requires Docker Compose >= 2.24 for !override / !reset tags.
+#   - env_file: !override drops base `.env` so prod secrets never reach smoke.
+#   - container_name: !reset null lets Compose autonumber under COMPOSE_PROJECT_NAME,
+#     so multiple smoke runs (and coexistence with prod) don't collide.
+services:
+  byo-server:
+    container_name: !reset null
+    env_file: !override
+      - .env.smoke
