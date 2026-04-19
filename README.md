@@ -194,19 +194,51 @@ Rust toolchain (1.80+), Node 20+, wasm-pack, pnpm 9+. See [SPEC.md](SPEC.md) for
 the protocol spec and [CLAUDE.md](CLAUDE.md) for the repo conventions consumed
 by Claude Code / opencode.
 
+The `Makefile` is a thin wrapper around the underlying `cargo` / `pnpm` /
+`wasm-pack` / `docker` commands. `make help` lists every target with a
+one-line description.
+
+### Dev
+
 ```bash
-# SDK tests (native)
-cargo test --manifest-path sdk/sdk-core/Cargo.toml
+make dev               # Vite dev server on :5173
+make build-sdk-wasm    # wasm-pack → frontend/src/pkg/
+make build-byo         # @wattcloud/sdk TS package
+make build-frontend    # Vite build → byo-server/dist/
+make build             # all three, in order
 
-# SDK WASM build
-cd sdk/sdk-wasm && wasm-pack build --release --target web
+make test              # cargo + npm across the repo
+make test-sdk          # sdk-core only (crypto + byo + providers)
+make test-byo-server   # byo-server only
+make test-byo          # @wattcloud/sdk only
+make test-frontend     # SPA only
 
-# BYO TS package
-cd byo && npm test
-
-# Frontend dev server
-cd frontend && npm run dev
+make lint              # cargo clippy + eslint
+make fmt               # cargo fmt
+make ci                # full local CI (scripts/ci.sh — mirrors Actions)
 ```
+
+### Prod
+
+```bash
+make image             # docker build byo-server → wattcloud:ci
+make smoke             # scripts/byo-smoke.sh against wattcloud:ci
+make release-help      # reminder on the tag-driven Actions release flow
+```
+
+Real releases flow through a signed `v*.*.*` tag → `.github/workflows/release.yml`.
+See [§CI/CD](#cicd) for the signed-image trust chain.
+
+### Cleanup
+
+```bash
+make clean             # cargo clean + rm node_modules / dist / pkg / target
+make clean-docker      # prune dangling images + builder cache > 7 days
+make clean-all         # both — run when you're reclaiming disk
+```
+
+`clean-docker` deliberately does NOT prune volumes (`byo-stats-data` lives
+there). Run `docker volume prune` manually if you know you don't need any.
 
 ## Contributing
 
