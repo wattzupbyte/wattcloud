@@ -959,9 +959,10 @@ impl<H: ProviderHttpClient + Send + Sync + 'static> StorageProvider for S3Provid
         options: UploadOptions,
     ) -> Result<String, ProviderError> {
         // Fail fast when the file can't fit in the 10 000-part window. When
-        // `total_size == 0` (caller doesn't know the size yet), skip — the
-        // `upload_stream_write` defensive check catches runaway callers.
-        if total_size > 0 && total_size > MAX_MULTIPART_OBJECT_BYTES {
+        // `total_size == 0` (caller doesn't know the size yet), this check
+        // skips naturally — the `upload_stream_write` defensive check catches
+        // runaway callers.
+        if total_size > MAX_MULTIPART_OBJECT_BYTES {
             let max_gib = MAX_MULTIPART_OBJECT_BYTES / (1024 * 1024 * 1024);
             let size_gib = total_size / (1024 * 1024 * 1024);
             return Err(ProviderError::Provider(format!(

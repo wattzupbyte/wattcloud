@@ -843,8 +843,11 @@ pub fn disk_usage_percent(path: &std::path::Path) -> Option<u8> {
                 return None;
             }
             let st = st.assume_init();
-            let total = (st.f_blocks as u64).saturating_mul(st.f_frsize as u64);
-            let free = (st.f_bavail as u64).saturating_mul(st.f_frsize as u64);
+            // libc::statvfs fields are already u64 on our supported targets
+            // (x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu); casts
+            // were there to bridge 32-bit platforms that we no longer ship.
+            let total = st.f_blocks.saturating_mul(st.f_frsize);
+            let free = st.f_bavail.saturating_mul(st.f_frsize);
             if total == 0 {
                 return Some(0);
             }

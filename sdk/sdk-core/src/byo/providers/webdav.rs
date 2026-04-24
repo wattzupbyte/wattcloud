@@ -1788,7 +1788,7 @@ impl<H: ProviderHttpClient + StreamingPutClient + Send + Sync + 'static> Storage
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::type_complexity)]
+#[allow(clippy::unwrap_used, clippy::type_complexity, clippy::manual_async_fn)]
 mod tests {
     use super::*;
     use crate::api::{ProviderHttpRequest, ProviderHttpResponse, StreamingPutClient};

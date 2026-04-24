@@ -163,6 +163,7 @@ impl ChallengeStore {
     /// IP-bound, purpose-bound, PoW-verified. Returns Ok iff every binding
     /// matches; any mismatch is an opaque `Err(())` so handlers can't leak
     /// which guard failed.
+    #[allow(clippy::result_unit_err)]
     pub fn consume_and_verify(
         &self,
         nonce_id: &str,

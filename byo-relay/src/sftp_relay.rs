@@ -577,6 +577,7 @@ async fn dispatch_loop(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_text_command(
     sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     sftp: &SftpSession,

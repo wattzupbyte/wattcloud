@@ -833,7 +833,7 @@ fn authenticate_device(
     let device = state
         .enrollment_store
         .get_device(&claims.sub)
-        .map_err(|e| store_error_to_status(e))?
+        .map_err(store_error_to_status)?
         .ok_or((StatusCode::UNAUTHORIZED, "device_unknown"))?;
 
     if device.revoked_at.is_some() {
@@ -1064,7 +1064,7 @@ mod tests {
         let (tok, claims) = mint_device_jwt(key, "dev-1", true).unwrap();
         let decoded = verify_device_jwt(key, &tok).unwrap();
         assert_eq!(decoded.sub, "dev-1");
-        assert_eq!(decoded.is_owner, true);
+        assert!(decoded.is_owner);
         assert_eq!(decoded.kind, "device");
         assert_eq!(decoded.exp, claims.exp);
     }
