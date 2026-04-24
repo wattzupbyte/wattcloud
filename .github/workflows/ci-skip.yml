@@ -1,0 +1,65 @@
+name: CI
+
+# Companion "always-green" workflow for ci.yml.
+#
+# ci.yml skips (via paths-ignore) when a push or PR touches ONLY doc/meta
+# files. If any ci.yml job is a required status check in branch protection,
+# a doc-only PR would otherwise sit forever at "Expected — waiting for
+# status". This workflow uses the same `name:` (CI) and the same job
+# `name:`s, fires on the INVERSE path filter, and trivially succeeds — so
+# the required-check contexts get reported as "success" for doc-only
+# changes.
+#
+# Mixed PRs (docs + code) trigger BOTH workflows concurrently: ci.yml runs
+# the real tests, this workflow's no-op jobs also report success. Check
+# runs with the same name get overwritten by whichever reports last —
+# ci.yml takes minutes and this one takes seconds, so ci.yml's real status
+# always wins in the mixed case.
+#
+# KEEP THE PATH LIST IN SYNC with ci.yml's paths-ignore.
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - '**/*.md'
+      - 'LICENSE'
+      - 'NOTICE'
+      - '.gitignore'
+      - '.github/dependabot.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.md'
+      - 'LICENSE'
+      - 'NOTICE'
+      - '.gitignore'
+      - '.github/dependabot.yml'
+
+permissions:
+  contents: read
+
+# Own concurrency group — must NOT share ci.yml's group, or mixed PRs
+# would cancel each other mid-flight.
+concurrency:
+  group: ci-skip-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sdk:
+    name: SDK (cargo test + wasm-pack)
+    runs-on: ubuntu-22.04
+    steps:
+      - run: echo "Docs-only change — no SDK code affected."
+
+  byo-relay:
+    name: byo-relay (cargo test)
+    runs-on: ubuntu-22.04
+    steps:
+      - run: echo "Docs-only change — no byo-relay code affected."
+
+  frontend:
+    name: Frontend (lint + test + build)
+    runs-on: ubuntu-22.04
+    steps:
+      - run: echo "Docs-only change — no frontend code affected."
