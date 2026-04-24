@@ -225,7 +225,10 @@ pub(crate) fn bearer(token: &str) -> (String, String) {
 /// and any `If-Match` built from that string is rejected by every server.
 pub(crate) fn normalize_etag(raw: &str) -> String {
     let t = raw.trim();
-    let t = t.strip_prefix("W/").or_else(|| t.strip_prefix("w/")).unwrap_or(t);
+    let t = t
+        .strip_prefix("W/")
+        .or_else(|| t.strip_prefix("w/"))
+        .unwrap_or(t);
     t.trim_matches('"').to_string()
 }
 
@@ -489,8 +492,8 @@ mod tests {
     #[test]
     fn map_http_status_3xx_surfaces_redirect_hint() {
         for code in [301, 302, 307, 308] {
-            let err = map_http_status(code, b"")
-                .unwrap_or_else(|| panic!("{code} should not map to Ok"));
+            let err =
+                map_http_status(code, b"").unwrap_or_else(|| panic!("{code} should not map to Ok"));
             let msg = err.to_string();
             assert!(msg.contains(&code.to_string()), "{code}: {msg}");
             assert!(msg.contains("redirect"), "{code}: {msg}");

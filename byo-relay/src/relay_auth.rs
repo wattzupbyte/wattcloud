@@ -641,9 +641,13 @@ mod tests {
             ip,
         );
         // Happy path — difficulty 0 so any answer qualifies.
-        assert!(store.consume_and_verify("nid", ip, "admin:claim", 0, 0).is_ok());
+        assert!(store
+            .consume_and_verify("nid", ip, "admin:claim", 0, 0)
+            .is_ok());
         // Single-use: second consume fails (entry already removed).
-        assert!(store.consume_and_verify("nid", ip, "admin:claim", 0, 0).is_err());
+        assert!(store
+            .consume_and_verify("nid", ip, "admin:claim", 0, 0)
+            .is_err());
     }
 
     #[test]
@@ -659,7 +663,9 @@ mod tests {
             "0102030405060708090a0b0c0d0e0f10".to_string(),
             ip1,
         );
-        assert!(store.consume_and_verify("a", ip2, "admin:claim", 0, 0).is_err());
+        assert!(store
+            .consume_and_verify("a", ip2, "admin:claim", 0, 0)
+            .is_err());
 
         // Wrong purpose.
         store.insert(
@@ -668,10 +674,14 @@ mod tests {
             "0102030405060708090a0b0c0d0e0f10".to_string(),
             ip1,
         );
-        assert!(store.consume_and_verify("b", ip1, "admin:redeem", 0, 0).is_err());
+        assert!(store
+            .consume_and_verify("b", ip1, "admin:redeem", 0, 0)
+            .is_err());
 
         // Unknown nonce_id.
-        assert!(store.consume_and_verify("missing", ip1, "admin:claim", 0, 0).is_err());
+        assert!(store
+            .consume_and_verify("missing", ip1, "admin:claim", 0, 0)
+            .is_err());
     }
 
     // ── ChallengeStore ───────────────────────────────────────────────────

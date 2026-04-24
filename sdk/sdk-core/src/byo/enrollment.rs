@@ -868,8 +868,7 @@ mod tests {
         let mut envelope =
             encrypt_payload_for_transfer(b"hello", session.enc_key(), session.mac_key()).unwrap();
         envelope.hmac[0] ^= 0x01;
-        let result =
-            decrypt_payload_from_transfer(&envelope, session.enc_key(), session.mac_key());
+        let result = decrypt_payload_from_transfer(&envelope, session.enc_key(), session.mac_key());
         assert!(matches!(result, Err(EnrollmentError::HmacMismatch)));
     }
 
@@ -880,12 +879,9 @@ mod tests {
         let (sk, pk, ch) = enrollment_initiate().unwrap();
         let session = enrollment_derive_session(&sk, &pk, &ch).unwrap();
 
-        let envelope = encrypt_payload_for_transfer(
-            &[42u8; 1024],
-            session.enc_key(),
-            session.mac_key(),
-        )
-        .unwrap();
+        let envelope =
+            encrypt_payload_for_transfer(&[42u8; 1024], session.enc_key(), session.mac_key())
+                .unwrap();
         // Rewrite ct_len to a smaller value directly in the serialized bytes.
         let mut wire = envelope.to_bytes();
         // ct_len sits at bytes [12..16] big-endian.

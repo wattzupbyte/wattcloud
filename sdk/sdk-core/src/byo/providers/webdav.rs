@@ -968,10 +968,7 @@ impl<H: ProviderHttpClient + StreamingPutClient + Send + Sync + 'static> Storage
                 }
             }
             // Read ETag from response headers
-            let version = resp
-                .header("etag")
-                .map(normalize_etag)
-                .unwrap_or_default();
+            let version = resp.header("etag").map(normalize_etag).unwrap_or_default();
             Ok(UploadResult { ref_: url, version })
         }
     }
@@ -1049,10 +1046,7 @@ impl<H: ProviderHttpClient + StreamingPutClient + Send + Sync + 'static> Storage
             if let Some(e) = map_http_status(resp.status, &resp.body) {
                 return Err(e);
             }
-            let version = resp
-                .header("etag")
-                .map(normalize_etag)
-                .unwrap_or_default();
+            let version = resp.header("etag").map(normalize_etag).unwrap_or_default();
             Ok(version)
         }
     }
@@ -1101,9 +1095,7 @@ impl<H: ProviderHttpClient + StreamingPutClient + Send + Sync + 'static> Storage
             // regress uploads that used to succeed. Only fails the upload
             // when we positively learned the destination can't hold it.
             if total_size >= PREFLIGHT_QUOTA_MIN_BYTES {
-                if let Some(available) =
-                    query_webdav_quota(&*http, &base, auth.as_deref()).await
-                {
+                if let Some(available) = query_webdav_quota(&*http, &base, auth.as_deref()).await {
                     if total_size > available {
                         return Err(ProviderError::InsufficientSpace {
                             needed: total_size,
@@ -1454,10 +1446,7 @@ impl<H: ProviderHttpClient + StreamingPutClient + Send + Sync + 'static> Storage
                         req = req.header(("Authorization".to_string(), v.clone()));
                     }
                     let resp = http.request(req).await?;
-                    let version = resp
-                        .header("etag")
-                        .map(normalize_etag)
-                        .unwrap_or_default();
+                    let version = resp.header("etag").map(normalize_etag).unwrap_or_default();
                     Ok(UploadResult {
                         ref_: dest_url,
                         version,
@@ -1494,10 +1483,7 @@ impl<H: ProviderHttpClient + StreamingPutClient + Send + Sync + 'static> Storage
                             return Err(e);
                         }
                     }
-                    let version = resp
-                        .header("etag")
-                        .map(normalize_etag)
-                        .unwrap_or_default();
+                    let version = resp.header("etag").map(normalize_etag).unwrap_or_default();
                     Ok(UploadResult {
                         ref_: path,
                         version,
@@ -1513,10 +1499,7 @@ impl<H: ProviderHttpClient + StreamingPutClient + Send + Sync + 'static> Storage
                             return Err(e);
                         }
                     }
-                    let version = resp
-                        .header("etag")
-                        .map(normalize_etag)
-                        .unwrap_or_default();
+                    let version = resp.header("etag").map(normalize_etag).unwrap_or_default();
                     Ok(UploadResult {
                         ref_: dest_url,
                         version,
@@ -1836,10 +1819,7 @@ mod tests {
 
         /// Enable the StreamingPutClient path and stage the response the
         /// close call will return.
-        fn with_streaming(
-            mut self,
-            close: (u16, Vec<u8>, Vec<(String, String)>),
-        ) -> Self {
+        fn with_streaming(mut self, close: (u16, Vec<u8>, Vec<(String, String)>)) -> Self {
             self.stream.enabled = true;
             *self.stream.close_response.lock().unwrap() = Some(close);
             self
@@ -2216,8 +2196,12 @@ mod tests {
         assert_eq!(&p.http.stream.chunks.lock().unwrap()[..], b"helloworld");
         // Content-Length header was forwarded on open (known total_size).
         let hdrs = p.http.stream.headers.lock().unwrap();
-        assert!(hdrs.iter().any(|(k, v)| k == "Content-Type" && v == "application/octet-stream"));
-        assert!(hdrs.iter().any(|(k, v)| k == "Authorization" && v == "Basic dXNlcjpwYXNz"));
+        assert!(hdrs
+            .iter()
+            .any(|(k, v)| k == "Content-Type" && v == "application/octet-stream"));
+        assert!(hdrs
+            .iter()
+            .any(|(k, v)| k == "Authorization" && v == "Basic dXNlcjpwYXNz"));
     }
 
     #[tokio::test]
@@ -2256,7 +2240,8 @@ mod tests {
         p.upload_stream_close(sid).await.unwrap();
         let hdrs = p.http.stream.headers.lock().unwrap();
         assert!(
-            hdrs.iter().any(|(k, v)| k == "If-Match" && v == "\"prev-v\""),
+            hdrs.iter()
+                .any(|(k, v)| k == "If-Match" && v == "\"prev-v\""),
             "got {:?}",
             *hdrs
         );
@@ -2451,8 +2436,8 @@ mod tests {
         // Broken server: don't silently succeed — the user would then
         // see operation-time failures with no explanation.
         let (p, cfg) = init_webdav_provider(vec![
-            (404, b"".to_vec(), vec![]), // NC PROPFIND
-            (200, b"".to_vec(), vec![]), // OPTIONS
+            (404, b"".to_vec(), vec![]),            // NC PROPFIND
+            (200, b"".to_vec(), vec![]),            // OPTIONS
             (502, b"Bad Gateway".to_vec(), vec![]), // verify_webdav_auth
         ]);
         let err = p.init(cfg).await.unwrap_err();
@@ -2560,7 +2545,10 @@ mod tests {
         assert_eq!(url_path("https://dav.example.com/a/b"), "/a/b");
         assert_eq!(url_path("https://dav.example.com/"), "/");
         assert_eq!(url_path("https://dav.example.com"), "/");
-        assert_eq!(url_path("/remote.php/dav/files/alice/x/"), "/remote.php/dav/files/alice/x/");
+        assert_eq!(
+            url_path("/remote.php/dav/files/alice/x/"),
+            "/remote.php/dav/files/alice/x/"
+        );
         assert_eq!(url_path("bare/path"), "bare/path");
     }
 

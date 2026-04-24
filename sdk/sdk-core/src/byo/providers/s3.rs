@@ -1111,8 +1111,7 @@ impl<H: ProviderHttpClient + Send + Sync + 'static> StorageProvider for S3Provid
                 Ok(()) => {}
                 Err(e) => {
                     // Abort the in-progress multipart so parts don't linger.
-                    let _ =
-                        Self::abort_multipart(&self.http, &cfg, &key, &upload_id).await;
+                    let _ = Self::abort_multipart(&self.http, &cfg, &key, &upload_id).await;
                     return Err(e);
                 }
             }
@@ -1811,10 +1810,7 @@ mod tests {
         assert_eq!(normalize_s3_base_path("MyFolder/"), "MyFolder/");
         assert_eq!(normalize_s3_base_path("/MyFolder/"), "MyFolder/");
         assert_eq!(normalize_s3_base_path("  /MyFolder/  "), "MyFolder/");
-        assert_eq!(
-            normalize_s3_base_path("nested/sub"),
-            "nested/sub/"
-        );
+        assert_eq!(normalize_s3_base_path("nested/sub"), "nested/sub/");
     }
 
     // `S3Provider::build_config` is an associated fn (no `self`), so we
@@ -2127,7 +2123,7 @@ mod tests {
         // even though the bucket is fine. We fall back to ListObjectsV2
         // max-keys=0 and succeed if that works.
         let http = MockHttp::with_headers(vec![
-            (405, "", vec![]),                                 // HEAD
+            (405, "", vec![]),                                      // HEAD
             (200, "<ListBucketResult></ListBucketResult>", vec![]), // GET list
         ]);
         let p = S3Provider::new(http);
@@ -2156,7 +2152,12 @@ mod tests {
 
         let oversized = MAX_MULTIPART_OBJECT_BYTES + 1;
         let err = p
-            .upload_stream_open(None, "huge.bin".to_string(), oversized, UploadOptions::default())
+            .upload_stream_open(
+                None,
+                "huge.bin".to_string(),
+                oversized,
+                UploadOptions::default(),
+            )
             .await
             .unwrap_err();
         let msg = err.to_string();
@@ -2248,8 +2249,8 @@ mod tests {
     async fn upload_expected_version_mismatch_returns_conflict() {
         // HEAD returns different ETag → Conflict, no PUT issued.
         let http = MockHttp::with_headers(vec![
-            (200, "", vec![]),                            // init
-            (200, "", vec![("ETag", "\"v1-current\"")]),  // HEAD shows different
+            (200, "", vec![]),                           // init
+            (200, "", vec![("ETag", "\"v1-current\"")]), // HEAD shows different
         ]);
         let p = S3Provider::new(http);
         p.init(s3_cfg(true)).await.unwrap();
@@ -2432,9 +2433,9 @@ mod tests {
   <IsTruncated>false</IsTruncated>
 </ListBucketResult>"#;
         let http = MockHttp::new(vec![
-            (200, ""),     // init HEAD
-            (200, page1),  // first list
-            (200, page2),  // second list, no more pages
+            (200, ""),    // init HEAD
+            (200, page1), // first list
+            (200, page2), // second list, no more pages
         ]);
         let p = S3Provider::new(http);
         p.init(s3_cfg(true)).await.unwrap();
@@ -2511,7 +2512,9 @@ mod tests {
         let p = S3Provider::new(http);
         p.init(s3_cfg(true)).await.unwrap();
         // 404 on DELETE = already deleted = OK
-        p.delete("WattcloudVault/gone.v7".to_string()).await.unwrap();
+        p.delete("WattcloudVault/gone.v7".to_string())
+            .await
+            .unwrap();
     }
 
     #[test]

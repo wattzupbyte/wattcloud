@@ -575,16 +575,8 @@ impl ShareCreationRateLimiter {
         // Cap the map to bound memory under IPv6 subnet rotation.
         const MAX_KEYS: usize = 50_000;
         Self {
-            hour: SlidingWindowLimiterByKey::new_with_cap(
-                3600,
-                per_hour as usize,
-                Some(MAX_KEYS),
-            ),
-            day: SlidingWindowLimiterByKey::new_with_cap(
-                86_400,
-                per_day as usize,
-                Some(MAX_KEYS),
-            ),
+            hour: SlidingWindowLimiterByKey::new_with_cap(3600, per_hour as usize, Some(MAX_KEYS)),
+            day: SlidingWindowLimiterByKey::new_with_cap(86_400, per_day as usize, Some(MAX_KEYS)),
         }
     }
 
@@ -1371,10 +1363,7 @@ mod tests {
 
     #[test]
     fn slow_start_inactive_after_window() {
-        assert_eq!(
-            share_slow_start_bps(1_000, 1_301, 300, 10_000_000),
-            None,
-        );
+        assert_eq!(share_slow_start_bps(1_000, 1_301, 300, 10_000_000), None,);
     }
 
     #[test]

@@ -15,8 +15,8 @@
 //!      device key, imports it into WebCrypto as non-extractable AES-GCM.
 
 use sdk_core::crypto::webauthn::{
-    derive_vault_key_wrapping_key_from_prf, derive_wrapping_key_from_prf,
-    unwrap_device_key, unwrap_vault_key_with_prf, wrap_device_key, wrap_vault_key_with_prf,
+    derive_vault_key_wrapping_key_from_prf, derive_wrapping_key_from_prf, unwrap_device_key,
+    unwrap_vault_key_with_prf, wrap_device_key, wrap_vault_key_with_prf,
 };
 use sdk_core::crypto::zeroize_utils::SymmetricKey;
 use wasm_bindgen::prelude::*;
@@ -31,8 +31,8 @@ use crate::util::js_error;
 /// PRF on every unlock.
 #[wasm_bindgen]
 pub fn webauthn_derive_wrapping_key(prf_output: Vec<u8>) -> Result<Vec<u8>, JsValue> {
-    let key = derive_wrapping_key_from_prf(&prf_output)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let key =
+        derive_wrapping_key_from_prf(&prf_output).map_err(|e| JsValue::from_str(&e.to_string()))?;
     Ok(key.as_bytes().to_vec())
 }
 

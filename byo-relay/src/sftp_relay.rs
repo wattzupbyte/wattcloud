@@ -875,7 +875,10 @@ async fn handle_text_command(
                 Err(e) => {
                     tracing::warn!(path = %path, error = %e, "sftp read_open failed");
                     let _ = sink
-                        .send(Message::Text(err_json(id, format!("read_open {path}: {e}"))))
+                        .send(Message::Text(err_json(
+                            id,
+                            format!("read_open {path}: {e}"),
+                        )))
                         .await;
                     return;
                 }
@@ -906,7 +909,9 @@ async fn handle_text_command(
             let handle = match param_str(&req.params, "handle") {
                 Some(h) => h.to_string(),
                 None => {
-                    let _ = sink.send(Message::Text(err_json(id, "missing handle"))).await;
+                    let _ = sink
+                        .send(Message::Text(err_json(id, "missing handle")))
+                        .await;
                     return;
                 }
             };
@@ -958,7 +963,9 @@ async fn handle_text_command(
             let handle = match param_str(&req.params, "handle") {
                 Some(h) => h.to_string(),
                 None => {
-                    let _ = sink.send(Message::Text(err_json(id, "missing handle"))).await;
+                    let _ = sink
+                        .send(Message::Text(err_json(id, "missing handle")))
+                        .await;
                     return;
                 }
             };

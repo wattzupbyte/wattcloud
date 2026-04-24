@@ -23,7 +23,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Parser)]
-#[command(name = "byo-admin", about = "BYO usage statistics + enrollment admin CLI")]
+#[command(
+    name = "byo-admin",
+    about = "BYO usage statistics + enrollment admin CLI"
+)]
 struct Cli {
     /// Path to the stats SQLite database.
     #[arg(
@@ -149,14 +152,17 @@ fn cmd_regenerate_bootstrap_token(
     // Resolve the signing key: inline > file. Same base64-first / raw-bytes
     // fallback as the relay's Config parser so operators don't have to
     // second-guess encoding.
-    let signing_key = resolve_signing_key(signing_key_inline, signing_key_file)
-        .unwrap_or_else(|e| {
+    let signing_key =
+        resolve_signing_key(signing_key_inline, signing_key_file).unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
         });
 
     let store = EnrollmentStore::open(enrollment_db).unwrap_or_else(|e| {
-        eprintln!("error: cannot open enrollment DB {}: {e}", enrollment_db.display());
+        eprintln!(
+            "error: cannot open enrollment DB {}: {e}",
+            enrollment_db.display()
+        );
         std::process::exit(1);
     });
 
@@ -188,10 +194,8 @@ fn cmd_regenerate_bootstrap_token(
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(
-                    token_path,
-                    std::fs::Permissions::from_mode(0o644),
-                );
+                let _ =
+                    std::fs::set_permissions(token_path, std::fs::Permissions::from_mode(0o644));
             }
             println!("Bootstrap token minted: {}", token_path.display());
             println!();

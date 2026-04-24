@@ -199,11 +199,7 @@ impl ShareStore {
     /// uploads + the seal call for this bundle share without re-running PoW.
     /// Only valid on unsealed bundle shares — a sealed share rejects any
     /// follow-up writes regardless of token.
-    pub fn set_bundle_token(
-        &self,
-        share_id: &str,
-        token: &[u8; 32],
-    ) -> Result<(), StoreError> {
+    pub fn set_bundle_token(&self, share_id: &str, token: &[u8; 32]) -> Result<(), StoreError> {
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         let n = conn.execute(
             "UPDATE shares SET bundle_token=?2 WHERE share_id=?1 AND sealed=0",
@@ -322,12 +318,7 @@ impl ShareStore {
     /// to `blob_path(share_id, blob_id)` and passes the final length. Updates
     /// `shares.total_bytes` transactionally so a partial crash can't leave a
     /// stale sum on disk.
-    pub fn record_blob(
-        &self,
-        share_id: &str,
-        blob_id: &str,
-        bytes: i64,
-    ) -> Result<(), StoreError> {
+    pub fn record_blob(&self, share_id: &str, blob_id: &str, bytes: i64) -> Result<(), StoreError> {
         let mut conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
         let tx = conn.transaction()?;
         let now = now_unix();
@@ -409,9 +400,8 @@ impl ShareStore {
     /// this via the metadata endpoint to know what to download.
     pub fn list_blobs(&self, share_id: &str) -> Result<Vec<(String, i64)>, StoreError> {
         let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
-        let mut stmt = conn.prepare(
-            "SELECT blob_id, bytes FROM blobs WHERE share_id=?1 ORDER BY blob_id",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT blob_id, bytes FROM blobs WHERE share_id=?1 ORDER BY blob_id")?;
         let rows = stmt.query_map(rusqlite::params![share_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;
@@ -428,10 +418,7 @@ impl ShareStore {
     /// freed_bytes) — the caller (sweeper) uses the ids to release the
     /// ShareStoragePerIpTracker entries so the per-IP aggregate cap frees
     /// up as shares expire.
-    pub fn purge_expired_and_revoked(
-        &self,
-        now: i64,
-    ) -> Result<(Vec<String>, i64), StoreError> {
+    pub fn purge_expired_and_revoked(&self, now: i64) -> Result<(Vec<String>, i64), StoreError> {
         // Gather victims first, release the lock before filesystem work.
         // "Victim" = revoked, expired, OR an unsealed bundle that missed its
         // upload deadline (orphan cleanup).
@@ -704,9 +691,7 @@ mod tests {
         let token = [0xABu8; 32];
         store.set_bundle_token("b2", &token).unwrap();
         let wrong = [0xCDu8; 32];
-        assert!(!store
-            .verify_bundle_token("b2", &wrong, now_unix())
-            .unwrap());
+        assert!(!store.verify_bundle_token("b2", &wrong, now_unix()).unwrap());
     }
 
     #[test]

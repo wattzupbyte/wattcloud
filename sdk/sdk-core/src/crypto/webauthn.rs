@@ -216,7 +216,9 @@ mod tests {
         let mine = derive_wrapping_key_from_prf(&prf).unwrap();
         for info in other_infos {
             let other = hkdf_sha256(&prf, info, 32).unwrap();
-            assert_ne!(mine.as_bytes(), other.as_slice(),
+            assert_ne!(
+                mine.as_bytes(),
+                other.as_slice(),
                 "HKDF info \"{}\" collides with DEVICE_KEY_WRAP_V1",
                 std::str::from_utf8(info).unwrap_or("<non-utf8>"),
             );

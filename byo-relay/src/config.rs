@@ -69,7 +69,6 @@ pub struct Config {
     // so the only reliable identifier is the client IP (bucketed to /64 for
     // IPv6). SECURITY.md §Abuse Protections documents the threat model,
     // every env var, and the rationale for each default.
-
     /// Max size of a single share blob (bytes). Enforced at upload start via
     /// Content-Length so a runaway client cannot start a 100 GB body and
     /// drain the disk mid-stream. Default 1 GB.
@@ -247,8 +246,7 @@ impl Config {
         let share_create_per_day_per_ip = env_u32("SHARE_CREATE_PER_DAY_PER_IP", 50);
         let share_total_storage_per_ip_bytes =
             env_u64("SHARE_TOTAL_STORAGE_PER_IP_BYTES", 5 * 1024 * 1024 * 1024); // 5 GB
-        let share_download_per_hour_per_share =
-            env_u32("SHARE_DOWNLOAD_PER_HOUR_PER_SHARE", 10);
+        let share_download_per_hour_per_share = env_u32("SHARE_DOWNLOAD_PER_HOUR_PER_SHARE", 10);
         let share_download_bytes_per_hour_per_share =
             env_u64("SHARE_DOWNLOAD_BYTES_PER_HOUR_PER_SHARE", 1_073_741_824); // 1 GB
         let share_max_concurrent_downloads = env_u32("SHARE_MAX_CONCURRENT_DOWNLOADS", 1);

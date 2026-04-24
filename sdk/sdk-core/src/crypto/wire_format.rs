@@ -1116,8 +1116,8 @@ mod tests {
         assert!(blob.len() >= V7_HEADER_MIN + V7_FOOTER_LEN);
         assert_eq!(blob[0], FILE_FORMAT_V7);
 
-        let (mut dec, _) = V7ShareDecryptor::new(&blob[..V7_HEADER_MIN], content_key.as_bytes())
-            .unwrap();
+        let (mut dec, _) =
+            V7ShareDecryptor::new(&blob[..V7_HEADER_MIN], content_key.as_bytes()).unwrap();
         let body = &blob[V7_HEADER_MIN..blob.len() - V7_FOOTER_LEN];
         let footer = &blob[blob.len() - V7_FOOTER_LEN..];
         let plaintext = dec.push(body).unwrap();
@@ -1132,8 +1132,8 @@ mod tests {
         let manifest: Vec<u8> = (0..700 * 1024).map(|i| (i % 251) as u8).collect();
         let blob = encrypt_manifest_v7(&manifest, &content_key).unwrap();
 
-        let (mut dec, _) = V7ShareDecryptor::new(&blob[..V7_HEADER_MIN], content_key.as_bytes())
-            .unwrap();
+        let (mut dec, _) =
+            V7ShareDecryptor::new(&blob[..V7_HEADER_MIN], content_key.as_bytes()).unwrap();
         let body = &blob[V7_HEADER_MIN..blob.len() - V7_FOOTER_LEN];
         let footer = &blob[blob.len() - V7_FOOTER_LEN..];
         let plaintext = dec.push(body).unwrap();

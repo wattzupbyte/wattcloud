@@ -130,9 +130,9 @@ fn set_device_cookie(cookies: &Cookies, token: String) {
     cookie.set_secure(true);
     cookie.set_path("/");
     cookie.set_same_site(tower_cookies::cookie::SameSite::Strict);
-    cookie.set_max_age(
-        tower_cookies::cookie::time::Duration::seconds(DEVICE_COOKIE_TTL_SECS),
-    );
+    cookie.set_max_age(tower_cookies::cookie::time::Duration::seconds(
+        DEVICE_COOKIE_TTL_SECS,
+    ));
     cookies.add(cookie);
 }
 
@@ -186,8 +186,9 @@ pub fn normalize_invite_code(input: &str) -> String {
 /// signing. If a future rotate-keys flow ships, invite rows will need
 /// re-hashing or expiring with the old key.
 pub fn hash_invite_code(signing_key: &[u8], normalized: &str) -> Vec<u8> {
-    let mut mac = HmacSha256::new_from_slice(signing_key)
-        .expect("HMAC accepts any key length; signing_key len-checked in config::parse_signing_key");
+    let mut mac = HmacSha256::new_from_slice(signing_key).expect(
+        "HMAC accepts any key length; signing_key len-checked in config::parse_signing_key",
+    );
     mac.update(normalized.as_bytes());
     mac.finalize().into_bytes().to_vec()
 }
@@ -573,18 +574,15 @@ pub async fn post_redeem(
     let device_id = Uuid::new_v4().to_string();
     let now = now_secs();
 
-    if let Err(e) = state.enrollment_store.redeem_invite(
-        &candidate_hash,
-        &device_id,
-        &pubkey,
-        &label,
-        now,
-    ) {
+    if let Err(e) =
+        state
+            .enrollment_store
+            .redeem_invite(&candidate_hash, &device_id, &pubkey, &label, now)
+    {
         return store_error_to_status(e).into_response();
     }
 
-    let (tok, _claims) = match mint_device_jwt(&state.config.relay_signing_key, &device_id, false)
-    {
+    let (tok, _claims) = match mint_device_jwt(&state.config.relay_signing_key, &device_id, false) {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(error = %e, "mint_device_jwt failed during redeem");
@@ -648,10 +646,7 @@ pub async fn post_invite(
 }
 
 /// `GET /relay/admin/invites` — owner-only list.
-pub async fn get_invites(
-    State(state): State<Arc<AppState>>,
-    _owner: OwnerDevice,
-) -> Response {
+pub async fn get_invites(State(state): State<Arc<AppState>>, _owner: OwnerDevice) -> Response {
     match state.enrollment_store.list_invites() {
         Ok(rows) => Json(rows).into_response(),
         Err(e) => store_error_to_status(e).into_response(),
@@ -671,10 +666,7 @@ pub async fn delete_invite(
 }
 
 /// `GET /relay/admin/devices` — owner-only list.
-pub async fn get_devices(
-    State(state): State<Arc<AppState>>,
-    _owner: OwnerDevice,
-) -> Response {
+pub async fn get_devices(State(state): State<Arc<AppState>>, _owner: OwnerDevice) -> Response {
     match state.enrollment_store.list_devices() {
         Ok(rows) => Json(rows).into_response(),
         Err(e) => store_error_to_status(e).into_response(),
@@ -726,10 +718,7 @@ pub struct MeDevice {
 /// as `409 last_owner` and the SPA points at the CLI recovery path.
 /// On success (204) the SPA reloads and lands on the invite-entry screen;
 /// recovery is via a fresh invite from another owner.
-pub async fn post_signout(
-    State(state): State<Arc<AppState>>,
-    cookies: Cookies,
-) -> Response {
+pub async fn post_signout(State(state): State<Arc<AppState>>, cookies: Cookies) -> Response {
     // In Open mode there's no device concept — calling signout is a no-op.
     if matches!(
         state.config.enrollment_mode,
@@ -762,10 +751,7 @@ pub async fn post_signout(
 /// `GET /relay/admin/me` — identity probe. Always returns 200; the absence
 /// of `device` (Restricted) tells the SPA to show the invite-entry screen.
 /// In Open mode `device` is always `None`.
-pub async fn get_me(
-    State(state): State<Arc<AppState>>,
-    cookies: Cookies,
-) -> Response {
+pub async fn get_me(State(state): State<Arc<AppState>>, cookies: Cookies) -> Response {
     let mode = state.config.enrollment_mode.as_str();
     if matches!(
         state.config.enrollment_mode,

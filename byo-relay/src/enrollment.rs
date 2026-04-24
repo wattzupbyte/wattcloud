@@ -124,7 +124,9 @@ impl std::fmt::Display for EnrollmentStoreError {
             EnrollmentStoreError::Sqlite(e) => write!(f, "sqlite: {e}"),
             EnrollmentStoreError::LockPoisoned => write!(f, "enrollment store lock poisoned"),
             EnrollmentStoreError::Conflict => write!(f, "unique/foreign-key conflict"),
-            EnrollmentStoreError::InvalidInvite => write!(f, "invite code invalid, used, or expired"),
+            EnrollmentStoreError::InvalidInvite => {
+                write!(f, "invite code invalid, used, or expired")
+            }
             EnrollmentStoreError::InvalidBootstrapToken => {
                 write!(f, "bootstrap token invalid, consumed, or expired")
             }
@@ -363,7 +365,10 @@ impl EnrollmentStore {
             .conn
             .lock()
             .map_err(|_| EnrollmentStoreError::LockPoisoned)?;
-        conn.execute("DELETE FROM invite_codes WHERE id = ?1", rusqlite::params![id])?;
+        conn.execute(
+            "DELETE FROM invite_codes WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
         Ok(())
     }
 
@@ -666,10 +671,7 @@ mod tests {
             EnrollmentMode::parse("  RESTRICTED\n"),
             Some(EnrollmentMode::Restricted)
         );
-        assert_eq!(
-            EnrollmentMode::parse("Open"),
-            Some(EnrollmentMode::Open)
-        );
+        assert_eq!(EnrollmentMode::parse("Open"), Some(EnrollmentMode::Open));
     }
 
     #[test]
@@ -782,7 +784,10 @@ mod tests {
         let expired = store
             .claim_bootstrap(b"right", "d1", &[0; 32], "x", 20_000)
             .expect_err("expired token rejected");
-        assert!(matches!(expired, EnrollmentStoreError::InvalidBootstrapToken));
+        assert!(matches!(
+            expired,
+            EnrollmentStoreError::InvalidBootstrapToken
+        ));
     }
 
     #[test]
@@ -887,9 +892,15 @@ mod tests {
             .claim_bootstrap(b"t", "owner", &[0; 32], "", 100)
             .unwrap();
 
-        store.insert_invite("a", b"h1", "A", "owner", 100, 1_000_000).unwrap();
-        store.insert_invite("b", b"h2", "B", "owner", 200, 1_000_000).unwrap();
-        store.insert_invite("c", b"h3", "C", "owner", 150, 1_000_000).unwrap();
+        store
+            .insert_invite("a", b"h1", "A", "owner", 100, 1_000_000)
+            .unwrap();
+        store
+            .insert_invite("b", b"h2", "B", "owner", 200, 1_000_000)
+            .unwrap();
+        store
+            .insert_invite("c", b"h3", "C", "owner", 150, 1_000_000)
+            .unwrap();
 
         let rows = store.list_invites().unwrap();
         let ids: Vec<_> = rows.iter().map(|r| r.id.as_str()).collect();
@@ -904,7 +915,9 @@ mod tests {
         store
             .claim_bootstrap(b"t", "owner", &[0; 32], "", 100)
             .unwrap();
-        store.insert_invite("a", b"h1", "", "owner", 100, 1_000_000).unwrap();
+        store
+            .insert_invite("a", b"h1", "", "owner", 100, 1_000_000)
+            .unwrap();
 
         store.revoke_invite("a").unwrap();
         store.revoke_invite("a").unwrap(); // no-op

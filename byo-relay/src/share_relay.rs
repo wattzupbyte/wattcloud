@@ -35,19 +35,19 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use serde::Deserialize;
 use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
 use rand::RngCore;
+use serde::Deserialize;
 use serde::Serialize;
 use sha2::Sha256;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
+use tokio::time;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::time;
 
 use crate::client_ip::extract_client_ip;
 use crate::rate_limit::{IpBucket, SlidingWindowLimiterByKey};
@@ -286,9 +286,7 @@ pub async fn upload_b2_share(
 
     // 1. Disk watermark — global. Operator-level stop before individual
     //    clients get blamed.
-    if let Some(pct) =
-        crate::rate_limit::disk_usage_percent(state.share_store.blobs_dir())
-    {
+    if let Some(pct) = crate::rate_limit::disk_usage_percent(state.share_store.blobs_dir()) {
         if pct >= state.config.disk_watermark_percent {
             return limit_rejection(
                 StatusCode::INSUFFICIENT_STORAGE,
@@ -312,18 +310,10 @@ pub async fn upload_b2_share(
     match state.share_create_limiter.check_and_record(client_ip) {
         crate::rate_limit::ShareCreationDecision::Allow => {}
         crate::rate_limit::ShareCreationDecision::HourCapExceeded => {
-            return limit_rejection(
-                StatusCode::TOO_MANY_REQUESTS,
-                REASON_RATE_HOUR,
-                Some(3600),
-            );
+            return limit_rejection(StatusCode::TOO_MANY_REQUESTS, REASON_RATE_HOUR, Some(3600));
         }
         crate::rate_limit::ShareCreationDecision::DayCapExceeded => {
-            return limit_rejection(
-                StatusCode::TOO_MANY_REQUESTS,
-                REASON_RATE_DAY,
-                Some(86_400),
-            );
+            return limit_rejection(StatusCode::TOO_MANY_REQUESTS, REASON_RATE_DAY, Some(86_400));
         }
     }
 
@@ -369,12 +359,9 @@ pub async fn upload_b2_share(
     let budget = &state.share_byte_budget;
     let now_s = now_unix();
     let max_blob = state.config.share_max_blob_bytes;
-    let stream_result = stream_body_to_file_capped(
-        body,
-        &tmp_path,
-        max_blob,
-        |n| budget.try_consume(client_ip, n as u64, now_s),
-    )
+    let stream_result = stream_body_to_file_capped(body, &tmp_path, max_blob, |n| {
+        budget.try_consume(client_ip, n as u64, now_s)
+    })
     .await;
     let total = match stream_result {
         Ok(n) => n,
@@ -428,8 +415,7 @@ pub async fn upload_b2_share(
         .share_storage_tracker
         .register(client_ip, &share_id, total);
 
-    let owner_token =
-        compute_owner_token(&state.config.share_signing_key, &share_id, &token_nonce);
+    let owner_token = compute_owner_token(&state.config.share_signing_key, &share_id, &token_nonce);
     Json(ShareCreateResponse {
         share_id,
         expires_at,
@@ -508,10 +494,7 @@ where
         total += chunk.len() as u64;
     }
     writer.flush().await.map_err(|_| StreamError::Io)?;
-    writer
-        .shutdown()
-        .await
-        .map_err(|_| StreamError::Io)?;
+    writer.shutdown().await.map_err(|_| StreamError::Io)?;
     Ok(total)
 }
 
@@ -570,24 +553,13 @@ pub async fn get_b2_share(
     // Same download-side gates as get_share_blob — per-share bytes/hour
     // budget, concurrency cap, slow-start throttle. Kept in sync between
     // the two endpoints so clients can't pick the looser one.
-    if !state
-        .share_download_bytes
-        .try_consume(&share_id, size)
-    {
-        return limit_rejection(
-            StatusCode::TOO_MANY_REQUESTS,
-            REASON_BYTES_HOUR,
-            Some(3600),
-        );
+    if !state.share_download_bytes.try_consume(&share_id, size) {
+        return limit_rejection(StatusCode::TOO_MANY_REQUESTS, REASON_BYTES_HOUR, Some(3600));
     }
     let _concurrency_guard = match state.share_concurrency.try_acquire(&share_id) {
         Some(g) => g,
         None => {
-            return limit_rejection(
-                StatusCode::TOO_MANY_REQUESTS,
-                REASON_CONCURRENT,
-                Some(5),
-            );
+            return limit_rejection(StatusCode::TOO_MANY_REQUESTS, REASON_CONCURRENT, Some(5));
         }
     };
     let slow_start_bps = crate::rate_limit::share_slow_start_bps(
@@ -734,9 +706,7 @@ pub async fn init_bundle(
 
     // Abuse gates — same order as upload_b2_share. Disk watermark is a
     // global stop; the creation-rate check is per-IP.
-    if let Some(pct) =
-        crate::rate_limit::disk_usage_percent(state.share_store.blobs_dir())
-    {
+    if let Some(pct) = crate::rate_limit::disk_usage_percent(state.share_store.blobs_dir()) {
         if pct >= state.config.disk_watermark_percent {
             return limit_rejection(
                 StatusCode::INSUFFICIENT_STORAGE,
@@ -748,18 +718,10 @@ pub async fn init_bundle(
     match state.share_create_limiter.check_and_record(client_ip) {
         crate::rate_limit::ShareCreationDecision::Allow => {}
         crate::rate_limit::ShareCreationDecision::HourCapExceeded => {
-            return limit_rejection(
-                StatusCode::TOO_MANY_REQUESTS,
-                REASON_RATE_HOUR,
-                Some(3600),
-            );
+            return limit_rejection(StatusCode::TOO_MANY_REQUESTS, REASON_RATE_HOUR, Some(3600));
         }
         crate::rate_limit::ShareCreationDecision::DayCapExceeded => {
-            return limit_rejection(
-                StatusCode::TOO_MANY_REQUESTS,
-                REASON_RATE_DAY,
-                Some(86_400),
-            );
+            return limit_rejection(StatusCode::TOO_MANY_REQUESTS, REASON_RATE_DAY, Some(86_400));
         }
     }
 
@@ -789,8 +751,7 @@ pub async fn init_bundle(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
-    let owner_token =
-        compute_owner_token(&state.config.share_signing_key, &share_id, &token_nonce);
+    let owner_token = compute_owner_token(&state.config.share_signing_key, &share_id, &token_nonce);
 
     Json(CreateBundleResponse {
         share_id,
@@ -872,11 +833,10 @@ pub async fn upload_bundle_blob(
     let budget = &state.share_byte_budget;
     let now_s = now_unix();
     let max_blob = state.config.share_max_blob_bytes;
-    let stream_result =
-        stream_body_to_file_capped(body, &tmp_path, max_blob, |n| {
-            budget.try_consume(client_ip, n as u64, now_s)
-        })
-        .await;
+    let stream_result = stream_body_to_file_capped(body, &tmp_path, max_blob, |n| {
+        budget.try_consume(client_ip, n as u64, now_s)
+    })
+    .await;
     let total = match stream_result {
         Ok(n) => n,
         Err(StreamError::BudgetExceeded) => {
@@ -972,11 +932,10 @@ pub async fn seal_bundle(
     let budget = &state.share_byte_budget;
     let now_s = now_unix();
     let max_blob = state.config.share_max_blob_bytes;
-    let stream_result =
-        stream_body_to_file_capped(body, &tmp_path, max_blob, |n| {
-            budget.try_consume(client_ip, n as u64, now_s)
-        })
-        .await;
+    let stream_result = stream_body_to_file_capped(body, &tmp_path, max_blob, |n| {
+        budget.try_consume(client_ip, n as u64, now_s)
+    })
+    .await;
     let total = match stream_result {
         Ok(n) => n,
         Err(StreamError::BudgetExceeded) => {
@@ -1135,24 +1094,13 @@ pub async fn get_share_blob(
     // this share's quota is exhausted, reject outright — no partial reads
     // mid-window. Concurrency guard comes next; its RAII drop releases the
     // slot when the response body finishes or the connection dies.
-    if !state
-        .share_download_bytes
-        .try_consume(&share_id, size)
-    {
-        return limit_rejection(
-            StatusCode::TOO_MANY_REQUESTS,
-            REASON_BYTES_HOUR,
-            Some(3600),
-        );
+    if !state.share_download_bytes.try_consume(&share_id, size) {
+        return limit_rejection(StatusCode::TOO_MANY_REQUESTS, REASON_BYTES_HOUR, Some(3600));
     }
     let _concurrency_guard = match state.share_concurrency.try_acquire(&share_id) {
         Some(g) => g,
         None => {
-            return limit_rejection(
-                StatusCode::TOO_MANY_REQUESTS,
-                REASON_CONCURRENT,
-                Some(5),
-            );
+            return limit_rejection(StatusCode::TOO_MANY_REQUESTS, REASON_CONCURRENT, Some(5));
         }
     };
 
@@ -1302,9 +1250,7 @@ pub async fn get_share_headroom(
         .unwrap_or(0)
         .max(0) as u64;
 
-    let your_remaining_bytes_today = state
-        .share_byte_budget
-        .remaining(client_ip, now_unix());
+    let your_remaining_bytes_today = state.share_byte_budget.remaining(client_ip, now_unix());
 
     let daily_bytes_per_ip = state.share_byte_budget.limit_per_day();
 
@@ -1528,7 +1474,9 @@ mod tests {
         let mut payload = vec![V7_MARKER];
         payload.extend(std::iter::repeat_n(0u8, 4095));
         let body = axum::body::Body::from(payload.clone());
-        let n = stream_body_to_file_capped(body, &path, 0, |_| true).await.expect("stream ok");
+        let n = stream_body_to_file_capped(body, &path, 0, |_| true)
+            .await
+            .expect("stream ok");
         assert_eq!(n as usize, payload.len());
         let read = tokio::fs::read(&path).await.unwrap();
         assert_eq!(read, payload);
@@ -1541,7 +1489,9 @@ mod tests {
         // First byte 0x06 (prior V6 marker) — must be rejected before any
         // meaningful write hits the sealed path.
         let body = axum::body::Body::from(vec![0x06u8; 4096]);
-        let err = stream_body_to_file_capped(body, &path, 0, |_| true).await.unwrap_err();
+        let err = stream_body_to_file_capped(body, &path, 0, |_| true)
+            .await
+            .unwrap_err();
         assert!(matches!(err, StreamError::InvalidV7));
     }
 
@@ -1550,7 +1500,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.v7.tmp");
         let body = axum::body::Body::from(Vec::<u8>::new());
-        let n = stream_body_to_file_capped(body, &path, 0, |_| true).await.expect("stream ok");
+        let n = stream_body_to_file_capped(body, &path, 0, |_| true)
+            .await
+            .expect("stream ok");
         // Empty body never receives a marker byte; upload_b2_share then
         // trips the V7_MIN_SIZE check afterward.
         assert_eq!(n, 0);
@@ -1609,7 +1561,9 @@ mod tests {
         let mut payload = vec![V7_MARKER];
         payload.extend(std::iter::repeat_n(0u8, 2047));
         let body = axum::body::Body::from(payload);
-        let err = stream_body_to_file_capped(body, &path, 0, |_| false).await.unwrap_err();
+        let err = stream_body_to_file_capped(body, &path, 0, |_| false)
+            .await
+            .unwrap_err();
         assert!(matches!(err, StreamError::BudgetExceeded));
     }
 

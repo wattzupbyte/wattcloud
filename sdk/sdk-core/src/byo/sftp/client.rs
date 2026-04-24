@@ -1194,7 +1194,10 @@ mod tests {
     async fn write_sends_two_frames() {
         let client = make_client(vec![ok_response(1, json!({}))]);
         let data = b"ciphertext".to_vec();
-        client.write("/WattcloudVault/vault.sc", &data).await.unwrap();
+        client
+            .write("/WattcloudVault/vault.sc", &data)
+            .await
+            .unwrap();
         let sent = client.transport.drain_sent();
         if let SentFrame::TextThenBinary(text, body) = &sent[0] {
             let v: Value = serde_json::from_str(text).unwrap();
@@ -1315,11 +1318,11 @@ mod tests {
 
     #[tokio::test]
     async fn stream_id_parse_roundtrip_v2() {
-        let stream_id = "v2:myhandle:/WattcloudVault/data/file.sc.tmp.42:/WattcloudVault/data/file.sc";
+        let stream_id =
+            "v2:myhandle:/WattcloudVault/data/file.sc.tmp.42:/WattcloudVault/data/file.sc";
         let (handle, temp, fin) = parse_stream_id_v2(stream_id).unwrap();
         assert_eq!(handle, "myhandle");
         assert_eq!(temp, "/WattcloudVault/data/file.sc.tmp.42");
         assert_eq!(fin, "/WattcloudVault/data/file.sc");
     }
-
 }

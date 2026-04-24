@@ -39,7 +39,9 @@ use crate::enrollment_session::{
     close_enrollment_session, store_enrollment_session, with_enrollment_session_mut,
     WasmEnrollmentSession,
 };
-use crate::util::{b64_decode, b64_encode, b64url_decode_lenient, b64url_encode_nopad, js_error, js_set};
+use crate::util::{
+    b64_decode, b64_encode, b64url_decode_lenient, b64url_encode_nopad, js_error, js_set,
+};
 use crate::vault_session::{
     close_vault_session, store_vault_session, with_vault_session, with_vault_session_mut,
     VaultSession,
@@ -1308,7 +1310,11 @@ pub fn byo_vault_wrap_session_vault_key_with_prf(
     match result {
         Some(Ok(wrapped)) => {
             let obj = js_sys::Object::new();
-            js_set(&obj, "wrapped_b64", &JsValue::from_str(&b64_encode(&wrapped)));
+            js_set(
+                &obj,
+                "wrapped_b64",
+                &JsValue::from_str(&b64_encode(&wrapped)),
+            );
             obj.into()
         }
         Some(Err(msg)) => js_error(&msg),
@@ -2373,10 +2379,7 @@ fn derive_key_versions_wrap_key(sess: &VaultSession) -> Result<SymmetricKey, Str
 
 /// AES-256-GCM encrypt with a freshly-drawn CSPRNG nonce; result format is
 /// `nonce(12) || ciphertext||tag` — symmetric with `vault_aes_decrypt`.
-fn vault_aes_encrypt_with_subkey(
-    plaintext: &[u8],
-    key: &SymmetricKey,
-) -> Result<Vec<u8>, String> {
+fn vault_aes_encrypt_with_subkey(plaintext: &[u8], key: &SymmetricKey) -> Result<Vec<u8>, String> {
     let (ct, nonce) = aes_gcm_encrypt(plaintext, key).map_err(|e| e.to_string())?;
     let mut out = Vec::with_capacity(12 + ct.len());
     out.extend_from_slice(nonce.as_bytes());
