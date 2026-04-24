@@ -125,8 +125,7 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="sheet-overlay" onclick={(e) => { if (e.target === e.currentTarget) onClose?.(); }}>
+<div class="sheet-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) onClose?.(); }}>
   <div class="sheet" role="dialog" aria-modal="true" aria-label="Provider options">
     <div class="drag-handle" aria-hidden="true"></div>
 

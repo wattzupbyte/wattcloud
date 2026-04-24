@@ -70,11 +70,11 @@ const MIN_LENGTH = 16;
   }
 
   function checkEntropy(pw: string) {
-    if (!zxcvbn || !pw) { entropyBits = 0; entropyScore = 0; return; }
+    if (!zxcvbn || !pw) { entropyBits = 0; _entropyScore = 0; return; }
     const result = zxcvbn(pw);
     // guessesLog10 in bits: log2(10^guessesLog10) = guessesLog10 * log2(10) ≈ * 3.322
     entropyBits = Math.round(result.guessesLog10 * 3.322);
-    entropyScore = result.score;
+    _entropyScore = result.score;
   }
 
   function onPassphraseInput() {
@@ -121,7 +121,7 @@ const MIN_LENGTH = 16;
     passphrase = '';
     confirm = '';
     entropyBits = 0;
-    entropyScore = 0;
+    _entropyScore = 0;
   }
 
   function handleKeydown(e: KeyboardEvent) {

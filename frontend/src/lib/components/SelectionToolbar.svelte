@@ -213,12 +213,13 @@ let showSheet = $state(false);
 {#if showSheet}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="sheet-overlay" onclick={() => showSheet = false} role="presentation" transition:fade={{ duration: 150 }}>
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_interactive_supports_focus -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="sheet"
       onclick={(e) => e.stopPropagation()}
       onkeydown={(e) => e.stopPropagation()}
       role="dialog"
+      tabindex="-1"
       transition:fly={{ y: 200, duration: 300 }}
     >
       <div class="sheet-handle"></div>

@@ -43,7 +43,7 @@ function dismiss() {
     transition:fade={{ duration: 200 }}
   ></div>
 
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions a11y_interactive_supports_focus -->
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
   <div
     class="sheet"
     class:sheet--wide={variant === 'wide'}
@@ -52,6 +52,7 @@ function dismiss() {
     role="dialog"
     aria-modal="true"
     aria-label={title || 'Bottom sheet'}
+    tabindex="-1"
   >
     <div class="sheet-handle"></div>
 

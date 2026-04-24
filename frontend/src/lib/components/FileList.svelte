@@ -404,7 +404,8 @@ let draggedFileId: number | null = $state(null);
   {/if}
   <div class="file-list" role="list">
     {#each files as file (file.id)}
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_no_noninteractive_tabindex -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <div
         class="list-item"
         class:item-selected={activeSelectedFiles.has(file.id)}
@@ -513,7 +514,8 @@ let draggedFileId: number | null = $state(null);
   <!-- Grid View per DESIGN.md 14.2 -->
   <div class="file-grid" role="list">
     {#each files as file (file.id)}
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_no_noninteractive_tabindex -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
       <div
         class="grid-item"
         class:item-selected={activeSelectedFiles.has(file.id)}

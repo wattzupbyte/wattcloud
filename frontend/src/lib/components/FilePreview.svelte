@@ -293,8 +293,8 @@
 		role="presentation"
 		transition:fade={{ duration: 200 }}
 	>
-		<!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events a11y_interactive_supports_focus -->
-		<div class="preview-container" onclick={(e) => e.stopPropagation()} role="dialog">
+		<!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
+		<div class="preview-container" onclick={(e) => e.stopPropagation()} role="dialog" tabindex="-1">
 			<!-- Top bar: close left, filename center, actions right -->
 			<div class="preview-top-bar">
 				<button class="preview-btn" onclick={close} title="Close" aria-label="Close preview">

@@ -587,9 +587,10 @@
   <!-- Dashboard "add provider": bottom sheet (DESIGN.md §11.2, role=dialog). -->
   <div
     class="sheet-overlay"
+    role="presentation"
     onclick={(e) => { if (e.target === e.currentTarget) onClose?.(); }}
   >
-    <div class="sheet" role="dialog" aria-modal="true" aria-label="Add storage provider">
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Add storage provider" tabindex="-1">
       <div class="drag-handle" aria-hidden="true"></div>
 
       <div class="sheet-header">
