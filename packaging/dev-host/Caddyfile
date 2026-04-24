@@ -1,0 +1,39 @@
+# dev.wattcloud.de — Caddy config for the dedicated dev VPS.
+#
+# Scope: this file is ONLY for the dev machine that dev.wattcloud.de
+# resolves to. Production deploys use packaging/Caddyfile.tmpl (rendered
+# by scripts/deploy-vps.sh). Do not confuse the two.
+#
+# Behaviour:
+#   - Auto-TLS via Let's Encrypt (HTTP-01 on :80).
+#   - /config.json served from /var/www/wattcloud-dev-overrides/config.json,
+#     which pins baseUrl to https://dev.wattcloud.de. The repo's
+#     frontend/public/config.json keeps its localhost stub for `make dev`
+#     on a developer laptop; Caddy overrides it on this host only.
+#   - Everything else proxied to Vite (127.0.0.1:5173), started by
+#     `make dev`. WebSocket upgrades (used at /relay/ws after Vite's own
+#     internal proxy to byo-relay) pass through reverse_proxy transparently.
+{
+	email admin@wattcloud.de
+}
+
+dev.wattcloud.de {
+	encode zstd gzip
+
+	@configjson path /config.json
+	handle @configjson {
+		root * /var/www/wattcloud-dev-overrides
+		header Cache-Control "no-store"
+		file_server
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:5173
+	}
+
+	# R5: error-level only, no request body/IP.
+	log {
+		output stderr
+		level ERROR
+	}
+}

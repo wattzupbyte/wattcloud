@@ -1,0 +1,26 @@
+[package]
+name = "sdk-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.sdk-core]
+path = ".."
+
+[[bin]]
+name = "vault_header_parse"
+path = "fuzz_targets/vault_header_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "shard_envelope_parse"
+path = "fuzz_targets/shard_envelope_parse.rs"
+test = false
+doc = false

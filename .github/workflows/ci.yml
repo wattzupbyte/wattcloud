@@ -1,0 +1,175 @@
+name: CI
+
+# Runs on every push and every PR into main. Full BYO pipeline (lint + test +
+# build). No deploy side-effects.
+#
+# Security: `run:` steps use only trusted inputs (no issue titles, PR bodies,
+# or comment bodies). `github.ref` is the only context expression and it's
+# used in `concurrency.group`, not in a shell command. All third-party actions
+# are pinned by commit SHA — see .github/dependabot.yml for the version tags
+# those SHAs correspond to.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  sdk:
+    name: SDK (cargo test + wasm-pack)
+    runs-on: ubuntu-22.04
+    steps:
+      # actions/checkout@v4.1.7
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      # actions-rust-lang/setup-rust-toolchain@v1.16.0 — versioned replacement
+      # for dtolnay/rust-toolchain (whose `stable` branch force-pushes,
+      # orphaning pinned SHAs on every Rust release).
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          target: wasm32-unknown-unknown
+          # Keep Swatinem/rust-cache as the explicit cache layer below.
+          cache: false
+      # Swatinem/rust-cache@v2.7.3
+      - uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84
+        with:
+          workspaces: |
+            .
+            byo-relay
+
+      - name: cargo fmt --check (sdk)
+        run: cargo fmt --all --manifest-path Cargo.toml --check
+
+      - name: clippy (sdk-core)
+        run: cargo clippy --manifest-path sdk/sdk-core/Cargo.toml --no-default-features --features "crypto byo providers" --all-targets -- -D warnings
+
+      - name: cargo test (sdk-core)
+        run: cargo test --manifest-path sdk/sdk-core/Cargo.toml --no-default-features --features "crypto byo providers"
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh -s -- --version 0.12.1
+
+      - name: wasm-pack build (sdk-wasm)
+        run: wasm-pack build sdk/sdk-wasm --release --target web --out-dir ../../frontend/src/pkg --out-name wattcloud_sdk_wasm
+
+      # actions/upload-artifact@v4.3.6
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a
+        with:
+          name: wattcloud-wasm
+          path: frontend/src/pkg
+          if-no-files-found: error
+          retention-days: 7
+
+  byo-relay:
+    name: byo-relay (cargo test)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          cache: false
+      - uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84
+        with:
+          workspaces: byo-relay
+
+      - name: cargo fmt --check (byo-relay)
+        run: cargo fmt --manifest-path byo-relay/Cargo.toml --check
+
+      - name: clippy (byo-relay)
+        run: cargo clippy --manifest-path byo-relay/Cargo.toml --all-targets -- -D warnings
+
+      - name: cargo test (byo-relay)
+        run: cargo test --manifest-path byo-relay/Cargo.toml
+
+      - name: Validate systemd unit
+        run: |
+          # systemd-analyze walks the full dependency graph so its stderr
+          # also contains warnings about unrelated runner-installed units
+          # (snapd.service, netplan-ovs-cleanup.service, …). Whitelist only
+          # lines that mention OUR unit by path or name, then drop the
+          # expected "Command … is not executable" note (the binary lives
+          # at /opt/wattcloud/current/ which isn't present on the runner).
+          out=$(systemd-analyze verify packaging/wattcloud.service 2>&1 \
+                | grep -E '(packaging/wattcloud\.service|^wattcloud\.service:)' \
+                | grep -vE 'Command .* is not executable' || true)
+          if [ -n "$out" ]; then
+            echo "::error::packaging/wattcloud.service has issues:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: Validate Caddyfile template
+        run: |
+          # Caddy may not be on the runner; install it if absent, render the
+          # template with test values, then `caddy validate`.
+          if ! command -v caddy >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https
+            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+              | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+            curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+              | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq caddy
+          fi
+          sed -e 's|@@DOMAIN@@|ci.example.com|g' \
+              -e 's|@@ACME_EMAIL@@|ci@example.com|g' \
+              packaging/Caddyfile.tmpl > /tmp/Caddyfile.rendered
+          caddy validate --config /tmp/Caddyfile.rendered --adapter caddyfile
+
+      - name: Build byo-relay release binary
+        run: cargo build --manifest-path byo-relay/Cargo.toml --release --bin byo-relay
+
+      - name: Tarball smoke (/health + /ready + restricted enrollment)
+        run: bash scripts/byo-smoke.sh
+
+  frontend:
+    name: Frontend (lint + test + build)
+    needs: sdk
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      # actions/setup-node@v4.0.4
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      # actions/download-artifact@v4.1.8
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+        with:
+          name: wattcloud-wasm
+          path: frontend/src/pkg
+
+      - name: npm ci (frontend)
+        working-directory: frontend
+        run: npm ci
+
+      - name: eslint (frontend)
+        working-directory: frontend
+        run: npm run lint
+
+      - name: vitest (frontend)
+        working-directory: frontend
+        run: npm test
+
+      - name: vite build (frontend)
+        working-directory: frontend
+        run: npm run build

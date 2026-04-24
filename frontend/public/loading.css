@@ -1,0 +1,93 @@
+/* Loading screen — shown until Svelte mounts the SPA. Loaded by index.html
+ * and faded out by the inline script at the end of <body> once the Svelte
+ * tree populates #app. Intentionally external rather than inline so the
+ * browser can paint it before the main bundle parses. */
+
+:root {
+  --loading-bg: #0a0e1a;
+  --loading-fg: #e6e9ef;
+  --loading-muted: hsla(0, 0%, 100%, 0.6);
+  --loading-track: hsla(0, 0%, 100%, 0.08);
+  --loading-accent: hsl(142, 60%, 45%);
+}
+
+html, body {
+  margin: 0;
+  background: var(--loading-bg);
+  color: var(--loading-fg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.loading-fallback {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  background: var(--loading-bg);
+  opacity: 1;
+  transition: opacity 0.4s ease-out;
+  z-index: 9999;
+}
+
+.loading-fallback.fade-out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loading-logo svg {
+  display: block;
+  filter: drop-shadow(0 0 18px hsla(142, 60%, 45%, 0.25));
+  animation: loading-logo-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes loading-logo-pulse {
+  0%, 100% { opacity: 0.85; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.04); }
+}
+
+.loading-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.loading-subtitle {
+  font-size: 0.875rem;
+  color: var(--loading-muted);
+  letter-spacing: 0.015em;
+}
+
+.loading-bar-container {
+  position: relative;
+  width: 220px;
+  height: 2px;
+  background: var(--loading-track);
+  overflow: hidden;
+  border-radius: 1px;
+  margin-top: 0.25rem;
+}
+
+.loading-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  background: var(--loading-accent);
+  border-radius: 1px;
+  animation: loading-bar-slide 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes loading-bar-slide {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(380%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-logo svg,
+  .loading-bar        { animation: none; }
+  .loading-fallback   { transition: none; }
+}

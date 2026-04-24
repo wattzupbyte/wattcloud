@@ -1,0 +1,61 @@
+version: 2
+
+# Keep pinned SHAs of third-party actions current. Dependabot opens PRs with
+# the new SHA AND a comment showing which version tag it corresponds to —
+# review manually, merge only after verifying the SHA actually belongs to the
+# named release tag (supply-chain defense against tag-repointing).
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "deps"
+      - "ci"
+
+  # Rust workspace (sdk-core, sdk-wasm).
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "deps"
+      - "rust"
+    ignore:
+      # `kem` is pinned because the HKDF info strings and ML-KEM parameters
+      # in sdk-core's crypto module are part of the V7 wire format. Upgrading
+      # requires a protocol version bump, not a dependency bump.
+      - dependency-name: "kem"
+
+  # byo-relay standalone workspace.
+  - package-ecosystem: "cargo"
+    directory: "/byo-relay"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "deps"
+      - "rust"
+
+  - package-ecosystem: "npm"
+    directory: "/byo"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "deps"
+      - "typescript"
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "deps"
+      - "typescript"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "deps"
+      - "docker"

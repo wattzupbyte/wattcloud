@@ -1,0 +1,68 @@
+# Caddyfile.tmpl — Wattcloud reverse proxy.
+# deploy-vps.sh substitutes the domain and ACME email placeholders before
+# writing this to /etc/caddy/Caddyfile. Security headers, CSP, and
+# /config.json no-store semantics are set by byo-relay itself
+# (security_headers middleware) — Caddy only terminates TLS, compresses,
+# and proxies.
+
+{
+    email @@ACME_EMAIL@@
+}
+
+@@DOMAIN@@ {
+    encode gzip zstd
+
+    # Per-IP rate limits on the public share recipient surface. Complements
+    # byo-relay's in-process limits (per-share-id fetches/bytes/concurrent)
+    # with a coarser per-IP brake so one client can't hammer the endpoint
+    # with different share_ids. Numbers are deliberately loose — the
+    # relay-side per-share limits are the tight screws; this is the outer
+    # safety net.
+    #
+    # Uncomment if you've installed mholt/caddy-ratelimit and rebuilt Caddy:
+    # rate_limit {
+    #     zone share_recipient {
+    #         match {
+    #             path /relay/share/*/meta /relay/share/*/blob/*
+    #         }
+    #         key {remote_ip}
+    #         events 120
+    #         window 1m
+    #     }
+    # }
+
+    # Access log with every IP-bearing field stripped. Keeps method, path,
+    # status, duration, UA for operational debugging; drops remote_ip,
+    # client_ip, XFF, bearer tokens, cookies. Retention aligned with
+    # journald (30 days) and capped at ~250 MB via rolling.
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 50mb
+            roll_keep 5
+            roll_keep_for 720h
+        }
+        format filter {
+            wrap json
+            fields {
+                request>remote_ip                   delete
+                request>remote_port                 delete
+                request>client_ip                   delete
+                request>headers>X-Forwarded-For     delete
+                request>headers>X-Real-IP           delete
+                request>headers>CF-Connecting-IP    delete
+                request>headers>True-Client-IP      delete
+                request>headers>Forwarded           delete
+                request>headers>Cookie              delete
+                request>headers>Authorization       delete
+                resp_headers>Set-Cookie             delete
+                user_id                             delete
+            }
+        }
+    }
+
+    # /health and /ready are relay-internal probes — never exposed publicly.
+    @probes path /health /ready
+    respond @probes 404
+
+    reverse_proxy 127.0.0.1:8443
+}

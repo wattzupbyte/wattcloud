@@ -1,0 +1,372 @@
+<script lang="ts">
+  import { createEventDispatcher } from 'svelte';
+  import { fade, fly } from 'svelte/transition';
+
+  // Phosphor icons (v2.x imports)
+  import X from 'phosphor-svelte/lib/X';
+  import ShareNetwork from 'phosphor-svelte/lib/ShareNetwork';
+  import ArrowRight from 'phosphor-svelte/lib/ArrowRight';
+  import Trash from 'phosphor-svelte/lib/Trash';
+  import DotsThreeVertical from 'phosphor-svelte/lib/DotsThreeVertical';
+  import Copy from 'phosphor-svelte/lib/Copy';
+  import Star from 'phosphor-svelte/lib/Star';
+  import DownloadSimple from 'phosphor-svelte/lib/DownloadSimple';
+  import PencilSimple from 'phosphor-svelte/lib/PencilSimple';
+  import Info from 'phosphor-svelte/lib/Info';
+  import Stack from 'phosphor-svelte/lib/Stack';
+
+  export let selectedCount = 0;
+  export let canMove = true;
+  export let canCopy = true;
+  export let canDelete = true;
+  export let canRename = false;
+  export let canFavorite = true;
+  export let canDownload = true;
+  export let canDetails = false;
+  /** Show share link button — only active when exactly one file is selected. */
+  export let canShare = false;
+  /** Show "Add to collection" button (Photos view). */
+  export let canAddToCollection = false;
+  /** 'none' = none are favorites, 'all' = all are favorites, 'mixed' = some are */
+  export let favoriteState: 'none' | 'all' | 'mixed' = 'none';
+
+  const dispatch = createEventDispatcher();
+  let showSheet = false;
+  let favBurstActive = false;
+  const reducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function emit(event: string) {
+    showSheet = false;
+    dispatch(event);
+  }
+
+  function handleFavorite() {
+    if (favoriteEvent === 'favorite' && !reducedMotion) {
+      favBurstActive = true;
+      setTimeout(() => { favBurstActive = false; }, 400);
+    }
+    emit(favoriteEvent);
+  }
+
+  $: singleSelection = selectedCount === 1;
+  $: favoriteLabel = favoriteState === 'all' ? 'Remove from Favorites' : favoriteState === 'mixed' ? 'Toggle Favorites' : 'Add to Favorites';
+  $: favoriteEvent = favoriteState === 'all' ? 'unfavorite' : 'favorite';
+
+  function handleSheetKeydown(e: KeyboardEvent) {
+    if (showSheet && e.key === 'Escape') showSheet = false;
+  }
+</script>
+
+<svelte:window on:keydown={handleSheetKeydown} />
+
+<!-- Desktop: top bar (DESIGN.md 15) -->
+<div class="selection-top-bar top-bar top-bar-selection desktop-bar" role="toolbar" aria-label="Selection actions">
+  <button class="btn-icon" on:click={() => emit('clear')} aria-label="Exit selection">
+    <X size={20} />
+  </button>
+
+  <span class="selection-title">{selectedCount} selected</span>
+
+  <div class="selection-actions">
+    {#if canDetails && singleSelection}
+      <button class="btn-icon" on:click={() => emit('details')} aria-label="Details" title="Details">
+        <Info size={20} />
+      </button>
+    {/if}
+    {#if canShare && singleSelection}
+      <button class="btn-icon" on:click={() => emit('share')} aria-label="Share link" title="Share link">
+        <ShareNetwork size={20} />
+      </button>
+    {/if}
+    {#if canRename && singleSelection}
+      <button class="btn-icon" on:click={() => emit('rename')} aria-label="Rename" title="Rename">
+        <PencilSimple size={20} />
+      </button>
+    {/if}
+    {#if canDownload}
+      <button class="btn-icon" on:click={() => emit('download')} aria-label="Download" title="Download">
+        <DownloadSimple size={20} />
+      </button>
+    {/if}
+    {#if canMove}
+      <button class="btn-icon" on:click={() => emit('move')} aria-label="Move" title="Move">
+        <ArrowRight size={20} />
+      </button>
+    {/if}
+    {#if canAddToCollection}
+      <button class="btn-icon" on:click={() => emit('addToCollection')} aria-label="Add to collection" title="Add to collection">
+        <Stack size={20} />
+      </button>
+    {/if}
+    {#if canDelete}
+      <button class="btn-icon action-danger" on:click={() => emit('delete')} aria-label="Delete" title="Delete">
+        <Trash size={20} />
+      </button>
+    {/if}
+    <button class="btn-icon" on:click={() => showSheet = true} aria-label="More actions" title="More">
+      <DotsThreeVertical size={20} />
+    </button>
+  </div>
+</div>
+
+<!-- Mobile: top bar + bottom action toolbar (DESIGN.md 15) -->
+<div class="selection-top-bar top-bar top-bar-selection mobile-top" role="toolbar" aria-label="Selection mode">
+  <button class="btn-icon" on:click={() => emit('clear')} aria-label="Exit selection">
+    <X size={20} />
+  </button>
+  <span class="selection-title">{selectedCount} selected</span>
+  <div class="selection-spacer"></div>
+  <button class="btn-icon" on:click={() => showSheet = true} aria-label="More actions" title="More">
+    <DotsThreeVertical size={20} />
+  </button>
+</div>
+
+<div class="mobile-action-bar" role="toolbar" aria-label="Selection actions">
+  {#if canDownload}
+    <button class="btn-icon" on:click={() => emit('download')} aria-label="Download" title="Download">
+      <DownloadSimple size={20} />
+    </button>
+  {/if}
+  {#if canMove}
+    <button class="btn-icon" on:click={() => emit('move')} aria-label="Move" title="Move">
+      <ArrowRight size={20} />
+    </button>
+  {/if}
+  {#if canAddToCollection}
+    <button class="btn-icon" on:click={() => emit('addToCollection')} aria-label="Add to collection" title="Add to collection">
+      <Stack size={20} />
+    </button>
+  {/if}
+  {#if canFavorite}
+    <button class="btn-icon" on:click={handleFavorite} aria-label={favoriteLabel} title={favoriteLabel}>
+      <span class="star-wrap" class:bursting={favBurstActive}>
+        <Star size={20} weight={favoriteState === 'all' ? 'fill' : 'regular'} />
+        {#if favBurstActive}
+          {#each [0, 60, 120, 180, 240, 300] as angle}
+            <span class="burst-dot" style="--angle: {angle}deg"></span>
+          {/each}
+        {/if}
+      </span>
+    </button>
+  {/if}
+  {#if canDelete}
+    <button class="btn-icon action-danger" on:click={() => emit('delete')} aria-label="Delete" title="Delete">
+      <Trash size={20} />
+    </button>
+  {/if}
+  <button class="btn-icon" on:click={() => showSheet = true} aria-label="More actions" title="More">
+    <DotsThreeVertical size={20} />
+  </button>
+</div>
+
+<!-- Bottom sheet overlay for more actions -->
+{#if showSheet}
+  <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+  <div class="sheet-overlay" on:click={() => showSheet = false} role="presentation" transition:fade={{ duration: 150 }}>
+    <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+    <div
+      class="sheet"
+      on:click|stopPropagation
+      on:keydown|stopPropagation
+      role="dialog"
+      transition:fly={{ y: 200, duration: 300 }}
+    >
+      <div class="sheet-handle"></div>
+      <h3 class="sheet-title">{selectedCount} {selectedCount === 1 ? 'item' : 'items'} selected</h3>
+
+      <div class="sheet-action-list">
+        {#if canDetails && singleSelection}
+          <button class="sheet-option" on:click={() => emit('details')}>
+            <span class="sheet-option-icon"><Info size={20} /></span>
+            <span>Details</span>
+          </button>
+        {/if}
+        {#if canShare && singleSelection}
+          <button class="sheet-option" on:click={() => emit('share')}>
+            <span class="sheet-option-icon"><ShareNetwork size={20} /></span>
+            <span>Share link</span>
+          </button>
+        {/if}
+        {#if canRename && singleSelection}
+          <button class="sheet-option" on:click={() => emit('rename')}>
+            <span class="sheet-option-icon"><PencilSimple size={20} /></span>
+            <span>Rename</span>
+          </button>
+        {/if}
+        {#if canMove}
+          <button class="sheet-option" on:click={() => emit('move')}>
+            <span class="sheet-option-icon"><ArrowRight size={20} /></span>
+            <span>Move</span>
+          </button>
+        {/if}
+        {#if canCopy}
+          <button class="sheet-option" on:click={() => emit('copy')}>
+            <span class="sheet-option-icon"><Copy size={20} /></span>
+            <span>Copy</span>
+          </button>
+        {/if}
+        {#if canFavorite}
+          <button class="sheet-option" on:click={handleFavorite}>
+            <span class="sheet-option-icon star">
+              <span class="star-wrap" class:bursting={favBurstActive}>
+                <Star size={20} weight={favoriteState === 'all' ? 'fill' : 'regular'} />
+                {#if favBurstActive}
+                  {#each [0, 60, 120, 180, 240, 300] as angle}
+                    <span class="burst-dot" style="--angle: {angle}deg"></span>
+                  {/each}
+                {/if}
+              </span>
+            </span>
+            <span>{favoriteLabel}</span>
+          </button>
+        {/if}
+        {#if canDownload}
+          <button class="sheet-option" on:click={() => emit('download')}>
+            <span class="sheet-option-icon"><DownloadSimple size={20} /></span>
+            <span>Download</span>
+          </button>
+        {/if}
+        {#if canDelete}
+          <button class="sheet-option danger" on:click={() => emit('delete')}>
+            <span class="sheet-option-icon"><Trash size={20} /></span>
+            <span>Delete</span>
+          </button>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+<style>
+  /* ── Selection top bar (DESIGN.md 15) ────────────────────── */
+  .selection-top-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: var(--z-topbar);
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm);
+  }
+
+  .selection-title {
+    font-size: var(--t-body-size);
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+  }
+
+  .selection-spacer {
+    flex: 1;
+  }
+
+  .selection-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-xs);
+    margin-left: auto;
+  }
+
+  .action-danger {
+    color: var(--danger) !important;
+  }
+
+  /* ── Desktop: full top bar with inline actions ─────────── */
+  .desktop-bar {
+    display: flex;
+  }
+
+  @media (min-width: 600px) {
+    .desktop-bar {
+      left: var(--drawer-current-width, var(--drawer-width));
+    }
+  }
+
+  .mobile-top {
+    display: none;
+  }
+
+  .mobile-action-bar {
+    display: none;
+  }
+
+  /* ── Mobile: top bar + bottom action bar ───────────────── */
+  @media (max-width: 599px) {
+    .desktop-bar {
+      display: none;
+    }
+
+    .mobile-top {
+      display: flex;
+    }
+
+    .mobile-action-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: var(--bottom-nav-height);
+      background: var(--glass-bg);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      border-top: var(--glass-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-around;
+      z-index: var(--z-bottomnav);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    @supports not (backdrop-filter: blur(1px)) {
+      .mobile-action-bar {
+        background: var(--bg-surface-raised);
+        border-top: 1px solid var(--border);
+      }
+    }
+  }
+
+  /* ── Bottom sheet ────────────────────────────────────────── */
+  .sheet-action-list {
+    display: flex;
+    flex-direction: column;
+    margin-top: var(--sp-sm);
+  }
+
+  .sheet-option-icon.star {
+    background-color: var(--accent-warm-muted);
+    color: var(--accent-warm);
+  }
+
+  /* ── Favorite star burst (§29.3.3) ──────────────────────── */
+  .star-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .star-wrap.bursting :global(svg) {
+    animation: starPop 300ms ease-out;
+    color: var(--accent-warm, #E0A320);
+  }
+  .burst-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--accent-warm, #E0A320);
+    animation: dotFly 350ms ease-out forwards;
+  }
+  @keyframes starPop {
+    0%   { transform: scale(1); }
+    40%  { transform: scale(1.3); }
+    100% { transform: scale(1); }
+  }
+  @keyframes dotFly {
+    0%   { transform: rotate(var(--angle)) translateY(0); opacity: 1; }
+    100% { transform: rotate(var(--angle)) translateY(-14px); opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .star-wrap.bursting :global(svg) { animation: none; }
+    .burst-dot { animation: none; opacity: 0; }
+  }
+</style>

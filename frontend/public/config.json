@@ -1,0 +1,10 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "clientIds": {
+    "gdrive": "",
+    "dropbox": "",
+    "onedrive": "",
+    "box": "",
+    "pcloud": ""
+  }
+}

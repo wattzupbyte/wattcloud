@@ -1,0 +1,800 @@
+<script lang="ts">
+  /**
+   * DeviceEnrollment — QR-based two-role device enrollment.
+   *
+   * role='existing': Existing device initiates enrollment (shows QR, sends shard)
+   * role='new': New device joins enrollment (scans QR, receives shard, unlocks)
+   *
+   * Security invariants:
+   * - SAS mismatch aborts + zeroizes all ephemeral material
+   * - Shard is transmitted only after SAS visual confirmation
+   * - All ephemeral keys cleared on destroy / error / mismatch
+   */
+  import { createEventDispatcher, onDestroy } from 'svelte';
+  import * as byoWorker from '@wattcloud/sdk';
+  import { acquireEnrollmentRelayCookie, evictEnrollmentRelayCookieCache } from '@wattcloud/sdk';
+  import type { StorageProvider, ProviderConfig } from '@wattcloud/sdk';
+  import { generateDeviceCryptoKey, setDeviceRecord } from '../../byo/DeviceKeyStore';
+  import {
+    unlockVault,
+    getVaultSessionId,
+    getPrimaryProviderId,
+    MANIFEST_FILE,
+    bytesToBase64,
+    base64ToBytes,
+  } from '../../byo/VaultLifecycle';
+  import { vaultStore } from '../../byo/stores/vaultStore';
+  import { hydrateProvider, providerNeedsReauth, type SftpCredentials } from '../../byo/ProviderHydrate';
+  import { saveProviderConfig } from '../../byo/ProviderConfigStore';
+  import QrDisplay from './QrDisplay.svelte';
+  import QrScanner from './QrScanner.svelte';
+  import SasConfirmation from './SasConfirmation.svelte';
+  import Argon2Progress from './Argon2Progress.svelte';
+  import ByoPassphraseInput from './ByoPassphraseInput.svelte';
+  import SftpReauthSheet from './SftpReauthSheet.svelte';
+  import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
+
+  export let role: 'existing' | 'new';
+  /** Required for role='existing': the shard to send (base64). */
+  export let shard: string = '';
+  /**
+   * Required for role='new' when the caller already has a provider.
+   * Optional when role='new' is entered from the start-screen — the provider
+   * is then hydrated on the fly from the primaryConfig received over the
+   * enrollment channel.
+   */
+  export let provider: StorageProvider | null = null;
+  /**
+   * role='existing' only: the primary ProviderConfig to ship to the new
+   * device alongside the shard, so the receiver does not have to add and
+   * authenticate the provider from scratch. For SFTP the password is never
+   * persisted on the source and therefore not in this config — the receiver
+   * re-enters it in the SFTP reauth sheet.
+   */
+  export let primaryConfig: ProviderConfig | null = null;
+  /**
+   * role='existing' only: human-readable label surfaced to the receiver
+   * during the SFTP reauth prompt (e.g. "Home Storage Box"). Optional.
+   */
+  export let primaryLabel: string = '';
+
+  const dispatch = createEventDispatcher<{
+    complete: void;
+    cancel: void;
+    /**
+     * New device: vault unlocked with new device enrolled. Carries the
+     * active provider instance so start-screen (sink) callers can wire it
+     * into the rest of the app — the provider may have been hydrated
+     * inside this component from a received primary_config.
+     */
+    enrolled: {
+      db: import('sql.js').Database;
+      sessionId: string;
+      provider: StorageProvider;
+      config: ProviderConfig | null;
+    };
+  }>();
+
+  type EnrollStep =
+    | 'qr-display'      // existing: show QR
+    | 'qr-scan'         // new: scan QR
+    | 'waiting-peer'    // both: waiting for peer to connect
+    | 'sas'             // both: show SAS code
+    | 'sas-confirmed'   // existing: sending shard; new: waiting for shard/config
+    | 'sftp-reauth'     // new (start-screen): re-enter SFTP creds for received config
+    | 'hydrating'       // new (start-screen): connecting to provider with received config
+    | 'passphrase'      // new: enter passphrase after provider is ready + shard received
+    | 'unlocking'       // new: Argon2id running
+    | 'done'            // existing: success
+    | 'error';
+
+  let step: EnrollStep = role === 'existing' ? 'qr-display' : 'qr-scan';
+  let qrData = '';
+  let sasCode = '';
+  let error = '';
+  let argon2Done = false;
+
+  // ── Receiver-side state for the received primary config ────────────────────
+  /** Decrypted primary ProviderConfig received from the existing device. */
+  let receivedConfig: ProviderConfig | null = null;
+  /** Display label forwarded by the existing device (for the SFTP reauth sheet). */
+  let receivedLabel: string = '';
+  /** Set once the shard envelope has been decrypted into the WASM session. */
+  let shardReceived = false;
+  /** SFTP reauth sheet state. */
+  let reauthBusy = false;
+  let reauthError = '';
+
+  // Relay WebSocket
+  let ws: WebSocket | null = null;
+  // Opaque enrollment session ID — eph_sk, enc_key, mac_key stored in WASM heap
+  let enrollmentSessionId: number | null = null;
+
+  // ── Existing device: initiate enrollment ───────────────────────────────────
+
+  async function startExistingDeviceEnrollment() {
+    try {
+      // Open enrollment session — eph_sk stored in WASM, never crosses boundary
+      const { ephPkB64, channelIdB64, sessionId } = await byoWorker.Worker.byoEnrollmentOpen();
+      enrollmentSessionId = sessionId;
+
+      // Build QR payload
+      qrData = JSON.stringify({ v: 1, ch: channelIdB64, pk: ephPkB64 });
+
+      // Acquire purpose-scoped relay cookie (PoW-gated, ~0.5–1 s).
+      await acquireEnrollmentRelayCookie(channelIdB64);
+
+      // Connect to relay WS
+      const relayBase = window.location.origin.replace(/^http/, 'ws');
+      ws = new WebSocket(`${relayBase}/relay/ws?mode=enrollment&channel=${channelIdB64}`);
+
+      ws.onmessage = async (event) => {
+        const msg = JSON.parse(event.data);
+
+        if (msg.type === 'peer_pk') {
+          // Derive session keys — eph_sk consumed, enc_key/mac_key stored in WASM session
+          const { sasCode: code } = await byoWorker.Worker.byoEnrollmentDeriveKeys(sessionId, msg.pk);
+          sasCode = String(code).padStart(6, '0');
+          step = 'sas';
+        }
+
+        if (msg.type === 'ready_for_config') {
+          // Receiver is in "start from scratch" mode — it needs the primary
+          // ProviderConfig to connect before it can even fetch the manifest.
+          // We only send this if the caller supplied one; otherwise the
+          // receiver is expected to have its own provider (legacy flow).
+          if (primaryConfig) {
+            try {
+              await sendPrimaryConfig();
+            } catch (e: any) {
+              error = e.message || 'Failed to send provider config';
+              step = 'error';
+              cleanup();
+              return;
+            }
+          } else {
+            // Tell the receiver so it surfaces a meaningful error instead of
+            // waiting forever for a payload that will never arrive.
+            ws?.send(JSON.stringify({ type: 'config_unavailable' }));
+          }
+        }
+
+        if (msg.type === 'done') {
+          step = 'done';
+          cleanup();
+          dispatch('complete');
+        }
+      };
+
+      ws.onerror = () => {
+        // Evict relay cookie so the next attempt re-acquires a fresh one.
+        evictEnrollmentRelayCookieCache(channelIdB64).catch(() => {/* best-effort */});
+        error = 'Relay connection error. Please try again.';
+        step = 'error';
+        cleanup();
+      };
+    } catch (e: any) {
+      error = e.message || 'Enrollment failed';
+      step = 'error';
+    }
+  }
+
+  // ── New device: scan QR ────────────────────────────────────────────────────
+
+  async function handleQrScanned(event: CustomEvent<string>) {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(event.detail);
+    } catch {
+      error = 'Invalid QR code';
+      step = 'error';
+      return;
+    }
+    if (
+      typeof payload !== 'object' || payload === null ||
+      (payload as Record<string, unknown>).v !== 1 ||
+      typeof (payload as Record<string, unknown>).ch !== 'string' ||
+      typeof (payload as Record<string, unknown>).pk !== 'string'
+    ) {
+      error = 'Invalid QR code — not a Wattcloud enrollment code.';
+      step = 'error';
+      return;
+    }
+    const typedPayload = payload as { v: number; ch: string; pk: string };
+
+    try {
+      // Open enrollment session — eph_sk stored in WASM
+      const { ephPkB64: myPk, sessionId } = await byoWorker.Worker.byoEnrollmentOpen();
+      enrollmentSessionId = sessionId;
+      const peerPk = typedPayload.pk;
+
+      // Acquire purpose-scoped relay cookie (PoW-gated, ~0.5–1 s).
+      await acquireEnrollmentRelayCookie(typedPayload.ch);
+
+      // Derive session keys from existing device's public key — enc_key/mac_key stored in WASM
+      const { sasCode: code } = await byoWorker.Worker.byoEnrollmentDeriveKeys(sessionId, peerPk);
+      sasCode = String(code).padStart(6, '0');
+
+      // Connect to relay WS
+      const relayBase = window.location.origin.replace(/^http/, 'ws');
+      ws = new WebSocket(`${relayBase}/relay/ws?mode=enrollment&channel=${typedPayload.ch}`);
+
+      ws.onopen = () => {
+        // Send our ephemeral public key to the existing device. C8: only
+        // surface the SAS UI after the peer has actually received our public
+        // key, so the user can't confirm "codes match" on the new device
+        // before the existing device has computed its own code.
+        ws!.send(JSON.stringify({ type: 'peer_pk', pk: myPk }));
+        step = 'sas';
+      };
+
+      ws.onmessage = async (event) => {
+        const msg = JSON.parse(event.data);
+
+        if (msg.type === 'encrypted_shard') {
+          try {
+            // Verify HMAC + decrypt shard; shard stored in WASM session
+            await byoWorker.Worker.byoEnrollmentSessionDecryptShard(sessionId, msg.envelope);
+            shardReceived = true;
+            await maybeAdvanceAfterTransfer();
+            // Keep the WebSocket open if we still expect primary_config — the
+            // relay doesn't have much to say after that, but the channel must
+            // stay live so we can receive the config (start-screen flow).
+            if (provider && shardReceived) cleanup();
+          } catch (e: any) {
+            error = e.message || 'Failed to decrypt shard';
+            step = 'error';
+            cleanup();
+          }
+        }
+
+        if (msg.type === 'primary_config') {
+          try {
+            await handleIncomingPrimaryConfig(msg.envelope);
+          } catch (e: any) {
+            error = e.message || 'Failed to decrypt provider config';
+            step = 'error';
+            cleanup();
+          }
+        }
+
+        if (msg.type === 'config_unavailable') {
+          error = 'The source device did not share its provider configuration. ' +
+            'Go to that device and start enrollment from a fully-unlocked vault.';
+          step = 'error';
+          cleanup();
+        }
+      };
+
+      ws.onerror = () => {
+        // Evict relay cookie so the next attempt re-acquires a fresh one.
+        evictEnrollmentRelayCookieCache(typedPayload.ch).catch(() => {/* best-effort */});
+        error = 'Relay connection error.';
+        step = 'error';
+        cleanup();
+      };
+
+      // C8: show a transient "connecting" state while the WS completes the
+      // handshake — `step = 'sas'` is set from inside ws.onopen above.
+      step = 'waiting-peer';
+    } catch (e: any) {
+      error = e.message || 'Enrollment failed';
+      step = 'error';
+    }
+  }
+
+  // ── Source-side: send the primary ProviderConfig over the channel ──────────
+
+  async function sendPrimaryConfig() {
+    if (!primaryConfig) throw new Error('No primary config to send');
+    if (enrollmentSessionId === null) throw new Error('No enrollment session');
+    // The session keys (enc_key / mac_key) live in WASM; we only ever see the
+    // opaque envelope bytes. A plaintext-JSON ProviderConfig fits comfortably
+    // under the 64 KiB payload cap enforced in sdk-core.
+    const payloadBytes = new TextEncoder().encode(JSON.stringify({
+      v: 1,
+      config: primaryConfig,
+      label: primaryLabel || '',
+    }));
+    const payloadB64 = bytesToBase64(payloadBytes);
+    const { envelopeB64 } = await byoWorker.Worker.byoEnrollmentSessionEncryptPayload(
+      enrollmentSessionId,
+      payloadB64,
+    );
+    ws?.send(JSON.stringify({ type: 'primary_config', envelope: envelopeB64 }));
+  }
+
+  // ── Receiver-side: handle incoming primary_config ──────────────────────────
+
+  async function handleIncomingPrimaryConfig(envelopeB64: string) {
+    if (enrollmentSessionId === null) throw new Error('No enrollment session');
+    const { payloadB64 } = await byoWorker.Worker.byoEnrollmentSessionDecryptPayload(
+      enrollmentSessionId,
+      envelopeB64,
+    );
+    const payloadBytes = base64ToBytes(payloadB64);
+    const payloadJson = new TextDecoder().decode(payloadBytes);
+    let parsed: { v?: number; config?: ProviderConfig; label?: string };
+    try {
+      parsed = JSON.parse(payloadJson);
+    } catch {
+      throw new Error('Provider config payload was not valid JSON');
+    }
+    if (!parsed || parsed.v !== 1 || !parsed.config || typeof parsed.config.type !== 'string') {
+      throw new Error('Unrecognized provider config payload');
+    }
+    receivedConfig = parsed.config;
+    receivedLabel = typeof parsed.label === 'string' ? parsed.label : '';
+    await maybeAdvanceAfterTransfer();
+  }
+
+  /**
+   * After each incoming message (shard or primary_config), check whether we
+   * now have everything we need to move the receiver forward. The two
+   * messages can arrive in either order; we only act once the set is
+   * complete.
+   */
+  async function maybeAdvanceAfterTransfer() {
+    // Legacy flow: caller passed a provider, no config transfer expected.
+    // The shard alone is enough to move to the passphrase step.
+    if (provider && shardReceived) {
+      step = 'passphrase';
+      return;
+    }
+    // Start-screen flow: need both shard AND decrypted config.
+    if (!provider && shardReceived && receivedConfig) {
+      if (providerNeedsReauth(receivedConfig)) {
+        step = 'sftp-reauth';
+      } else {
+        await hydrateReceivedConfig();
+      }
+    }
+  }
+
+  async function hydrateReceivedConfig(creds?: SftpCredentials) {
+    if (!receivedConfig) throw new Error('No received config to hydrate');
+    step = 'hydrating';
+    try {
+      const instance = await hydrateProvider(receivedConfig, creds);
+      provider = instance;
+      step = 'passphrase';
+    } catch (e: any) {
+      // Roll back to the reauth sheet so the user can retype credentials —
+      // hydrate() rejects synchronously if the creds don't auth.
+      reauthError = e?.message ?? 'Failed to connect with those credentials.';
+      step = receivedConfig && providerNeedsReauth(receivedConfig) ? 'sftp-reauth' : 'error';
+      if (step === 'error') error = reauthError;
+    }
+  }
+
+  async function handleSftpReauthSubmit(
+    event: CustomEvent<{ username: string; password: string; privateKey: string; passphrase: string }>,
+  ) {
+    if (!receivedConfig) return;
+    reauthBusy = true;
+    reauthError = '';
+    const { username, password, privateKey, passphrase } = event.detail;
+    // Splice the re-entered username back into the config so `init()` uses
+    // the fresh value (the source device may have a different preferred
+    // username, or the user may have corrected a typo).
+    receivedConfig = { ...receivedConfig, sftpUsername: username };
+    await hydrateReceivedConfig({
+      password: password || undefined,
+      privateKey: privateKey || undefined,
+      passphrase: passphrase || undefined,
+    });
+    reauthBusy = false;
+  }
+
+  function handleSftpReauthCancel() {
+    // Abort the whole link-device flow — the receiver cannot proceed without
+    // a working primary provider.
+    cleanup();
+    if (enrollmentSessionId !== null) {
+      byoWorker.Worker.byoEnrollmentClose(enrollmentSessionId).catch(() => {/* best-effort */});
+      enrollmentSessionId = null;
+    }
+    dispatch('cancel');
+  }
+
+  // ── SAS confirmation ───────────────────────────────────────────────────────
+
+  async function handleSasConfirm() {
+    if (role === 'existing') {
+      // Encrypt shard and send to new device using session keys (never leave WASM)
+      step = 'sas-confirmed';
+      try {
+        if (enrollmentSessionId === null) throw new Error('No enrollment session');
+        const { envelopeB64 } = await byoWorker.Worker.byoEnrollmentSessionEncryptShard(
+          enrollmentSessionId,
+          shard,
+        );
+        ws?.send(JSON.stringify({ type: 'encrypted_shard', envelope: envelopeB64 }));
+      } catch (e: any) {
+        error = e.message || 'Failed to send shard';
+        step = 'error';
+        cleanup();
+      }
+    } else {
+      // New device: we visually confirmed the SAS. If we don't already have
+      // a provider (start-screen flow), ask the source to send the primary
+      // ProviderConfig now. The source waits for this message before sending
+      // the config so the ordering is explicit and auditable.
+      step = 'sas-confirmed';
+      if (!provider) {
+        try {
+          ws?.send(JSON.stringify({ type: 'ready_for_config' }));
+        } catch (e: any) {
+          error = e.message || 'Failed to request provider config';
+          step = 'error';
+          cleanup();
+        }
+      }
+      // The shard arrives via WebSocket — already handled in onmessage.
+    }
+  }
+
+  function handleSasMismatch() {
+    // SECURITY: Close enrollment session (zeroizes eph_sk/enc_key/mac_key in WASM)
+    if (enrollmentSessionId !== null) {
+      byoWorker.Worker.byoEnrollmentClose(enrollmentSessionId).catch(() => {/* best-effort */});
+      enrollmentSessionId = null;
+    }
+    cleanup();
+    error = 'SAS codes did not match — enrollment aborted. Please try again.';
+    step = 'error';
+  }
+
+  // ── New device: unlock with received shard ─────────────────────────────────
+
+  async function handlePassphrase(event: CustomEvent<string>) {
+    const passphrase = event.detail;
+    step = 'unlocking';
+    argon2Done = false;
+
+    try {
+      if (!provider) throw new Error('No provider');
+      if (enrollmentSessionId === null) throw new Error('No enrollment session');
+
+      const vaultKeySessionId = crypto.randomUUID();
+      const db = await unlockVault(provider, { passphrase, keySessionId: vaultKeySessionId });
+      argon2Done = true;
+
+      // Consume the shard from the WASM enrollment session — briefly appears in JS
+      // for the WebCrypto device-slot encryption step (accepted exception).
+      const { shardB64: receivedShardB64 } = await byoWorker.Worker.byoEnrollmentSessionGetShard(enrollmentSessionId);
+
+      // Enroll this device in the vault
+      const deviceIdBytes = crypto.getRandomValues(new Uint8Array(16));
+      const vaultId = $vaultStore.vaultId!;
+      const deviceCryptoKey = await generateDeviceCryptoKey(vaultId);
+
+      // Encrypt shard with device CryptoKey (non-extractable — must happen in JS)
+      const slotIv = crypto.getRandomValues(new Uint8Array(12));
+      const encryptedShardBuf = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: slotIv },
+        deviceCryptoKey,
+        Uint8Array.from(atob(receivedShardB64), (c) => c.charCodeAt(0)),
+      );
+      const encryptedShardBytes = new Uint8Array(encryptedShardBuf);
+
+      // Write new device slot into vault_manifest.sc header.
+      // Must happen before setDeviceRecord so IDB state never diverges from the header.
+      const HEADER_SIZE = 1227;
+      const HMAC_OFFSET = 1195;
+      const DEVICE_SLOTS_OFFSET = 191;
+      const SLOT_SIZE = 125;
+      const MAX_SLOTS = 8;
+
+      const { data: manifestBytes, version: currentVersion } = await provider.download(provider.manifestRef());
+      if (manifestBytes.length < HEADER_SIZE) throw new Error('Manifest too small');
+
+      const header = new Uint8Array(manifestBytes.slice(0, HEADER_SIZE));
+      const numActiveSlots = header[190];
+      if (numActiveSlots >= MAX_SLOTS) throw new Error('All device slots are full');
+
+      const slotOffset = DEVICE_SLOTS_OFFSET + numActiveSlots * SLOT_SIZE;
+      header[slotOffset] = 0x01;                                      // status Active
+      header.set(deviceIdBytes, slotOffset + 1);                      // device_id [1..17]
+      header.set(slotIv, slotOffset + 17);                            // wrap_iv [17..29]
+      header.set(encryptedShardBytes, slotOffset + 29);               // encrypted_payload [29..77]
+      // signing_key_wrapped [77..125] = zeros (not yet provisioned)
+      header[190] = numActiveSlots + 1;                               // bump num_active_slots
+
+      const vaultWasmSessionId = getVaultSessionId();
+      if (vaultWasmSessionId === null) throw new Error('No active vault session for HMAC');
+      const { hmac } = await byoWorker.Worker.byoVaultComputeHeaderHmac(
+        vaultWasmSessionId,
+        bytesToBase64(header.slice(0, HMAC_OFFSET)),
+      );
+      header.set(base64ToBytes(hmac), HMAC_OFFSET);
+
+      // Re-assemble manifest (new header + existing body) and upload
+      const manifestBody = manifestBytes.slice(HEADER_SIZE);
+      const newManifest = new Uint8Array(HEADER_SIZE + manifestBody.length);
+      newManifest.set(header, 0);
+      newManifest.set(manifestBody, HEADER_SIZE);
+      await provider.upload(provider.manifestRef(), 'vault_manifest.sc', newManifest, {
+        mimeType: 'application/octet-stream',
+        expectedVersion: currentVersion,
+      });
+
+      // Persist IDB device record only after header upload succeeds
+      const deviceIdHex = Array.from(deviceIdBytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+      await setDeviceRecord({
+        vault_id: vaultId,
+        device_id: deviceIdHex,
+        device_name: navigator.userAgent.slice(0, 64),
+        last_seen_vault_version: 1,
+        last_seen_manifest_version: 0,
+        last_backup_prompt_at: null,
+      });
+
+      // If we hydrated from a received primary_config (start-screen flow),
+      // persist it so the vault now appears in the vault-list on next reload.
+      // Secondaries rehydrate from the unlocked manifest's config_json entries
+      // the first time they're opened — we only persist the primary because
+      // without it the new device can't fetch the manifest at all.
+      if (receivedConfig) {
+        // After unlockVault returns, VaultLifecycle has parsed the manifest
+        // and populated _primaryProviderId with the authoritative UUID.
+        // Reusing that UUID keeps this device's ProviderConfigStore row in
+        // sync with every other device's row for the same vault.
+        const providerIdForLink = getPrimaryProviderId() || crypto.randomUUID();
+        const cfgLabel = receivedLabel.trim().length > 0
+          ? receivedLabel
+          : (provider?.displayName ?? receivedConfig.type);
+        try {
+          await saveProviderConfig(
+            {
+              provider_id: providerIdForLink,
+              vault_id: vaultId,
+              vault_label: cfgLabel,
+              type: receivedConfig.type,
+              display_name: provider?.displayName ?? receivedConfig.type,
+              is_primary: true,
+              saved_at: new Date().toISOString(),
+            },
+            // Strip SFTP secrets before persisting — the config we received
+            // from the source already omits them, but the user's freshly
+            // entered credentials flowed via hydrateProvider into the WASM
+            // credHandle (not into this config object), so this is a safe
+            // no-op for SFTP and covers OAuth/S3 configs verbatim.
+            receivedConfig,
+          );
+        } catch (persistErr) {
+          // Non-fatal: the vault is unlocked and usable; the user will just
+          // have to re-add the provider on next reload. Log for diagnostics.
+          console.warn('[DeviceEnrollment] saveProviderConfig failed', persistErr);
+        }
+      }
+
+      // Signal existing device that enrollment is done
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'done' }));
+      }
+
+      // Close enrollment session (zeroizes remaining material in WASM)
+      byoWorker.Worker.byoEnrollmentClose(enrollmentSessionId).catch(() => {/* best-effort */});
+      enrollmentSessionId = null;
+
+      dispatch('enrolled', {
+        db,
+        sessionId: vaultKeySessionId,
+        // At this point `provider` is guaranteed non-null — either supplied
+        // by the parent (legacy flow) or hydrated above from receivedConfig.
+        provider: provider!,
+        config: receivedConfig ?? (provider!.getConfig?.() ?? null),
+      });
+    } catch (e: any) {
+      error = e.message || 'Failed to unlock vault with received shard';
+      step = 'error';
+    }
+  }
+
+  // ── Cleanup ────────────────────────────────────────────────────────────────
+
+  function cleanup() {
+    if (ws && ws.readyState !== WebSocket.CLOSED) {
+      ws.close();
+    }
+    ws = null;
+  }
+
+  onDestroy(() => {
+    // Close enrollment session (zeroizes eph_sk/enc_key/mac_key/shard in WASM)
+    if (enrollmentSessionId !== null) {
+      byoWorker.Worker.byoEnrollmentClose(enrollmentSessionId).catch(() => {/* best-effort */});
+      enrollmentSessionId = null;
+    }
+    cleanup();
+  });
+
+  // Start existing device enrollment on mount
+  $: if (role === 'existing' && step === 'qr-display' && !qrData) {
+    startExistingDeviceEnrollment();
+  }
+</script>
+
+<div class="enrollment">
+  {#if step === 'qr-display'}
+    <h2 class="title">Enroll a new device</h2>
+    <p class="subtitle">Hold this screen up to the new device to scan. Do not screenshot or share this code — enrollment must happen in person.</p>
+    {#if qrData}
+      <QrDisplay data={qrData} ariaLabel="QR code for device enrollment" />
+    {:else}
+      <div class="loading">Generating enrollment code…</div>
+    {/if}
+    <p class="qr-warning" role="note">
+      Never send this QR code over chat or email. Anyone who scans it could try to enroll their device instead of yours.
+    </p>
+    <button class="btn btn-secondary wide-btn" on:click={() => dispatch('cancel')}>Cancel</button>
+
+  {:else if step === 'qr-scan'}
+    <h2 class="title">Scan the QR code</h2>
+    <p class="subtitle">On your existing device, open Settings → Enroll device, then scan the code here.</p>
+    <QrScanner on:scanned={handleQrScanned} on:error={(e) => { error = e.detail; step = 'error'; }} />
+    <button class="btn btn-secondary wide-btn" on:click={() => dispatch('cancel')}>Cancel</button>
+
+  {:else if step === 'waiting-peer'}
+    <h2 class="title">Connecting…</h2>
+    <div class="spinner-wrap"><div class="spinner"></div></div>
+    <p class="subtitle">Waiting for the existing device to respond.</p>
+
+  {:else if step === 'sas'}
+    <h2 class="title">Verify security code</h2>
+    <SasConfirmation {sasCode} on:confirm={handleSasConfirm} on:mismatch={handleSasMismatch} />
+
+  {:else if step === 'sas-confirmed'}
+    <h2 class="title">{role === 'existing' ? 'Sending credentials…' : 'Receiving credentials…'}</h2>
+    <div class="spinner-wrap"><div class="spinner"></div></div>
+    <p class="subtitle">
+      {role === 'existing'
+        ? 'Securely transferring vault access to the new device.'
+        : 'Waiting for the other device to finish sending.'}
+    </p>
+
+  {:else if step === 'sftp-reauth' && receivedConfig}
+    <SftpReauthSheet
+      config={receivedConfig}
+      vaultLabel={receivedLabel}
+      busy={reauthBusy}
+      error={reauthError}
+      on:submit={handleSftpReauthSubmit}
+      on:cancel={handleSftpReauthCancel}
+    />
+
+  {:else if step === 'hydrating'}
+    <h2 class="title">Connecting to provider…</h2>
+    <div class="spinner-wrap"><div class="spinner"></div></div>
+    <p class="subtitle">Opening the storage backend with the credentials you entered.</p>
+
+  {:else if step === 'passphrase'}
+    <h2 class="title">Enter your passphrase</h2>
+    <p class="subtitle">Verify your identity to complete enrollment.</p>
+    <ByoPassphraseInput mode="unlock" submitLabel="Complete enrollment" on:submit={handlePassphrase} />
+
+  {:else if step === 'unlocking'}
+    <h2 class="title">Unlocking vault…</h2>
+    <Argon2Progress done={argon2Done} />
+
+  {:else if step === 'done'}
+    <div class="success">
+      <div class="success-icon" aria-hidden="true">
+        <CheckCircle size={72} weight="regular" color="var(--accent, #2EB860)" />
+      </div>
+      <h2 class="title">Device enrolled</h2>
+      <p class="subtitle">The new device now has access to your vault.</p>
+      <button class="btn btn-primary wide-btn" on:click={() => dispatch('complete')}>Done</button>
+    </div>
+
+  {:else if step === 'error'}
+    <div class="error-state">
+      <p class="error-msg" role="alert">{error}</p>
+      <div class="error-actions">
+        <button class="btn btn-secondary" on:click={() => {
+          error = '';
+          step = role === 'existing' ? 'qr-display' : 'qr-scan';
+          if (role === 'existing') { qrData = ''; startExistingDeviceEnrollment(); }
+        }}>Try again</button>
+        <button class="btn btn-ghost" on:click={() => dispatch('cancel')}>Cancel</button>
+      </div>
+    </div>
+  {/if}
+</div>
+
+<style>
+  .enrollment {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-md, 16px);
+    align-items: center;
+    max-width: 420px;
+    margin: 0 auto;
+    padding: var(--sp-lg, 24px) var(--sp-md, 16px);
+    text-align: center;
+  }
+
+  .title {
+    margin: 0;
+    font-size: var(--t-title-size, 1.25rem);
+    font-weight: 700;
+    color: var(--text-primary, #EDEDED);
+  }
+
+  .subtitle {
+    margin: 0;
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    color: var(--text-secondary, #999999);
+    line-height: 1.5;
+  }
+
+  .loading {
+    color: var(--text-secondary, #999999);
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    padding: var(--sp-xl, 32px);
+  }
+
+  .qr-warning {
+    margin: 0;
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    color: var(--accent-warm-text, #F0C04A);
+    background: var(--accent-warm-muted, #3D2E10);
+    border: 1px solid var(--accent-warm, #E0A320);
+    border-radius: var(--r-input, 12px);
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px);
+    text-align: left;
+    line-height: 1.5;
+  }
+
+  .wide-btn {
+    width: 100%;
+  }
+
+  .spinner-wrap {
+    padding: var(--sp-xl, 32px);
+  }
+
+  .spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid var(--border, #2E2E2E);
+    border-top-color: var(--accent, #2EB860);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 0 auto;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .success {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--sp-md, 16px);
+    padding: var(--sp-xl, 32px) 0;
+  }
+
+  .error-state {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-sm, 8px);
+  }
+
+  .error-msg {
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px);
+    background: var(--danger-muted, #3D1F1F);
+    border: 1px solid var(--danger, #D64545);
+    border-radius: var(--r-input, 12px);
+    color: var(--danger, #D64545);
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    text-align: left;
+  }
+
+  .error-actions {
+    display: flex;
+    gap: var(--sp-sm, 8px);
+    justify-content: center;
+  }
+</style>

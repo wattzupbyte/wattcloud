@@ -1,0 +1,24 @@
+target/
+node_modules/
+dist/
+build/
+.env
+.env.*
+!.env.example
+.dev-state/
+*.log
+.DS_Store
+Cargo.lock.bak
+/data/
+/backup/
+coverage/
+.vite/
+.vscode/
+.idea/
+*.swp
+wasm-pack.log
+pkg/
+
+# Traefik ACME store — contains the private key + issued certificates.
+# Never commit. deploy-vps.sh creates an empty 0600 file at provision.
+traefik/acme.json

@@ -1,0 +1,68 @@
+[Unit]
+Description=Wattcloud BYO relay (zero-knowledge, stateless)
+Documentation=https://github.com/wattzupbyte/wattcloud
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=wattcloud
+StateDirectoryMode=0700
+
+# Secrets and OAuth client IDs live here (0600 root).
+EnvironmentFile=/etc/wattcloud/wattcloud.env
+
+# Fixed runtime layout — the SPA + binary ship inside the release tarball.
+# Caddy terminates TLS on :443 and reverse-proxies here, so byo-relay binds
+# to loopback only.
+Environment=BIND_ADDR=127.0.0.1:8443
+Environment=SPA_DIR=/opt/wattcloud/current/web
+Environment=STATS_DB_PATH=/var/lib/wattcloud/stats.sqlite3
+# Share ciphertext (blobs) + share metadata index. Both live under the
+# same StateDirectory so ProtectSystem=strict keeps them writable.
+Environment=SHARE_STORAGE_DIR=/var/lib/wattcloud/shares
+Environment=SHARE_DB_PATH=/var/lib/wattcloud/shares.sqlite3
+# Enrollment store + bootstrap-token file. The Rust defaults point at
+# /var/lib/byo-relay/* (matches the Docker volume layout); on the systemd
+# install we override into StateDirectory so ProtectSystem=strict doesn't
+# block writes. Without these overrides the relay crashes at startup
+# whenever WATTCLOUD_ENROLLMENT_MODE=restricted (the fresh-install default).
+Environment=ENROLLMENT_DB_PATH=/var/lib/wattcloud/enrollment.sqlite3
+Environment=BOOTSTRAP_TOKEN_PATH=/var/lib/wattcloud/bootstrap.txt
+Environment=RUST_LOG=warn
+
+ExecStart=/opt/wattcloud/current/bin/byo-relay
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+
+# ── Sandboxing (isolation primitive for the zero-state relay) ───────────────
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

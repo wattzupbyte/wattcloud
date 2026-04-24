@@ -1,0 +1,99 @@
+[package]
+name = "byo-relay"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone workspace — russh pulls ml-kem>=0.3.0-rc.6 which requires a newer
+# `kem` crate version than sdk-core's pinned 0.3.0-pre.0. Keeping byo-relay in
+# its own workspace prevents cargo's resolver from colliding them.
+[workspace]
+
+[[bin]]
+name = "byo-relay"
+path = "src/main.rs"
+
+[[bin]]
+name = "byo-admin"
+path = "src/bin/admin.rs"
+
+[lib]
+name = "byo_relay"
+path = "src/lib.rs"
+
+[dependencies]
+# Web framework — same version as /backend
+axum = { version = "0.7", features = ["ws", "macros"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = "0.3"
+# Slim helper for yielding from async blocks into a Stream — used by the
+# share-download throttle to pace bytes during the slow-start window
+# without hand-rolling a Stream impl.
+async-stream = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Tower middleware
+tower = { version = "0.4", features = ["util", "timeout"] }
+tower-http = { version = "0.5", features = ["fs", "timeout"] }
+
+# TLS — same stack as backend
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = { version = "0.23", features = ["ring"] }
+
+# JWT (relay auth cookie)
+jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto"] }
+
+# Cookies
+tower-cookies = "0.10"
+time = "0.3"
+
+# Random
+rand = "0.8"
+uuid = { version = "1.0", features = ["v4"] }
+
+# HTTP types
+http = "1.0"
+
+# Logging (minimal — zero-logging means no request middleware)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# DNS resolution with SSRF protection
+hickory-resolver = { version = "0.24", features = ["tokio-runtime"] }
+
+# SSH/SFTP client for SFTP relay gateway
+russh = "0.60"
+russh-sftp = "2.1"
+
+# Base64 decoding for channel ID
+base64 = "0.21"
+
+# SHA-256 for PoW verification and HMAC for share ownership tokens + stats device hashing
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+
+# statvfs() for the /relay/share/headroom endpoint
+libc = "0.2"
+
+# Stats: bundled SQLite (no system lib dependency)
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# byo-admin CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+[dev-dependencies]
+tokio-test = "0.4"
+reqwest = { version = "0.12", features = ["cookies", "rustls-tls"], default-features = false }
+tokio-tungstenite = "0.23"
+tempfile = "3"

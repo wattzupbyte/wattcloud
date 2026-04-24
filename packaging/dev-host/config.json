@@ -1,0 +1,10 @@
+{
+  "baseUrl": "https://dev.wattcloud.de",
+  "clientIds": {
+    "gdrive": "",
+    "dropbox": "",
+    "onedrive": "",
+    "box": "",
+    "pcloud": ""
+  }
+}

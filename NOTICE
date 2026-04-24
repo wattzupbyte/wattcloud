@@ -1,0 +1,103 @@
+Wattcloud
+Copyright 2026 wattzupbyte and Wattcloud contributors.
+
+Wattcloud is licensed under the GNU Affero General Public License, version 3
+or (at your option) any later version. See the LICENSE file for full terms.
+
+This product bundles or depends on the following third-party components.
+
+
+================================================================================
+Inter font
+================================================================================
+
+Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)
+
+Licensed under the SIL Open Font License, Version 1.1. The full license text
+and FAQ are available at http://scripts.sil.org/OFL and are reproduced in
+`frontend/node_modules/@fontsource/inter/LICENSE` when the frontend
+dependencies are installed.
+
+The Inter font files (400, 500, 600, 700 weights) are bundled into the
+production frontend build via the `@fontsource/inter` npm package.
+
+The "Inter" name is a Reserved Font Name under OFL-1.1 §5 — derivatives of
+the font MUST NOT be distributed under the "Inter" name.
+
+
+================================================================================
+Rust / Cargo dependencies (byo-relay, sdk-core, sdk-wasm)
+================================================================================
+
+The byo-relay server and the sdk-core / sdk-wasm workspaces depend on crates
+from the Rust ecosystem. Every transitive dependency is licensed under one
+or more of the following permissive licenses:
+
+  - MIT License
+  - Apache License, Version 2.0 (some with the LLVM Exception)
+  - BSD 2-Clause / BSD 3-Clause License
+  - ISC License
+  - Unicode License v3
+  - Zlib License
+  - 0BSD License
+  - Boost Software License 1.0
+  - The Unlicense
+  - Creative Commons Zero v1.0 Universal
+  - Community Data License Agreement - Permissive 2.0
+
+Notable upstream projects include the RustCrypto suite (AES-GCM, AES-GCM-SIV,
+Argon2, HKDF, HMAC, BLAKE2, X25519-Dalek), the ML-KEM / CRYSTALS-Kyber
+implementation, Tokio, Hyper, Axum, Tower, Serde, rustls, and SQLx. All
+carry permissive licensing compatible with the AGPL-3.0-or-later terms of
+this work.
+
+The complete per-crate attribution — including the full text of each crate's
+license — is generated at release time into `THIRD-PARTY-LICENSES.txt` and
+shipped inside the signed release tarball. Contributors reproducing this file
+locally can run:
+
+    cargo install cargo-about
+    cargo about generate --format text > THIRD-PARTY-LICENSES.txt
+
+
+================================================================================
+JavaScript / TypeScript dependencies (frontend)
+================================================================================
+
+The frontend single-page application depends on the following npm packages
+in the production bundle:
+
+  @fontsource/inter          OFL-1.1   (font — see above)
+  @types/sql.js              MIT
+  @zxcvbn-ts/core            MIT
+  @zxcvbn-ts/language-en     MIT
+  client-zip                 MIT
+  exifr                      MIT
+  jsqr                       Apache-2.0
+  phosphor-svelte            MIT
+  qrcode                     MIT
+  sql.js                     MIT       (includes an embedded SQLite build,
+                                        which is in the public domain)
+  svelte                     MIT
+
+All Apache-2.0 attribution notices and MIT copyright lines are preserved in
+each package's installed directory under `frontend/node_modules/`. The
+complete per-package attribution is generated at release time into
+`frontend/THIRD-PARTY-LICENSES.txt` (via `npx license-checker --production`)
+and shipped inside the signed release tarball.
+
+Build-time and test-only dependencies (Vite, TypeScript, ESLint, Playwright,
+Vitest, svelte-preprocess, etc.) are not redistributed in the production
+bundle and their licenses are not reproduced here.
+
+
+================================================================================
+Trademarks
+================================================================================
+
+The Wattcloud name and wordmark are not licensed under the AGPL and are
+reserved by the project. Forks and derivative works may use the AGPL-licensed
+source code but must not use the "Wattcloud" name, wordmark, or any
+confusingly similar identifier to brand themselves.
+
+The "Inter" font name is a Reserved Font Name under SIL OFL-1.1 §5.

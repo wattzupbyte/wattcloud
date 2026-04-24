@@ -1,0 +1,296 @@
+name: Release
+
+# Fires on v*.*.* tag push only. Cross-compiles byo-relay for x86_64 and
+# aarch64 (glibc), assembles per-arch release tarballs in the install
+# layout, cosign sign-blobs each tarball + install.sh + CHECKSUMS.txt
+# KEYLESSLY via Actions OIDC, and publishes them as GitHub release assets.
+#
+# Deploy is manual — Actions never SSHes into a VPS. Every roll-out is
+# hand-initiated by the operator via `wattcloud-update`.
+#
+# Security model
+# --------------
+# The release tarballs on GitHub are PUBLIC. Integrity is provided by the
+# cosign blob signatures (Sigstore keyless, per-workflow-run certificate,
+# Rekor transparency logged). scripts/update.sh on the VPS runs
+# `cosign verify-blob` with certificate-identity-regexp = this repo's
+# release.yml @ refs/tags/v* before extracting. A swap of a release asset
+# fails verification and update.sh aborts before `mv -T current`.
+#
+# Workflow-injection notes
+# ------------------------
+# All third-party actions pinned by commit SHA. `run:` steps consume only
+# github.ref_name (strict-semver validated before any shell use) and
+# fixed-format digest/checksum outputs. No issue titles, PR bodies, or
+# commit messages are interpolated into shell.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write   # create the GitHub Release
+  id-token: write   # OIDC token for keyless cosign signing
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REF_NAME: ${{ github.ref_name }}
+
+jobs:
+  # --------------------------------------------------------------------------
+  # 1. Build the frontend once (arch-independent); publish as an artifact
+  #    consumed by both tarball-build matrix jobs.
+  # --------------------------------------------------------------------------
+  build-frontend:
+    name: Build frontend + wasm
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      - name: Validate tag matches semver
+        run: |
+          if ! printf '%s' "$REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$'; then
+            echo "::error::tag $REF_NAME does not match v<maj>.<min>.<patch>[-prerelease]"
+            exit 1
+          fi
+
+      # actions-rust-lang/setup-rust-toolchain@v1.16.0 — versioned replacement
+      # for dtolnay/rust-toolchain (whose `stable` branch force-pushes).
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+          cache: false
+
+      - uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84
+
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh -s -- --version 0.12.1
+
+      - name: wasm-pack build (sdk-wasm)
+        run: wasm-pack build sdk/sdk-wasm --release --target web --out-dir ../../frontend/src/pkg --out-name wattcloud_sdk_wasm
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+          # npm run build emits to ../byo-relay/dist per package.json.
+
+      - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a
+        with:
+          name: frontend-dist
+          path: byo-relay/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  # --------------------------------------------------------------------------
+  # 2. Cross-compile byo-relay + assemble per-arch tarball + cosign sign-blob.
+  # --------------------------------------------------------------------------
+  build-tarball:
+    name: Tarball (${{ matrix.arch }})
+    needs: build-frontend
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64-linux
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64-linux
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      - uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          cache: false
+
+      - uses: Swatinem/rust-cache@23bce251a8cd2ffc3c1075eaa2367cf899916d84
+        with:
+          workspaces: byo-relay
+          key: release-${{ matrix.target }}
+
+      - name: Install cross
+        run: cargo install cross --locked --version 0.2.5
+
+      - name: Cross-compile byo-relay + byo-admin
+        run: |
+          cd byo-relay
+          cross build --release --bin byo-relay --bin byo-admin --target ${{ matrix.target }}
+
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+        with:
+          name: frontend-dist
+          path: byo-relay/dist
+
+      - name: Assemble tarball layout
+        run: |
+          set -eux
+          PAYLOAD="wattcloud-${REF_NAME}-${{ matrix.arch }}"
+          mkdir -p "dist/${PAYLOAD}"/{bin,web,scripts,packaging}
+
+          install -m 0755 "byo-relay/target/${{ matrix.target }}/release/byo-relay" "dist/${PAYLOAD}/bin/byo-relay"
+          install -m 0755 "byo-relay/target/${{ matrix.target }}/release/byo-admin" "dist/${PAYLOAD}/bin/byo-admin"
+
+          cp -r byo-relay/dist/. "dist/${PAYLOAD}/web/"
+
+          install -m 0755 scripts/deploy-vps.sh  "dist/${PAYLOAD}/scripts/"
+          install -m 0755 scripts/harden-vps.sh  "dist/${PAYLOAD}/scripts/"
+          install -m 0755 scripts/update.sh      "dist/${PAYLOAD}/scripts/"
+          install -m 0755 scripts/uninstall.sh   "dist/${PAYLOAD}/scripts/"
+          install -m 0755 scripts/lib.sh         "dist/${PAYLOAD}/scripts/"
+          # oauth-setup.sh is optional — include if present (Step 7 of migration).
+          [ -f scripts/oauth-setup.sh ] && install -m 0755 scripts/oauth-setup.sh "dist/${PAYLOAD}/scripts/" || true
+
+          install -m 0644 packaging/wattcloud.service "dist/${PAYLOAD}/packaging/"
+          install -m 0644 packaging/Caddyfile.tmpl    "dist/${PAYLOAD}/packaging/"
+          install -m 0644 packaging/config.json.tmpl  "dist/${PAYLOAD}/packaging/"
+
+          install -m 0644 .env.example "dist/${PAYLOAD}/"
+          printf '%s\n' "$REF_NAME" > "dist/${PAYLOAD}/VERSION"
+
+          tar -czf "dist/${PAYLOAD}.tar.gz" -C dist "${PAYLOAD}"
+          sha256sum "dist/${PAYLOAD}.tar.gz" > "dist/${PAYLOAD}.tar.gz.sha256"
+
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: cosign sign-blob (tarball)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          PAYLOAD="wattcloud-${REF_NAME}-${{ matrix.arch }}"
+          cosign sign-blob \
+            --yes \
+            --output-signature "dist/${PAYLOAD}.tar.gz.sig" \
+            --output-certificate "dist/${PAYLOAD}.tar.gz.cert" \
+            "dist/${PAYLOAD}.tar.gz"
+
+      - uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a
+        with:
+          name: tarball-${{ matrix.arch }}
+          path: |
+            dist/wattcloud-${{ env.REF_NAME }}-${{ matrix.arch }}.tar.gz
+            dist/wattcloud-${{ env.REF_NAME }}-${{ matrix.arch }}.tar.gz.sig
+            dist/wattcloud-${{ env.REF_NAME }}-${{ matrix.arch }}.tar.gz.cert
+            dist/wattcloud-${{ env.REF_NAME }}-${{ matrix.arch }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  # --------------------------------------------------------------------------
+  # 3. Publish: collect all per-arch tarballs, sign install.sh + CHECKSUMS,
+  #    push to the GitHub Release. Prereleases (tags containing '-') are
+  #    marked so they don't redirect to /releases/latest/download.
+  # --------------------------------------------------------------------------
+  publish:
+    name: Publish GitHub Release
+    needs: build-tarball
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+        with:
+          pattern: tarball-*
+          path: dist
+          merge-multiple: true
+
+      - name: Aggregate CHECKSUMS.txt
+        run: |
+          cd dist
+          sha256sum wattcloud-*.tar.gz > CHECKSUMS.txt
+          # Include install.sh itself so operators can verify the script.
+          cp ../scripts/install.sh install.sh
+          sha256sum install.sh >> CHECKSUMS.txt
+          cat CHECKSUMS.txt
+
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: cosign sign-blob (install.sh + CHECKSUMS.txt)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cd dist
+          cosign sign-blob --yes \
+            --output-signature install.sh.sig \
+            --output-certificate install.sh.cert \
+            install.sh
+          cosign sign-blob --yes \
+            --output-signature CHECKSUMS.txt.sig \
+            --output-certificate CHECKSUMS.txt.cert \
+            CHECKSUMS.txt
+
+      - name: Write release notes
+        run: |
+          PREV_TAG=$(git tag --sort=-creatordate | grep -v "^$REF_NAME$" | head -n 1 || true)
+          {
+            echo "## Wattcloud $REF_NAME"
+            echo
+            echo "### Install"
+            echo
+            echo "On a fresh Ubuntu 22.04+ VPS with a DNS A/AAAA record pointing at it:"
+            echo
+            echo '```bash'
+            echo "curl -sSLO https://github.com/${{ github.repository }}/releases/latest/download/install.sh"
+            echo "less install.sh       # audit before running"
+            echo "sudo bash install.sh cloud.example.com"
+            echo '```'
+            echo
+            echo "### Upgrade"
+            echo
+            echo '```bash'
+            echo "sudo wattcloud-update            # latest stable"
+            echo "sudo wattcloud-update $REF_NAME  # pin to this release"
+            echo '```'
+            echo
+            echo "### Trust chain"
+            echo
+            echo "Tarballs and install.sh are keyless-signed by this workflow via Sigstore."
+            echo "install.sh / wattcloud-update run \`cosign verify-blob\` against identity"
+            echo "\`https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/$REF_NAME\`"
+            echo "before extracting."
+            echo
+            echo "### Changes"
+            echo
+            if [ -n "$PREV_TAG" ]; then
+              git log --pretty=format:'- %s (%h)' "$PREV_TAG..$REF_NAME"
+            else
+              git log --pretty=format:'- %s (%h)' HEAD
+            fi
+          } > RELEASE_NOTES.md
+
+      - uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191
+        with:
+          tag_name: ${{ env.REF_NAME }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          # Tags containing '-' are treated as prereleases (e.g. v1.0.0-rc.1);
+          # they do not feed /releases/latest/download.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/wattcloud-*.tar.gz
+            dist/wattcloud-*.tar.gz.sig
+            dist/wattcloud-*.tar.gz.cert
+            dist/wattcloud-*.tar.gz.sha256
+            dist/install.sh
+            dist/install.sh.sig
+            dist/install.sh.cert
+            dist/CHECKSUMS.txt
+            dist/CHECKSUMS.txt.sig
+            dist/CHECKSUMS.txt.cert
