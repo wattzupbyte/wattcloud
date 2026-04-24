@@ -34,6 +34,10 @@ let decrypt_filename: any;
 // BYO vault WASM functions
 let byo_parse_vault_header: any;
 let byo_derive_vault_keys: any;
+// Exposed by the WASM module but not yet called from this worker. Kept
+// bound (via the `wasmModule.byo_derive_vault_keys_default` assignment
+// below) so adding a caller doesn't need to re-edit the wire-up block.
+let _byo_derive_vault_keys_default: any;
 let byo_unwrap_vault_key: any;
 let byo_derive_kek: any;
 let byo_derive_recovery_vault_kek: any;
@@ -427,7 +431,7 @@ async function initWasm(): Promise<void> {
 
     byo_parse_vault_header = wasmModule.byo_parse_vault_header;
     byo_derive_vault_keys = wasmModule.byo_derive_vault_keys;
-    byo_derive_vault_keys_default = wasmModule.byo_derive_vault_keys_default;
+    _byo_derive_vault_keys_default = wasmModule.byo_derive_vault_keys_default;
     byo_unwrap_vault_key = wasmModule.byo_unwrap_vault_key;
     byo_derive_kek = wasmModule.byo_derive_kek;
     byo_derive_recovery_vault_kek = wasmModule.byo_derive_recovery_vault_kek;
