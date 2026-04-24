@@ -1,4 +1,4 @@
-# Wattcloud - Post-Quantum Encryption Layer
+# Wattcloud - Post-Quantum Cloud File Manager
 
 **Turn your NAS or any storage you already own into an
 end-to-end-encrypted cloud drive, with post-quantum crypto and no vendor
