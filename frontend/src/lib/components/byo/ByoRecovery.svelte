@@ -15,7 +15,7 @@
   import { bytesToBase64, base64ToBytes } from '../../byo/VaultLifecycle';
   // recoverySessionId is stored between the verify and rekey steps
   let recoverySessionId: number | null = null;
-  import { generateDeviceCryptoKey, setDeviceRecord } from '../../byo/DeviceKeyStore';
+  import { generateDeviceCryptoKey, setDeviceRecord, clearWebAuthnRecord } from '../../byo/DeviceKeyStore';
   import StepIndicator from '../StepIndicator.svelte';
   import RecoveryKeyDisplay from '../RecoveryKeyDisplay.svelte';
   import ByoPassphraseInput from './ByoPassphraseInput.svelte';
@@ -215,6 +215,15 @@ const STEPS = ['Recovery Key', 'New Passphrase', 'Re-keying', 'New Recovery Key'
         last_seen_manifest_version: 0,
         last_backup_prompt_at: null,
       });
+
+      // 9. Drop any prior WebAuthn record for this vault. The record wraps
+      //    the *old* per-vault device CryptoKey, but step 5 generated a
+      //    brand-new one and step 6 cleared every device slot — so the
+      //    PRF-unwrapped key would no longer decrypt the device shard
+      //    (Windows Hello prompts, then the unlock fails). Clearing here
+      //    makes the next unlock land on the standard "first unlock —
+      //    enable WebAuthn?" onboarding instead of a stale gate.
+      await clearWebAuthnRecord(vaultIdB64);
 
       recoveryInput = '';
       step = 'new-recovery-key';
