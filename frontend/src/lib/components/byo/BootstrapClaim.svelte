@@ -26,6 +26,16 @@
     AccessControlError,
   } from '../../byo/accessControl';
 
+  interface Props {
+    /** Recovery mode: the relay already has at least one owner, and this
+     *  device is being added alongside via a freshly-minted bootstrap
+     *  token (`wattcloud regenerate-claim-token`). Tweaks copy so the
+     *  user understands they're not "the first owner". */
+    bootstrapped?: boolean;
+  }
+
+  let { bootstrapped = false }: Props = $props();
+
   let token = $state('');
   let label = $state(defaultDeviceLabel());
   let busy = $state(false);
@@ -45,8 +55,16 @@
         pubkeyB64: generatePubkeyPlaceholder(),
       });
       markEnrolled();
-      // Cookie is set by the server. Full reload re-probes /relay/info
-      // and lands the user on the normal ByoApp boot flow.
+      // Strip the recovery-mode `?claim` flag so the post-claim reload
+      // doesn't loop back into BootstrapClaim. history.replaceState
+      // updates the URL in place; reload() then re-probes /relay/info
+      // and lands the user on the normal ByoApp boot flow with a fresh
+      // device cookie.
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('claim')) {
+        url.searchParams.delete('claim');
+        history.replaceState({}, '', url.toString());
+      }
       window.location.reload();
     } catch (e) {
       if (e instanceof AccessControlError) {
@@ -64,10 +82,18 @@
     <div class="brand" aria-hidden="true">
       <CloudBadge size={56} variant="solid" color="var(--accent, #2EB860)" />
     </div>
-    <h1 class="title">Welcome to your Wattcloud</h1>
-    <p class="subtitle">
-      This instance doesn't have an owner yet. Claim ownership below to finish setup.
-    </p>
+    {#if bootstrapped}
+      <h1 class="title">Add this device as an owner</h1>
+      <p class="subtitle">
+        Use a freshly-minted bootstrap token to enroll this device alongside
+        the existing owner(s). Other devices stay enrolled.
+      </p>
+    {:else}
+      <h1 class="title">Welcome to your Wattcloud</h1>
+      <p class="subtitle">
+        This instance doesn't have an owner yet. Claim ownership below to finish setup.
+      </p>
+    {/if}
   </div>
 
   <section class="instructions">
