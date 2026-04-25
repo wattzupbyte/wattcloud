@@ -14,7 +14,7 @@
   import * as byoWorker from '@wattcloud/sdk';
   import { acquireEnrollmentRelayCookie, evictEnrollmentRelayCookieCache } from '@wattcloud/sdk';
   import type { StorageProvider, ProviderConfig } from '@wattcloud/sdk';
-  import { generateDeviceCryptoKey, setDeviceRecord } from '../../byo/DeviceKeyStore';
+  import { generateDeviceCryptoKey, setDeviceRecord, deleteDeviceRecord, deleteDeviceCryptoKey } from '../../byo/DeviceKeyStore';
   import {
     unlockVault,
     getVaultSessionId,
@@ -459,75 +459,119 @@ type EnrollStep =
     step = 'unlocking';
     argon2Done = false;
 
+    // vault_manifest.sc header byte offsets (vault_format.rs).
+    const HEADER_SIZE = 1227;
+    const HMAC_OFFSET = 1195;
+    const NUM_SLOTS_OFFSET = 190;
+    const DEVICE_SLOTS_OFFSET = 191;
+    const SLOT_SIZE = 125;
+    const MAX_SLOTS = 8;
+
+    let preopenedSessionId: number | null = null;
+    let createdDeviceKeyForVaultId: string | null = null;
+
     try {
       if (!provider) throw new Error('No provider');
       if (enrollmentSessionId === null) throw new Error('No enrollment session');
 
-      const vaultKeySessionId = crypto.randomUUID();
-      const db = await unlockVault(provider, { passphrase, keySessionId: vaultKeySessionId });
+      // ── Step 1: download manifest + parse header ─────────────────────────
+      // The receiver has no device slot yet, so it CANNOT call unlockVault
+      // first — unlockVault's slot-derive step (VaultLifecycle.ts §"Step 5")
+      // requires `slot.device_id === myDeviceId` to find the wrapped shard
+      // and would throw "Device slot not found in vault header". The whole
+      // point of enrollment is to write that slot. We therefore drive the
+      // bottom half of unlockVault manually (open WASM session, derive KEK
+      // from the received shard, write the slot, recompute HMAC, upload),
+      // then hand the live session to unlockVault via `preopenedSessionId`
+      // so it skips slot-derivation and continues with manifest decode +
+      // secondary-provider fetches.
+      const { data: manifestBytes, version: currentVersion } = await provider.download(
+        provider.manifestRef(),
+      );
+      if (manifestBytes.length < HEADER_SIZE) throw new Error('Manifest too small');
+      const headerBytes = new Uint8Array(manifestBytes.slice(0, HEADER_SIZE));
+      const headerInfo = await byoWorker.Worker.byoParseVaultHeader(
+        new Uint8Array(manifestBytes),
+      );
+      const vaultId: string = headerInfo.vault_id;
+
+      // ── Step 2: open vault WASM session via passphrase (Argon2id) ────────
+      preopenedSessionId = await byoWorker.Worker.byoVaultOpen(
+        passphrase,
+        headerInfo.master_salt,
+        headerInfo.argon2_memory_kb,
+        headerInfo.argon2_iterations,
+        headerInfo.argon2_parallelism,
+        headerInfo.pass_wrap_iv,
+        headerInfo.pass_wrapped_vault_key,
+      );
       argon2Done = true;
 
-      // Consume the shard from the WASM enrollment session — briefly appears in JS
-      // for the WebCrypto device-slot encryption step (accepted exception).
-      const { shardB64: receivedShardB64 } = await byoWorker.Worker.byoEnrollmentSessionGetShard(enrollmentSessionId);
+      // ── Step 3: verify header HMAC against the just-derived vault_key ────
+      const headerPrefixB64 = bytesToBase64(headerBytes.slice(0, HMAC_OFFSET));
+      const hmacB64 = bytesToBase64(headerBytes.slice(HMAC_OFFSET));
+      const hmacResult = await byoWorker.Worker.byoVaultVerifyHeaderHmac(
+        preopenedSessionId,
+        headerPrefixB64,
+        hmacB64,
+      );
+      if (!hmacResult.valid) throw new Error('Vault header HMAC verification failed');
 
-      // Enroll this device in the vault
-      const deviceIdBytes = crypto.getRandomValues(new Uint8Array(16));
-      const vaultId = $vaultStore.vaultId!;
+      // ── Step 4: pull the shard from the enrollment session, derive KEK ───
+      // Shard appears briefly in JS for the WebCrypto AES-GCM wrap below.
+      const { shardB64: receivedShardB64 } = await byoWorker.Worker.byoEnrollmentSessionGetShard(
+        enrollmentSessionId,
+      );
+      await byoWorker.Worker.byoVaultDeriveKek(preopenedSessionId, receivedShardB64);
+
+      // ── Step 5: enroll this device — generate device CryptoKey + slot ────
       const deviceCryptoKey = await generateDeviceCryptoKey(vaultId);
-
-      // Encrypt shard with device CryptoKey (non-extractable — must happen in JS)
+      createdDeviceKeyForVaultId = vaultId;
+      const deviceIdBytes = crypto.getRandomValues(new Uint8Array(16));
       const slotIv = crypto.getRandomValues(new Uint8Array(12));
+
+      const shardForSlot = Uint8Array.from(atob(receivedShardB64), (c) => c.charCodeAt(0));
       const encryptedShardBuf = await crypto.subtle.encrypt(
         { name: 'AES-GCM', iv: slotIv },
         deviceCryptoKey,
-        Uint8Array.from(atob(receivedShardB64), (c) => c.charCodeAt(0)),
+        shardForSlot,
       );
+      shardForSlot.fill(0);
       const encryptedShardBytes = new Uint8Array(encryptedShardBuf);
 
-      // Write new device slot into vault_manifest.sc header.
-      // Must happen before setDeviceRecord so IDB state never diverges from the header.
-      const HEADER_SIZE = 1227;
-      const HMAC_OFFSET = 1195;
-      const DEVICE_SLOTS_OFFSET = 191;
-      const SLOT_SIZE = 125;
-      const MAX_SLOTS = 8;
-
-      const { data: manifestBytes, version: currentVersion } = await provider.download(provider.manifestRef());
-      if (manifestBytes.length < HEADER_SIZE) throw new Error('Manifest too small');
-
-      const header = new Uint8Array(manifestBytes.slice(0, HEADER_SIZE));
-      const numActiveSlots = header[190];
+      // ── Step 6: write the new slot into the header in place ──────────────
+      const numActiveSlots = headerBytes[NUM_SLOTS_OFFSET];
       if (numActiveSlots >= MAX_SLOTS) throw new Error('All device slots are full');
 
       const slotOffset = DEVICE_SLOTS_OFFSET + numActiveSlots * SLOT_SIZE;
-      header[slotOffset] = 0x01;                                      // status Active
-      header.set(deviceIdBytes, slotOffset + 1);                      // device_id [1..17]
-      header.set(slotIv, slotOffset + 17);                            // wrap_iv [17..29]
-      header.set(encryptedShardBytes, slotOffset + 29);               // encrypted_payload [29..77]
+      headerBytes[slotOffset] = 0x01;                                      // status Active
+      headerBytes.set(deviceIdBytes, slotOffset + 1);                      // device_id [1..17]
+      headerBytes.set(slotIv, slotOffset + 17);                            // wrap_iv [17..29]
+      headerBytes.set(encryptedShardBytes, slotOffset + 29);               // encrypted_payload [29..77]
       // signing_key_wrapped [77..125] = zeros (not yet provisioned)
-      header[190] = numActiveSlots + 1;                               // bump num_active_slots
+      headerBytes[NUM_SLOTS_OFFSET] = numActiveSlots + 1;
 
-      const vaultWasmSessionId = getVaultSessionId();
-      if (vaultWasmSessionId === null) throw new Error('No active vault session for HMAC');
-      const { hmac } = await byoWorker.Worker.byoVaultComputeHeaderHmac(
-        vaultWasmSessionId,
-        bytesToBase64(header.slice(0, HMAC_OFFSET)),
+      // ── Step 7: recompute header HMAC against the (now-extended) header ──
+      const newHmacResult = await byoWorker.Worker.byoVaultComputeHeaderHmac(
+        preopenedSessionId,
+        bytesToBase64(headerBytes.slice(0, HMAC_OFFSET)),
       );
-      header.set(base64ToBytes(hmac), HMAC_OFFSET);
+      headerBytes.set(base64ToBytes(newHmacResult.hmac), HMAC_OFFSET);
 
-      // Re-assemble manifest (new header + existing body) and upload
+      // ── Step 8: re-assemble + upload manifest ────────────────────────────
       const manifestBody = manifestBytes.slice(HEADER_SIZE);
       const newManifest = new Uint8Array(HEADER_SIZE + manifestBody.length);
-      newManifest.set(header, 0);
+      newManifest.set(headerBytes, 0);
       newManifest.set(manifestBody, HEADER_SIZE);
       await provider.upload(provider.manifestRef(), 'vault_manifest.sc', newManifest, {
         mimeType: 'application/octet-stream',
         expectedVersion: currentVersion,
       });
 
-      // Persist IDB device record only after header upload succeeds
-      const deviceIdHex = Array.from(deviceIdBytes).map((b) => b.toString(16).padStart(2, '0')).join('');
+      // ── Step 9: persist IDB device record only after the upload succeeds ─
+      const deviceIdHex = Array.from(deviceIdBytes)
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
       await setDeviceRecord({
         vault_id: vaultId,
         device_id: deviceIdHex,
@@ -536,6 +580,19 @@ type EnrollStep =
         last_seen_manifest_version: 0,
         last_backup_prompt_at: null,
       });
+
+      // ── Step 10: hand the preopened WASM session to unlockVault ──────────
+      // unlockVault's `preopenedSessionId` path skips Argon2id AND the
+      // device-shard-from-slot derivation (we already loaded the KEK at
+      // step 4), so it goes straight to manifest decode + secondary-provider
+      // hydration.
+      const vaultKeySessionId = crypto.randomUUID();
+      const db = await unlockVault(provider, {
+        passphrase: '',
+        keySessionId: vaultKeySessionId,
+        preopenedSessionId,
+      });
+      preopenedSessionId = null; // ownership transferred to unlockVault
 
       // If we hydrated from a received primary_config (start-screen flow),
       // persist it so the vault now appears in the vault-list on next reload.
@@ -594,6 +651,21 @@ type EnrollStep =
         config: receivedConfig ?? (provider!.getConfig?.() ?? null),
       });
     } catch (e: any) {
+      // Cleanup: close any preopened WASM session so it doesn't leak.
+      if (preopenedSessionId !== null) {
+        await byoWorker.Worker.byoVaultClose(preopenedSessionId).catch(() => {});
+        preopenedSessionId = null;
+      }
+      // Cleanup: if we generated a device CryptoKey for this vault but
+      // failed before persisting the device record (or before the manifest
+      // upload landed), drop the leftover key + record so the next attempt
+      // starts clean. Without this, a retry hits getDeviceCryptoKey,
+      // finds the stale key, and routes into the "Device slot not found"
+      // branch instead of the fresh-enrollment path.
+      if (createdDeviceKeyForVaultId !== null) {
+        await deleteDeviceRecord(createdDeviceKeyForVaultId).catch(() => {});
+        await deleteDeviceCryptoKey(createdDeviceKeyForVaultId).catch(() => {});
+      }
       error = e.message || 'Failed to unlock vault with received shard';
       step = 'error';
     }
