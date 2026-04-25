@@ -3,14 +3,15 @@
  * persisted ProviderConfig (IDB wrapped). Mirrors the inline submit flow
  * in AddProviderSheet, minus the user-facing form.
  *
- * SFTP credentials ride inside the ProviderConfig alongside host/port/basePath
- * for parity with OAuth tokens and WebDAV passwords — see SECURITY.md §12
- * "Credential Handling (BYO)" for the storage layers and threat model.
- * Legacy vaults whose manifest predates the credential change fall back to
- * the `SftpReauthSheet`: `providerNeedsReauth(config)` is true iff SFTP *and*
- * no password/privateKey is stored, and after a successful reauth the caller
- * writes the freshly-entered creds back to `ProviderConfigStore` so the next
- * reload skips the sheet.
+ * Provider credentials ride inside the ProviderConfig alongside host/url/etc.
+ * for parity across SFTP password / private key, WebDAV password, S3 access
+ * keys, and OAuth refresh tokens — see SECURITY.md §12 "Credential Handling
+ * (BYO)" for the storage layers and threat model. Legacy vaults whose
+ * manifest predates the credential change fall back to the
+ * `ProviderReauthSheet`: `providerNeedsReauth(config)` is true iff the
+ * stored config is missing the secret needed to reconnect, and after a
+ * successful reauth the caller writes the freshly-entered creds back to
+ * `ProviderConfigStore` so the next reload skips the sheet.
  */
 
 import {
@@ -21,28 +22,62 @@ import {
 } from '@wattcloud/sdk';
 import * as byoWorker from '@wattcloud/sdk';
 
-export interface SftpCredentials {
+/**
+ * Generic credential bundle collected by `ProviderReauthSheet`. Only the
+ * fields relevant to `config.type` are populated — the others are ignored
+ * by `hydrateProvider`.
+ */
+export interface ProviderCredentials {
+  // SFTP
   password?: string;
   privateKey?: string;
   passphrase?: string;
+  // S3-family
+  accessKeyId?: string;
+  secretAccessKey?: string;
 }
+
+/** @deprecated Use `ProviderCredentials`. Retained for source-level compatibility. */
+export type SftpCredentials = ProviderCredentials;
 
 /**
  * True when a persisted config cannot reconnect on its own because the
- * secret is missing (legacy SFTP vaults written before credentials were
- * persisted in the config). New SFTP vaults include `sftpPassword` or
- * `sftpPrivateKey` in the config and do NOT need the reauth sheet.
+ * secret is missing (legacy vaults written before credentials were
+ * persisted in the config). New vaults include the secret in the config
+ * and do NOT need the reauth sheet.
  */
 export function providerNeedsReauth(config: ProviderConfig): boolean {
-  if (config.type !== 'sftp') return false;
-  return !config.sftpPassword && !config.sftpPrivateKey;
+  switch (config.type) {
+    case 'sftp':
+      return !config.sftpPassword && !config.sftpPrivateKey;
+    case 'webdav':
+      return !config.password;
+    case 's3':
+      return !config.s3AccessKeyId || !config.s3SecretAccessKey;
+    default:
+      return false;
+  }
 }
 
 export async function hydrateProvider(
   config: ProviderConfig,
-  creds?: SftpCredentials,
+  creds?: ProviderCredentials,
 ): Promise<StorageProvider> {
   const instance = createProvider(config.type);
+
+  // Splice freshly-typed creds back into the config for providers whose
+  // init() reads the secret directly from ProviderConfig (WebDAV, S3).
+  let effectiveConfig = config;
+  if (creds) {
+    if (config.type === 'webdav' && creds.password !== undefined) {
+      effectiveConfig = { ...config, password: creds.password };
+    } else if (config.type === 's3') {
+      const patch: Partial<ProviderConfig> = {};
+      if (creds.accessKeyId !== undefined) patch.s3AccessKeyId = creds.accessKeyId;
+      if (creds.secretAccessKey !== undefined) patch.s3SecretAccessKey = creds.secretAccessKey;
+      if (Object.keys(patch).length > 0) effectiveConfig = { ...config, ...patch };
+    }
+  }
 
   if (instance instanceof SftpProvider) {
     const password = creds?.password ?? config.sftpPassword ?? undefined;
@@ -59,7 +94,7 @@ export async function hydrateProvider(
       passphrase,
     );
     instance.credHandle = credHandle;
-    instance.credUsername = config.sftpUsername || '';
+    instance.credUsername = effectiveConfig.sftpUsername || '';
 
     // First-connect hook: if the stored fingerprint doesn't match the
     // server's, the provider rejects. For hydrate we assume the stored
@@ -69,6 +104,6 @@ export async function hydrateProvider(
     instance.onFirstHostKey = async () => true;
   }
 
-  await instance.init(config);
+  await instance.init(effectiveConfig);
   return instance;
 }

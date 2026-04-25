@@ -23,14 +23,14 @@
     base64ToBytes,
   } from '../../byo/VaultLifecycle';
   import { vaultStore } from '../../byo/stores/vaultStore';
-  import { hydrateProvider, providerNeedsReauth, type SftpCredentials } from '../../byo/ProviderHydrate';
+  import { hydrateProvider, providerNeedsReauth, type ProviderCredentials } from '../../byo/ProviderHydrate';
   import { saveProviderConfig } from '../../byo/ProviderConfigStore';
   import QrDisplay from './QrDisplay.svelte';
   import QrScanner from './QrScanner.svelte';
   import SasConfirmation from './SasConfirmation.svelte';
   import Argon2Progress from './Argon2Progress.svelte';
   import ByoPassphraseInput from './ByoPassphraseInput.svelte';
-  import SftpReauthSheet from './SftpReauthSheet.svelte';
+  import ProviderReauthSheet from './ProviderReauthSheet.svelte';
   import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
 
   
@@ -51,14 +51,16 @@
     /**
    * role='existing' only: the primary ProviderConfig to ship to the new
    * device alongside the shard, so the receiver does not have to add and
-   * authenticate the provider from scratch. For SFTP the password is never
-   * persisted on the source and therefore not in this config — the receiver
-   * re-enters it in the SFTP reauth sheet.
+   * authenticate the provider from scratch. New vaults include the secret
+   * (SFTP password / WebDAV password / S3 secret access key) directly in
+   * this config so the receiver hydrates silently. Legacy vaults whose
+   * source has no secret stored fall through to the reauth sheet on the
+   * receiver.
    */
     primaryConfig?: ProviderConfig | null;
     /**
    * role='existing' only: human-readable label surfaced to the receiver
-   * during the SFTP reauth prompt (e.g. "Home Storage Box"). Optional.
+   * during the reauth prompt (e.g. "Home Storage Box"). Optional.
    */
     primaryLabel?: string;
   onComplete?: (...args: any[]) => void;
@@ -82,7 +84,7 @@ type EnrollStep =
     | 'waiting-peer'    // both: waiting for peer to connect
     | 'sas'             // both: show SAS code
     | 'sas-confirmed'   // existing: sending shard; new: waiting for shard/config
-    | 'sftp-reauth'     // new (start-screen): re-enter SFTP creds for received config
+    | 'provider-reauth' // new (start-screen): re-enter provider creds for received config
     | 'hydrating'       // new (start-screen): connecting to provider with received config
     | 'passphrase'      // new: enter passphrase after provider is ready + shard received
     | 'unlocking'       // new: Argon2id running
@@ -99,11 +101,11 @@ type EnrollStep =
   // ── Receiver-side state for the received primary config ────────────────────
   /** Decrypted primary ProviderConfig received from the existing device. */
   let receivedConfig: ProviderConfig | null = $state(null);
-  /** Display label forwarded by the existing device (for the SFTP reauth sheet). */
+  /** Display label forwarded by the existing device (for the reauth sheet). */
   let receivedLabel: string = $state('');
   /** Set once the shard envelope has been decrypted into the WASM session. */
   let shardReceived = false;
-  /** SFTP reauth sheet state. */
+  /** Provider reauth sheet state. */
   let reauthBusy = $state(false);
   let reauthError = $state('');
 
@@ -352,14 +354,14 @@ type EnrollStep =
     // Start-screen flow: need both shard AND decrypted config.
     if (!provider && shardReceived && receivedConfig) {
       if (providerNeedsReauth(receivedConfig)) {
-        step = 'sftp-reauth';
+        step = 'provider-reauth';
       } else {
         await hydrateReceivedConfig();
       }
     }
   }
 
-  async function hydrateReceivedConfig(creds?: SftpCredentials) {
+  async function hydrateReceivedConfig(creds?: ProviderCredentials) {
     if (!receivedConfig) throw new Error('No received config to hydrate');
     step = 'hydrating';
     try {
@@ -370,31 +372,57 @@ type EnrollStep =
       // Roll back to the reauth sheet so the user can retype credentials —
       // hydrate() rejects synchronously if the creds don't auth.
       reauthError = e?.message ?? 'Failed to connect with those credentials.';
-      step = receivedConfig && providerNeedsReauth(receivedConfig) ? 'sftp-reauth' : 'error';
+      step = receivedConfig && providerNeedsReauth(receivedConfig) ? 'provider-reauth' : 'error';
       if (step === 'error') error = reauthError;
     }
   }
 
-  async function handleSftpReauthSubmit(
-    event: { username: string; password: string; privateKey: string; passphrase: string },
-  ) {
+  async function handleProviderReauthSubmit(creds: {
+    username?: string;
+    password?: string;
+    privateKey?: string;
+    passphrase?: string;
+    accessKeyId?: string;
+    secretAccessKey?: string;
+  }) {
     if (!receivedConfig) return;
     reauthBusy = true;
     reauthError = '';
-    const { username, password, privateKey, passphrase } = event;
-    // Splice the re-entered username back into the config so `init()` uses
-    // the fresh value (the source device may have a different preferred
-    // username, or the user may have corrected a typo).
-    receivedConfig = { ...receivedConfig, sftpUsername: username };
+    // Splice ALL freshly-entered values back into receivedConfig (identity
+    // + secret) so the post-unlock saveProviderConfig at step 10 persists
+    // them and the next reload skips the reauth sheet entirely.
+    if (receivedConfig.type === 'sftp') {
+      receivedConfig = {
+        ...receivedConfig,
+        sftpUsername: creds.username ?? receivedConfig.sftpUsername,
+        sftpPassword: creds.password || undefined,
+        sftpPrivateKey: creds.privateKey || undefined,
+        sftpPassphrase: creds.passphrase || undefined,
+      };
+    } else if (receivedConfig.type === 'webdav') {
+      receivedConfig = {
+        ...receivedConfig,
+        username: creds.username ?? receivedConfig.username,
+        password: creds.password || undefined,
+      };
+    } else if (receivedConfig.type === 's3') {
+      receivedConfig = {
+        ...receivedConfig,
+        s3AccessKeyId: creds.accessKeyId ?? receivedConfig.s3AccessKeyId,
+        s3SecretAccessKey: creds.secretAccessKey || undefined,
+      };
+    }
     await hydrateReceivedConfig({
-      password: password || undefined,
-      privateKey: privateKey || undefined,
-      passphrase: passphrase || undefined,
+      password: creds.password || undefined,
+      privateKey: creds.privateKey || undefined,
+      passphrase: creds.passphrase || undefined,
+      accessKeyId: creds.accessKeyId || undefined,
+      secretAccessKey: creds.secretAccessKey || undefined,
     });
     reauthBusy = false;
   }
 
-  function handleSftpReauthCancel() {
+  function handleProviderReauthCancel() {
     // Abort the whole link-device flow — the receiver cannot proceed without
     // a working primary provider.
     cleanup();
@@ -622,7 +650,7 @@ type EnrollStep =
             // Persist the full config the source sent, including any SFTP
             // credentials. Symmetrical with the source side, where
             // AddProviderSheet/hydrate already store the full config in
-            // ProviderConfigStore. Receiver-side reauth (sftp-reauth step)
+            // ProviderConfigStore. Receiver-side reauth (provider-reauth step)
             // overwrites with the freshly-entered credentials before reaching
             // here, so the row always reflects what last actually connected.
             receivedConfig,
@@ -736,14 +764,14 @@ type EnrollStep =
         : 'Waiting for the other device to finish sending.'}
     </p>
 
-  {:else if step === 'sftp-reauth' && receivedConfig}
-    <SftpReauthSheet
+  {:else if step === 'provider-reauth' && receivedConfig}
+    <ProviderReauthSheet
       config={receivedConfig}
       vaultLabel={receivedLabel}
       busy={reauthBusy}
       error={reauthError}
-      onSubmit={handleSftpReauthSubmit}
-      onCancel={handleSftpReauthCancel}
+      onSubmit={handleProviderReauthSubmit}
+      onCancel={handleProviderReauthCancel}
     />
 
   {:else if step === 'hydrating'}

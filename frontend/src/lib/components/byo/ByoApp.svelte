@@ -41,7 +41,7 @@
   import {
     hydrateProvider,
     providerNeedsReauth,
-    type SftpCredentials,
+    type ProviderCredentials,
   } from '../../byo/ProviderHydrate';
   import { getWebAuthnRecord } from '../../byo/DeviceKeyStore';
   import { unlockVaultKeyViaPasskey } from '../../byo/WebAuthnGate';
@@ -57,7 +57,7 @@
   import VaultLockAnimation from './VaultLockAnimation.svelte';
   import VaultsListScreen from './VaultsListScreen.svelte';
   import VaultContextSheet from './VaultContextSheet.svelte';
-  import SftpReauthSheet from './SftpReauthSheet.svelte';
+  import ProviderReauthSheet from './ProviderReauthSheet.svelte';
   import ByoToastHost from './ByoToastHost.svelte';
   import ByoCredProtectionOffer from './ByoCredProtectionOffer.svelte';
   import ConfirmModal from '../ConfirmModal.svelte';
@@ -78,7 +78,7 @@
 
   type AppState =
     | 'vault-list'
-    | 'sftp-reauth'
+    | 'provider-reauth'
     | 'provider-select'
     | 'check-vault'
     | 'new-user-setup'
@@ -299,9 +299,10 @@
       if (!primaryRow) throw new Error('Could not determine primary provider.');
 
       if (providerNeedsReauth(primaryRow.config)) {
-        // SFTP credentials missing — we still need the user to re-enter
-        // them. Close the preopened session; the reauth flow owns its own
-        // unlock path (and will route through ByoUnlock if needed).
+        // Provider credentials missing (legacy vault, or device-enrolled
+        // from a source that didn't have them either) — user needs to
+        // re-enter. Close the preopened session; the reauth flow owns
+        // its own unlock path.
         if (preopenedSessionId !== undefined) {
           await byoWorker.Worker.byoVaultClose(preopenedSessionId).catch(() => {});
           preopenedSessionId = undefined;
@@ -311,7 +312,7 @@
           primary: primaryRow,
           vaultLabel: summary?.vault_label ?? primaryRow.display_name,
         };
-        appState = 'sftp-reauth';
+        appState = 'provider-reauth';
         return;
       }
 
@@ -416,11 +417,12 @@
   /**
    * Shared tail of the vault-open flow: hydrate the primary, probe for an
    * existing manifest, and route to unlock / new-user-setup. `creds` is
-   * supplied by the reauth sheet for SFTP; other providers pass undefined.
+   * supplied by the reauth sheet (SFTP/WebDAV/S3 legacy paths); fully-stored
+   * configs pass undefined.
    */
   async function completeVaultOpen(
     primaryRow: HydratedProviderConfig,
-    creds?: SftpCredentials,
+    creds?: ProviderCredentials,
   ) {
     const instance = await hydrateProvider(primaryRow.config, creds);
     provider = instance;
@@ -440,35 +442,61 @@
     appState = vaultExists ? 'unlock' : 'new-user-setup';
   }
 
-  async function handleSftpReauthSubmit(
-    event: { username: string; password: string; privateKey: string; passphrase: string },
-  ) {
+  async function handleProviderReauthSubmit(creds: {
+    username?: string;
+    password?: string;
+    privateKey?: string;
+    passphrase?: string;
+    accessKeyId?: string;
+    secretAccessKey?: string;
+  }) {
     if (!reauthPending) return;
     reauthBusy = true;
     reauthError = '';
-    const { username, password, privateKey, passphrase } = event;
-    // Splice the re-entered username back into the config so `init()` uses
-    // the fresh value (the user may have corrected a typo from the original
-    // setup); everything else is read-only in the sheet.
-    const configWithUser: ProviderConfig = {
-      ...reauthPending.primary.config,
-      sftpUsername: username,
-    };
-    // Legacy-vault upgrade path: once reauth succeeds we persist the
-    // freshly-entered creds back to ProviderConfigStore so the next page
-    // reload skips the sheet entirely. New vaults created after this
-    // change already include creds in the manifest config_json and never
-    // land here. See SECURITY.md §12 for the storage model.
-    const configWithCreds: ProviderConfig = {
-      ...configWithUser,
-      sftpPassword: password || undefined,
-      sftpPrivateKey: privateKey || undefined,
-      sftpPassphrase: passphrase || undefined,
-    };
+    // Splice the re-entered identity + secret back into the config so
+    // init() uses the fresh values AND the legacy-vault upgrade path
+    // persists them back to ProviderConfigStore — next reload skips the
+    // sheet entirely. New vaults already include creds and never land
+    // here. See SECURITY.md §12 for the storage model.
+    const baseCfg = reauthPending.primary.config;
+    let configWithCreds: ProviderConfig;
+    switch (baseCfg.type) {
+      case 'sftp':
+        configWithCreds = {
+          ...baseCfg,
+          sftpUsername: creds.username ?? baseCfg.sftpUsername,
+          sftpPassword: creds.password || undefined,
+          sftpPrivateKey: creds.privateKey || undefined,
+          sftpPassphrase: creds.passphrase || undefined,
+        };
+        break;
+      case 'webdav':
+        configWithCreds = {
+          ...baseCfg,
+          username: creds.username ?? baseCfg.username,
+          password: creds.password || undefined,
+        };
+        break;
+      case 's3':
+        configWithCreds = {
+          ...baseCfg,
+          s3AccessKeyId: creds.accessKeyId ?? baseCfg.s3AccessKeyId,
+          s3SecretAccessKey: creds.secretAccessKey || undefined,
+        };
+        break;
+      default:
+        configWithCreds = baseCfg;
+    }
     try {
       await completeVaultOpen(
-        { ...reauthPending.primary, config: configWithUser },
-        { password: password || undefined, privateKey: privateKey || undefined, passphrase: passphrase || undefined },
+        { ...reauthPending.primary, config: configWithCreds },
+        {
+          password: creds.password || undefined,
+          privateKey: creds.privateKey || undefined,
+          passphrase: creds.passphrase || undefined,
+          accessKeyId: creds.accessKeyId || undefined,
+          secretAccessKey: creds.secretAccessKey || undefined,
+        },
       );
       try {
         const { saveProviderConfig } = await import('../../byo/ProviderConfigStore');
@@ -491,14 +519,14 @@
       }
       reauthPending = null;
     } catch (e: any) {
-      console.error('[ByoApp] SFTP reauth/hydrate failed', e);
+      console.error('[ByoApp] provider reauth/hydrate failed', e);
       reauthError = e?.message ?? 'Failed to connect — check credentials and try again.';
     } finally {
       reauthBusy = false;
     }
   }
 
-  function handleSftpReauthCancel() {
+  function handleProviderReauthCancel() {
     reauthPending = null;
     reauthBusy = false;
     reauthError = '';
@@ -766,15 +794,15 @@
       />
     </div>
 
-  {:else if appState === 'sftp-reauth' && reauthPending}
+  {:else if appState === 'provider-reauth' && reauthPending}
     <div class="byo-shell">
-      <SftpReauthSheet
+      <ProviderReauthSheet
         config={reauthPending.primary.config}
         vaultLabel={reauthPending.vaultLabel}
         busy={reauthBusy}
         error={reauthError}
-        onSubmit={handleSftpReauthSubmit}
-        onCancel={handleSftpReauthCancel}
+        onSubmit={handleProviderReauthSubmit}
+        onCancel={handleProviderReauthCancel}
       />
     </div>
 
