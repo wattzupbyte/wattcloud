@@ -539,7 +539,34 @@
     try {
       sourceShard = await exportCurrentShard();
       const primaryId = getPrimaryProviderId();
-      sourcePrimaryConfig = primaryId ? getProviderConfig(primaryId) : null;
+
+      // Prefer the per-device persisted config over the manifest's
+      // config_json. The per-device row IS the config that hydrateProvider
+      // used to actually connect this session, so it has the working SFTP
+      // credentials by construction. The manifest config_json is also
+      // supposed to have them (addProvider stores the full config), but
+      // some legacy paths (older builds, dashboard-add before AddProvider
+      // also called saveProviderConfig) left the manifest entry without
+      // creds — falling back to it would force the receiver to re-type
+      // the SFTP password it could otherwise inherit. Defensive fallback
+      // covers (a) per-device row missing for primary, (b) decrypt
+      // failure (post-recovery device-key migration).
+      let primaryCfg: ProviderConfig | null = null;
+      if (primaryId && currentVaultId) {
+        try {
+          const { loadProvidersForVault } = await import('../../byo/ProviderConfigStore');
+          const { hydrated } = await loadProvidersForVault(currentVaultId);
+          const hit = hydrated.find((h) => h.provider_id === primaryId);
+          if (hit) primaryCfg = hit.config;
+        } catch (loadErr) {
+          console.warn('[ByoApp] loadProvidersForVault during enroll failed', loadErr);
+        }
+      }
+      if (!primaryCfg) {
+        primaryCfg = primaryId ? getProviderConfig(primaryId) : null;
+      }
+      sourcePrimaryConfig = primaryCfg;
+
       const summary = currentVaultId
         ? persistedVaults.find((v) => v.vault_id === currentVaultId)
         : null;

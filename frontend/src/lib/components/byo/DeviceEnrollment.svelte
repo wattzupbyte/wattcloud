@@ -619,11 +619,12 @@ type EnrollStep =
               is_primary: true,
               saved_at: new Date().toISOString(),
             },
-            // Strip SFTP secrets before persisting — the config we received
-            // from the source already omits them, but the user's freshly
-            // entered credentials flowed via hydrateProvider into the WASM
-            // credHandle (not into this config object), so this is a safe
-            // no-op for SFTP and covers OAuth/S3 configs verbatim.
+            // Persist the full config the source sent, including any SFTP
+            // credentials. Symmetrical with the source side, where
+            // AddProviderSheet/hydrate already store the full config in
+            // ProviderConfigStore. Receiver-side reauth (sftp-reauth step)
+            // overwrites with the freshly-entered credentials before reaching
+            // here, so the row always reflects what last actually connected.
             receivedConfig,
           );
         } catch (persistErr) {

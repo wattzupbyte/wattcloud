@@ -14,6 +14,9 @@
   import { createProvider, SftpProvider } from '@wattcloud/sdk';
   import * as byoWorker from '@wattcloud/sdk';
   import { addProvider } from '../../byo/VaultLifecycle';
+  import { saveProviderConfig } from '../../byo/ProviderConfigStore';
+  import { vaultStore } from '../../byo/stores/vaultStore';
+  import { get } from 'svelte/store';
   import { initiateOAuthFlow } from '@wattcloud/sdk';
   import CloudBadge from '../CloudBadge.svelte';
   import Lock from 'phosphor-svelte/lib/Lock';
@@ -274,6 +277,36 @@
       } else {
         // Dashboard: vault is open — register the provider and notify the tab switcher
         const providerId = await addProvider(instance, config);
+
+        // Persist the freshly-added provider to the per-device store so the
+        // next reload auto-hydrates it AND so DeviceEnrollment / other
+        // consumers that read from ProviderConfigStore see its full config
+        // (including SFTP credentials). Previously this row was only
+        // written by the first-run / unlock paths, so providers added from
+        // the dashboard were absent from the per-device store and on the
+        // sender side of device enrollment the receiver would have to
+        // re-enter SFTP credentials. Non-fatal on error — manifest
+        // already reflects the addition.
+        try {
+          const vaultId = get(vaultStore).vaultId;
+          if (vaultId) {
+            await saveProviderConfig(
+              {
+                provider_id: providerId,
+                vault_id: vaultId,
+                vault_label: instance.displayName,
+                type,
+                display_name: instance.displayName,
+                is_primary: false,
+                saved_at: new Date().toISOString(),
+              },
+              { ...config, providerId },
+            );
+          }
+        } catch (persistErr) {
+          console.warn('[AddProviderSheet] saveProviderConfig failed', persistErr);
+        }
+
         onAdded?.({ providerId });
       }
       return true;
