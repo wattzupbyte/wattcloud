@@ -197,9 +197,11 @@
   let showFabMenu = $state(false);
   let folderInput: HTMLInputElement | null = $state(null);
 
-  // File details modal
+  // File details modal — also serves folder details (ByoFileDetails branches
+  // on whichever of `file`/`folder` is non-null).
   let showDetailsModal = $state(false);
   let detailsFile: FileEntry | null = $state(null);
+  let detailsFolder: FolderEntry | null = $state(null);
 
   // Share link sheet
   let showShareSheet = $state(false);
@@ -392,6 +394,80 @@
   async function handleRenameFile(fileId: number, newName: string) {
     await dataProvider.renameFile(fileId, newName);
     await loadCurrentFolder();
+  }
+
+  // ── Rename UI plumbing ────────────────────────────────────────────────────
+  // FileList accepts a `bind:renameFileId` — when set, it enters inline rename
+  // mode for that file (its own $effect resets the prop to null after consuming).
+  // FolderTile uses an `isRenaming` flag + bound `renameValue` + keydown/blur
+  // callbacks; ByoDashboard owns the state because it controls the toolbar.
+  let renameFileId: number | null = $state(null);
+  let renamingFolderId: number | null = $state(null);
+  let folderRenameValue = $state('');
+
+  function findFolderForRename(folderId: number) {
+    return currentFolders.find((f) => f.id === folderId)
+      ?? favoriteFolders.find((f) => f.id === folderId)
+      ?? null;
+  }
+
+  function startFolderRename(folderId: number) {
+    const folder = findFolderForRename(folderId);
+    if (!folder) return;
+    folderRenameValue = (folder as any).decrypted_name || folder.name;
+    renamingFolderId = folderId;
+  }
+
+  async function commitFolderRename() {
+    if (renamingFolderId === null) return;
+    const id = renamingFolderId;
+    const newName = folderRenameValue.trim();
+    renamingFolderId = null;
+    folderRenameValue = '';
+    if (!newName) return;
+    try {
+      await dataProvider.renameFolder(id, newName);
+      // Refresh both views — favorites list mirrors the folder rows, and
+      // the file/folder list relies on currentFolders for sortedFolders.
+      await Promise.all([loadCurrentFolder(), loadFavorites().catch(() => {})]);
+    } catch (e: any) {
+      error = e?.message ?? 'Failed to rename folder';
+    }
+  }
+
+  function cancelFolderRename() {
+    renamingFolderId = null;
+    folderRenameValue = '';
+  }
+
+  function handleFolderRenameKeydown(payload: { event: KeyboardEvent }) {
+    if (payload.event.key === 'Enter') {
+      payload.event.preventDefault();
+      commitFolderRename();
+    } else if (payload.event.key === 'Escape') {
+      payload.event.preventDefault();
+      cancelFolderRename();
+    }
+  }
+
+  function handleFolderRenameBlur() {
+    // Commit on blur — matches the file-rename UX in FileList.
+    if (renamingFolderId !== null) commitFolderRename();
+  }
+
+  function triggerRenameFromToolbar() {
+    // Single-selection invariant guaranteed by SelectionToolbar.canRename.
+    if ($byoSelectedFiles.size === 1 && $byoSelectedFolders.size === 0) {
+      const [fileId] = [...$byoSelectedFiles];
+      renameFileId = fileId; // FileList's $effect picks this up
+      clearByoSelection();
+      return;
+    }
+    if ($byoSelectedFolders.size === 1 && $byoSelectedFiles.size === 0) {
+      const [folderId] = [...$byoSelectedFolders];
+      startFolderRename(folderId);
+      clearByoSelection();
+    }
   }
 
   async function handleCreateFolder() {
@@ -594,6 +670,17 @@
     const f = sortedFiles.find((x) => x.id === fileId) ?? currentFiles.find((x) => x.id === fileId);
     if (f) {
       detailsFile = f;
+      detailsFolder = null;
+      showDetailsModal = true;
+    }
+  }
+
+  function openFolderDetails(folderId: number) {
+    const folder = currentFolders.find((x) => x.id === folderId)
+      ?? favoriteFolders.find((x) => x.id === folderId);
+    if (folder) {
+      detailsFolder = folder;
+      detailsFile = null;
       showDetailsModal = true;
     }
   }
@@ -1325,21 +1412,31 @@
       ($byoSelectedFiles.size === 1 && $byoSelectedFolders.size === 0) ||
       ($byoSelectedFolders.size === 1 && $byoSelectedFiles.size === 0) ||
       ($byoSelectedFiles.size >= 2 && $byoSelectedFolders.size === 0)}
+    {@const canRenameSelection =
+      ($byoSelectedFiles.size === 1 && $byoSelectedFolders.size === 0) ||
+      ($byoSelectedFolders.size === 1 && $byoSelectedFiles.size === 0)}
     <SelectionToolbar
       selectedCount={totalSel}
       canDetails={true}
       canShare={canShareSelection}
+      canRename={canRenameSelection}
       canAddToCollection={view === 'photos' && $byoSelectedFiles.size > 0}
       favoriteState={favCount === 0 ? 'none' : favCount === totalSel ? 'all' : 'mixed'}
       onClear={clearByoSelection}
+      onRename={triggerRenameFromToolbar}
       onMove={async () => { moveCopyMode = 'move'; await refreshMoveCopyFolders(); showMoveCopyDialog = true; }}
       onCopy={async () => { moveCopyMode = 'copy'; await refreshMoveCopyFolders(); showMoveCopyDialog = true; }}
       onFavorite={() => bulkToggleFavorite(true)}
       onUnfavorite={() => bulkToggleFavorite(false)}
       onDownload={() => handleDownloadSelection()}
       onDetails={() => {
-        const ids = [...get(byoSelectedFiles)];
-        if (ids.length === 1) openDetails(ids[0]);
+        const fileIds = [...get(byoSelectedFiles)];
+        const folderIds = [...get(byoSelectedFolders)];
+        if (fileIds.length === 1 && folderIds.length === 0) {
+          openDetails(fileIds[0]);
+        } else if (folderIds.length === 1 && fileIds.length === 0) {
+          openFolderDetails(folderIds[0]);
+        }
       }}
       onShare={() => {
         const fileIds = [...get(byoSelectedFiles)];
@@ -1458,6 +1555,10 @@
                     }}
                     onSelect={() => { toggleByoFolderSelection(folder.id); byoSelectionMode.set(true); }}
                     onToggle={() => toggleByoFolderSelection(folder.id)}
+                    isRenaming={renamingFolderId === folder.id}
+                    bind:renameValue={folderRenameValue}
+                    onRenameKeydown={handleFolderRenameKeydown}
+                    onRenameBlur={handleFolderRenameBlur}
                   />
                 {/each}
               </div>
@@ -1488,6 +1589,10 @@
                       }}
                       onSelect={() => { toggleByoFolderSelection(folder.id); byoSelectionMode.set(true); }}
                       onToggle={() => toggleByoFolderSelection(folder.id)}
+                      isRenaming={renamingFolderId === folder.id}
+                      bind:renameValue={folderRenameValue}
+                      onRenameKeydown={handleFolderRenameKeydown}
+                      onRenameBlur={handleFolderRenameBlur}
                     />
                   </div>
                 {/each}
@@ -1509,6 +1614,10 @@
                     }}
                     onSelect={() => { toggleByoFolderSelection(folder.id); byoSelectionMode.set(true); }}
                     onToggle={() => toggleByoFolderSelection(folder.id)}
+                    isRenaming={renamingFolderId === folder.id}
+                    bind:renameValue={folderRenameValue}
+                    onRenameKeydown={handleFolderRenameKeydown}
+                    onRenameBlur={handleFolderRenameBlur}
                   />
                 {/each}
               </div>
@@ -1525,6 +1634,7 @@
             viewMode={filesViewMode}
             {selectionContext}
             favoriteFileIds={favoriteFileIds}
+            bind:renameFileId
             onRename={handleRenameFile}
             showEncryptionBadge={true}
             onPreview={(file) => { previewFile = file; previewOpen = !!previewFile; }}
@@ -1604,6 +1714,10 @@
                     }}
                     onSelect={() => { toggleByoFolderSelection(folder.id); byoSelectionMode.set(true); }}
                     onToggle={() => toggleByoFolderSelection(folder.id)}
+                    isRenaming={renamingFolderId === folder.id}
+                    bind:renameValue={folderRenameValue}
+                    onRenameKeydown={handleFolderRenameKeydown}
+                    onRenameBlur={handleFolderRenameBlur}
                   />
                 {/each}
               </div>
@@ -1634,6 +1748,10 @@
                       }}
                       onSelect={() => { toggleByoFolderSelection(folder.id); byoSelectionMode.set(true); }}
                       onToggle={() => toggleByoFolderSelection(folder.id)}
+                      isRenaming={renamingFolderId === folder.id}
+                      bind:renameValue={folderRenameValue}
+                      onRenameKeydown={handleFolderRenameKeydown}
+                      onRenameBlur={handleFolderRenameBlur}
                     />
                   </div>
                 {/each}
@@ -1655,6 +1773,10 @@
                     }}
                     onSelect={() => { toggleByoFolderSelection(folder.id); byoSelectionMode.set(true); }}
                     onToggle={() => toggleByoFolderSelection(folder.id)}
+                    isRenaming={renamingFolderId === folder.id}
+                    bind:renameValue={folderRenameValue}
+                    onRenameKeydown={handleFolderRenameKeydown}
+                    onRenameBlur={handleFolderRenameBlur}
                   />
                 {/each}
               </div>
@@ -1667,6 +1789,7 @@
             viewMode={filesViewMode}
             {selectionContext}
             favoriteFileIds={favoriteFileIds}
+            bind:renameFileId
             onRename={handleRenameFile}
             showEncryptionBadge={true}
             onPreview={(file) => { previewFile = file; previewOpen = !!previewFile; }}
@@ -1774,13 +1897,18 @@
     onCancel={() => showMoveCopyDialog = false}
   />
 
-  <!-- File details modal -->
+  <!-- File / folder details modal — ByoFileDetails branches on `file`/`folder`. -->
   <ByoFileDetails
     file={detailsFile}
+    folder={detailsFolder}
     isOpen={showDetailsModal}
-    isFavorite={detailsFile ? favoriteFileIds.has(detailsFile.id) : false}
+    isFavorite={detailsFile
+      ? favoriteFileIds.has(detailsFile.id)
+      : detailsFolder
+        ? favoriteFolderIds.has(detailsFolder.id)
+        : false}
     folders={detailsFolders}
-    onClose={() => { showDetailsModal = false; detailsFile = null; }}
+    onClose={() => { showDetailsModal = false; detailsFile = null; detailsFolder = null; }}
   />
 
   <!-- Share link sheet -->

@@ -5,6 +5,10 @@
 
   interface Props {
     file?: FileEntry | null;
+    /** Folder details — mutually exclusive with `file`. The same sheet
+     *  serves both so the toolbar's onDetails callback doesn't have to
+     *  know about two separate components. */
+    folder?: FolderEntry | null;
     isOpen?: boolean;
     isFavorite?: boolean;
     folders?: FolderEntry[];
@@ -13,11 +17,14 @@
 
   let {
     file = null,
+    folder = null,
     isOpen = false,
     isFavorite = false,
     folders = [],
     onClose = () => {}
   }: Props = $props();
+
+  let title = $derived(folder ? 'Folder Details' : 'File Details');
 
   function formatSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -47,7 +54,7 @@
   }
 </script>
 
-<BottomSheet open={isOpen && !!file} title="File Details" onClose={onClose}>
+<BottomSheet open={isOpen && (!!file || !!folder)} {title} onClose={onClose}>
   {#if file}
     <div class="details-body">
       <div class="row">
@@ -85,6 +92,40 @@
       <div class="row">
         <span class="label">Provider ref</span>
         <span class="value mono ref" title={file.storage_ref}>{file.storage_ref}</span>
+      </div>
+      <div class="row">
+        <span class="label">Favorite</span>
+        <span class="value fav" class:on={isFavorite}>
+          <Star size={14} weight={isFavorite ? 'fill' : 'regular'} />
+          {isFavorite ? 'Yes' : 'No'}
+        </span>
+      </div>
+    </div>
+  {:else if folder}
+    <div class="details-body">
+      <div class="row">
+        <span class="label">Name</span>
+        <span class="value name" title={folder.decrypted_name}>{folder.decrypted_name}</span>
+      </div>
+      <div class="row">
+        <span class="label">Type</span>
+        <span class="value">Folder</span>
+      </div>
+      <div class="row">
+        <span class="label">Modified</span>
+        <span class="value">{formatDate(folder.updated_at || folder.created_at)}</span>
+      </div>
+      <div class="row">
+        <span class="label">Created</span>
+        <span class="value">{formatDate(folder.created_at)}</span>
+      </div>
+      <div class="row">
+        <span class="label">Parent</span>
+        <span class="value mono">{folderPath(folder.parent_id)}</span>
+      </div>
+      <div class="row">
+        <span class="label">Folder ID</span>
+        <span class="value mono">{folder.id}</span>
       </div>
       <div class="row">
         <span class="label">Favorite</span>
