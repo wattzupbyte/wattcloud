@@ -569,6 +569,15 @@ export async function byoEnrollmentOpen(): Promise<{ ephPkB64: string; channelId
   return sendRequest({ type: 'byoEnrollmentOpen' });
 }
 
+/** Open an enrollment session for the JOINING device, reusing the
+ *  initiator's channel ID from the QR. The two sides MUST agree on
+ *  channel_id — it's mixed into the SAS HKDF info, so a freshly-minted
+ *  channel_id on the joiner produces a different SAS code than the
+ *  initiator's. Returns { ephPkB64, sessionId }. */
+export async function byoEnrollmentJoin(channelIdB64: string): Promise<{ ephPkB64: string; sessionId: number }> {
+  return sendRequest({ type: 'byoEnrollmentJoin', channelIdB64 });
+}
+
 /** Derive session keys from peer public key. Returns { sasCode }. */
 export async function byoEnrollmentDeriveKeys(
   sessionId: number,

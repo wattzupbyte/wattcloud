@@ -205,8 +205,14 @@ type EnrollStep =
     const typedPayload = payload as { v: number; ch: string; pk: string };
 
     try {
-      // Open enrollment session — eph_sk stored in WASM
-      const { ephPkB64: myPk, sessionId } = await byoWorker.Worker.byoEnrollmentOpen();
+      // Open enrollment session — eph_sk stored in WASM. Use the QR's
+      // channel_id (typedPayload.ch) so the joiner's WASM session shares
+      // the same `channel_id` as the initiator. Falling back to
+      // byoEnrollmentOpen here would mint a fresh channel_id, and since
+      // channel_id is mixed into the SAS-derivation HKDF info, the two
+      // devices would compute *different* SAS codes — exactly the bug
+      // this fixes.
+      const { ephPkB64: myPk, sessionId } = await byoWorker.Worker.byoEnrollmentJoin(typedPayload.ch);
       enrollmentSessionId = sessionId;
       const peerPk = typedPayload.pk;
 

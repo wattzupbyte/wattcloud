@@ -9,7 +9,7 @@ use sdk_core::byo::{
     enrollment::{
         decrypt_payload_from_transfer, decrypt_shard_from_transfer, encrypt_payload_for_transfer,
         encrypt_shard_for_transfer, enrollment_derive_session, enrollment_initiate,
-        EnrollmentSession, PayloadEnvelope, ShardEnvelope,
+        enrollment_join, EnrollmentSession, PayloadEnvelope, ShardEnvelope,
     },
     relay_auth::{derive_enrollment_purpose, derive_sftp_purpose, solve_pow},
     share::{decode_variant_a, encode_variant_a, unwrap_key_with_password, wrap_key_with_password},
@@ -894,6 +894,49 @@ pub fn byo_enrollment_open() -> JsValue {
                 "channel_id",
                 &JsValue::from_str(&b64url_encode_nopad(&channel_id)),
             );
+            js_set(&obj, "session_id", &JsValue::from(session_id));
+            obj.into()
+        }
+        Err(e) => js_error(&e.to_string()),
+    }
+}
+
+/// Open an enrollment session for the JOINING device (the one scanning a
+/// QR). Generates only the ephemeral X25519 keypair; the channel ID is
+/// passed in (decoded from the QR payload) so the joiner's session shares
+/// the same `channel_id` with the initiator and HKDF info-binding produces
+/// matching SAS codes. Returns `{ eph_pk, session_id }` — the channel_id
+/// is not echoed back since the caller already has it.
+#[wasm_bindgen]
+pub fn byo_enrollment_join(channel_id_b64: String) -> JsValue {
+    // Accept both b64url-no-pad (the format we emit in
+    // `byo_enrollment_open` and the SPA puts in the QR) and standard
+    // base64 with padding, so callers don't have to remember which.
+    // `b64url_decode_lenient` accepts both b64url-no-pad (the format
+    // emitted by `byo_enrollment_open` and put into the QR) and standard
+    // base64 with padding, so callers don't have to remember which.
+    let channel_id_bytes = match b64url_decode_lenient(&channel_id_b64) {
+        Ok(b) => b,
+        Err(_) => return js_error("invalid base64 channel_id"),
+    };
+    if channel_id_bytes.len() != 16 {
+        return js_error("channel_id must decode to exactly 16 bytes");
+    }
+    let mut channel_id = [0u8; 16];
+    channel_id.copy_from_slice(&channel_id_bytes);
+
+    match enrollment_join() {
+        Ok((eph_sk, eph_pk)) => {
+            let session = WasmEnrollmentSession {
+                eph_sk: Some(eph_sk),
+                channel_id,
+                enc_key: None,
+                mac_key: None,
+                received_shard: None,
+            };
+            let session_id = store_enrollment_session(session);
+            let obj = js_sys::Object::new();
+            js_set(&obj, "eph_pk", &JsValue::from_str(&b64_encode(&eph_pk)));
             js_set(&obj, "session_id", &JsValue::from(session_id));
             obj.into()
         }

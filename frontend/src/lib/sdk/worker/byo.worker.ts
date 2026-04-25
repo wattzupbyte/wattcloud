@@ -56,6 +56,7 @@ let byo_enrollment_decrypt_shard: any;
 
 // BYO enrollment session WASM functions (ZK-safe)
 let byo_enrollment_open: any;
+let byo_enrollment_join: any;
 let byo_enrollment_derive_keys: any;
 let byo_enrollment_session_encrypt_shard: any;
 let byo_enrollment_session_decrypt_shard: any;
@@ -448,6 +449,7 @@ async function initWasm(): Promise<void> {
     byo_enrollment_decrypt_shard = wasmModule.byo_enrollment_decrypt_shard;
 
     byo_enrollment_open = wasmModule.byo_enrollment_open;
+    byo_enrollment_join = wasmModule.byo_enrollment_join;
     byo_enrollment_derive_keys = wasmModule.byo_enrollment_derive_keys;
     byo_enrollment_session_encrypt_shard = wasmModule.byo_enrollment_session_encrypt_shard;
     byo_enrollment_session_decrypt_shard = wasmModule.byo_enrollment_session_decrypt_shard;
@@ -947,6 +949,11 @@ interface ByoEnrollmentDecryptShardRequest {
 // Enrollment session API (ZK-safe)
 interface ByoEnrollmentOpenRequest {
   type: 'byoEnrollmentOpen';
+}
+
+interface ByoEnrollmentJoinRequest {
+  type: 'byoEnrollmentJoin';
+  channelIdB64: string;
 }
 
 interface ByoEnrollmentDeriveKeysRequest {
@@ -1480,6 +1487,7 @@ type WorkerRequest =
   | ByoEnrollmentDecryptShardRequest
   // Enrollment session API (ZK-safe)
   | ByoEnrollmentOpenRequest
+  | ByoEnrollmentJoinRequest
   | ByoEnrollmentDeriveKeysRequest
   | ByoEnrollmentSessionEncryptShardRequest
   | ByoEnrollmentSessionDecryptShardRequest
@@ -1595,7 +1603,7 @@ const CRYPTO_OPS = new Set([
   'byoWrapVaultKey', 'byoEncryptVaultBody', 'byoDecryptVaultBody', 'byoGenerateVaultKeys',
   'byoEnrollmentInitiate', 'byoEnrollmentDeriveSession',
   'byoEnrollmentEncryptShard', 'byoEnrollmentDecryptShard',
-  'byoEnrollmentOpen', 'byoEnrollmentDeriveKeys',
+  'byoEnrollmentOpen', 'byoEnrollmentJoin', 'byoEnrollmentDeriveKeys',
   'byoEnrollmentSessionEncryptShard', 'byoEnrollmentSessionDecryptShard',
   'byoEnrollmentSessionGetShard',
   'byoEnrollmentSessionEncryptPayload', 'byoEnrollmentSessionDecryptPayload',
@@ -2034,6 +2042,12 @@ async function handleMessage(request: WorkerRequest): Promise<any> {
       const result = byo_enrollment_open();
       if (result && result.error) throw new Error(result.error);
       return { ephPkB64: result.eph_pk, channelIdB64: result.channel_id, sessionId: result.session_id };
+    }
+
+    case 'byoEnrollmentJoin': {
+      const result = byo_enrollment_join(request.channelIdB64);
+      if (result && result.error) throw new Error(result.error);
+      return { ephPkB64: result.eph_pk, sessionId: result.session_id };
     }
 
     case 'byoEnrollmentDeriveKeys': {
