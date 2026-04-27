@@ -206,8 +206,52 @@ self.addEventListener('fetch', (event) => {
   if (typeof contentLength === 'number' && contentLength >= 0) {
     headers.set('Content-Length', String(contentLength));
   }
+  console.log('[sw-dl] fetch intercepted', {
+    id,
+    filename,
+    contentLength,
+    method: event.request.method,
+    cache: event.request.cache,
+    destination: event.request.destination,
+    mode: event.request.mode,
+  });
+  // Counting passthrough — observes each chunk that flows to the
+  // browser's download pipeline. flush() runs once when the upstream
+  // closes; pipeTo's catch fires if the browser aborts (e.g. download
+  // cancelled or, what we want to know, Firefox's silent finalize race
+  // we suspect underlies the .part rename failure).
+  const startedReadingAt = Date.now();
+  let drainBytes = 0;
+  let drainChunks = 0;
+  const counter = new TransformStream({
+    transform(chunk, controller) {
+      drainBytes += chunk.byteLength;
+      drainChunks++;
+      controller.enqueue(chunk);
+    },
+    flush() {
+      console.log('[sw-dl] response body fully drained', {
+        id,
+        bytes: drainBytes,
+        chunks: drainChunks,
+        contentLength,
+        delta: contentLength !== undefined ? drainBytes - contentLength : null,
+        elapsedMs: Date.now() - startedReadingAt,
+      });
+    },
+  });
+  stream.pipeTo(counter.writable).catch((err) => {
+    console.error('[sw-dl] response body pipe failed', {
+      id,
+      bytes: drainBytes,
+      chunks: drainChunks,
+      contentLength,
+      err: String(err),
+    });
+  });
 
-  event.respondWith(new Response(stream, { status: 200, headers }));
+  const response = new Response(counter.readable, { status: 200, headers });
+  event.respondWith(response);
 });
 
 /**

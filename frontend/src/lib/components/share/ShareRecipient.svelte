@@ -653,6 +653,16 @@
         // Firefox finalize may fail, but no worse than before).
         console.warn('[share] predictZipLength failed; falling back to chunked', predErr);
       }
+      // Diagnostic: log the predicted Content-Length up-front so the
+      // user can compare against the SW's "[sw-dl] done" bytes and the
+      // page's bundleBytesWritten on completion. Helps triage Firefox
+      // .part finalize failures.
+      console.info('[share-bundle] starting download', {
+        entries: entries.length,
+        predictedBytes: zipContentLength,
+        filename,
+      });
+      const startedAt = performance.now();
       if (iosDevice) {
         // iOS: buffer the zip (RAM or OPFS, depending on feature
         // support + quota probe), then wait for the user's Save tap.
@@ -678,6 +688,17 @@
           },
         });
       }
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      const delta =
+        zipContentLength !== undefined
+          ? bundleBytesWritten - zipContentLength
+          : null;
+      console.info('[share-bundle] page-side stream complete', {
+        actualBytes: bundleBytesWritten,
+        predictedBytes: zipContentLength,
+        delta,
+        elapsedMs,
+      });
     } catch (e: any) {
       console.error('[share] zip download failed', e);
       const msg = e?.message || 'Zip download failed.';
