@@ -37,6 +37,35 @@ function normalizeBasePath(raw: string): string {
   return withoutTrailing.startsWith('/') ? withoutTrailing : `/${withoutTrailing}`;
 }
 
+/**
+ * Render a WS pre-open failure with whatever diagnostics the browser
+ * gives us. Code 1006 is the "abnormal closure" the spec requires for
+ * upgrade-time failures (the server didn't respond with 101); it's
+ * frustratingly opaque because the browser hides the actual HTTP status
+ * for security reasons. A close code != 1006 (or a non-empty reason)
+ * usually means the upgrade succeeded but the server-side handler
+ * rejected the session early — surface both so the operator can
+ * triangulate.
+ */
+function formatWsFailure(host: string, port: number, code: number | null, reason: string): string {
+  const parts: string[] = [`SFTP relay WebSocket connection failed (${host}:${port})`];
+  if (code !== null) {
+    parts.push(`close code ${code}`);
+    if (code === 1006) {
+      // 1006 specifically: upgrade refused before WS frames started.
+      // Most common causes are the relay returning 401 (missing/invalid
+      // relay_auth_sftp cookie), 403 (cookie purpose mismatch / consumed
+      // jti / host or port not in allowlist / DNS-SSRF rejection /
+      // Origin mismatch), or a network failure. DevTools → Network →
+      // failed `/relay/ws?...` request will show the actual HTTP
+      // status the server returned.
+      parts.push('upgrade refused (HTTP status hidden by browser; check DevTools → Network)');
+    }
+  }
+  if (reason) parts.push(`reason: ${reason}`);
+  return parts.join(' — ');
+}
+
 export class SftpProvider implements StorageProvider {
   readonly type = 'sftp' as const;
   readonly displayName = 'SFTP';
@@ -139,6 +168,9 @@ export class SftpProvider implements StorageProvider {
         await new Promise((r) => setTimeout(r, 500));
         await acquireSftpRelayCookie(this.host, this.port);
       }
+      let opened = false;
+      let closeCode: number | null = null;
+      let closeReason = '';
       try {
         await new Promise<void>((resolve, reject) => {
           this.ws = new WebSocket(wsUrl);
@@ -156,18 +188,33 @@ export class SftpProvider implements StorageProvider {
             else this.session.on_recv_binary(new Uint8Array(e.data as ArrayBuffer));
           };
 
-          this.ws.onclose = () => {
+          this.ws.onclose = (e: CloseEvent) => {
+            // Capture the close code so a pre-open failure can include it
+            // in the surfaced error — the WS API hides the upgrade HTTP
+            // status from JS, but the close code at least narrows the
+            // diagnosis (1006 abnormal vs application-defined codes).
+            if (!opened) {
+              closeCode = e.code;
+              closeReason = e.reason ?? '';
+            }
             this.session.on_close();
             this._drainRejecters(new ProviderError('NETWORK_ERROR', 'SFTP WebSocket closed during operation', 'sftp'));
+            if (!opened) {
+              reject(new Error(formatWsFailure(this.host, this.port, closeCode, closeReason)));
+            }
           };
 
           this.ws.onerror = () => {
             evictSftpRelayCookieCache(this.host, this.port).catch(() => {});
             this._drainRejecters(new ProviderError('NETWORK_ERROR', 'SFTP WebSocket error during operation', 'sftp'));
-            reject(new Error('SFTP relay WebSocket connection failed'));
+            // Don't reject here — onclose fires right after with a close
+            // code we can include in the error message. Rejecting twice
+            // is harmless (the second is a no-op on a settled Promise)
+            // but the code-augmented message is the better one to keep.
           };
 
           this.ws.onopen = () => {
+            opened = true;
             // The server consumes the cookie's JTI on a successful upgrade
             // (single-use enforcement). Keeping the per-purpose cache entry would
             // re-offer the same consumed cookie on the next reconnect and earn a
