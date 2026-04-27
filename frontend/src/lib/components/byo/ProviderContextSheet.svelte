@@ -304,7 +304,9 @@
       </div>
     {/if}
 
-    <button class="btn-ghost" onclick={() => onClose?.()}>Dismiss</button>
+    {#if sheet === 'menu'}
+      <button class="btn-ghost" onclick={() => onClose?.()}>Dismiss</button>
+    {/if}
   </div>
 </div>
 

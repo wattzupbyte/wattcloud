@@ -88,7 +88,10 @@
     // the form field is blank, so the user can edit just the host.
     const password = sftpPass || currentConfig.sftpPassword;
     const privateKey = sftpKey || currentConfig.sftpPrivateKey;
-    const passphrase = sftpPassphrase || currentConfig.sftpPassphrase;
+    // Passphrase is meaningful only when a private key is in play.
+    const passphrase = privateKey
+      ? (sftpPassphrase || currentConfig.sftpPassphrase)
+      : undefined;
     if (!password && !privateKey) {
       validationError = 'Provide a password or private key.';
       return null;
@@ -98,7 +101,8 @@
       sftpHost: cleanHost,
       sftpPort,
       sftpUsername: sftpUser.trim(),
-      sftpBasePath: sftpBasePath.trim() || undefined,
+      // Base path is read-only in Edit; preserve the existing value.
+      sftpBasePath: currentConfig.sftpBasePath || undefined,
       sftpPassword: password || undefined,
       sftpPrivateKey: privateKey || undefined,
       sftpPassphrase: passphrase || undefined,
@@ -132,7 +136,8 @@
       s3AccessKeyId: s3AccessKeyId.trim(),
       s3SecretAccessKey: secret,
       s3PathStyle: s3PathStyle || undefined,
-      s3BasePath: s3BasePath.trim() || undefined,
+      // Base path is read-only in Edit; preserve the existing value.
+      s3BasePath: currentConfig.s3BasePath || undefined,
     };
   }
 
@@ -163,9 +168,11 @@
     <label class="field-label">Username
       <input class="field-input" type="text" bind:value={sftpUser} autocomplete="username" required />
     </label>
-    <label class="field-label">Base path (optional)
-      <input class="field-input" type="text" bind:value={sftpBasePath} placeholder="/wattcloud" autocomplete="off" />
-    </label>
+    <div class="field-readonly">
+      <span class="field-readonly-label">Base path</span>
+      <span class="field-readonly-value">{sftpBasePath || '— (vault at server root)'}</span>
+      <span class="field-readonly-hint">Locked after enrollment — changing this orphans your existing files on the server. Forget &amp; re-add the provider if it really needs to move.</span>
+    </div>
     <!-- svelte-ignore a11y_label_has_associated_control -->
     <label class="field-label">Password
       <PasswordInput bind:value={sftpPass} autocomplete="new-password" placeholder="Leave blank to keep existing" showLabel="Show password" hideLabel="Hide password" />
@@ -173,10 +180,12 @@
     <label class="field-label">Private key (optional, PEM)
       <textarea class="field-input field-textarea" bind:value={sftpKey} rows="3" placeholder="Leave blank to keep existing"></textarea>
     </label>
-    <!-- svelte-ignore a11y_label_has_associated_control -->
-    <label class="field-label">Key passphrase (optional)
-      <PasswordInput bind:value={sftpPassphrase} autocomplete="off" placeholder="Leave blank to keep existing" showLabel="Show passphrase" hideLabel="Hide passphrase" />
-    </label>
+    {#if sftpKey || currentConfig.sftpPrivateKey}
+      <!-- svelte-ignore a11y_label_has_associated_control -->
+      <label class="field-label">Key passphrase (optional)
+        <PasswordInput bind:value={sftpPassphrase} autocomplete="off" placeholder="Leave blank to keep existing" showLabel="Show passphrase" hideLabel="Hide passphrase" />
+      </label>
+    {/if}
   {:else if type === 'webdav'}
     <label class="field-label">Server URL
       <input class="field-input" type="url" bind:value={wdavUrl} placeholder="https://nextcloud.example.com/remote.php/dav" autocomplete="off" required />
@@ -208,9 +217,11 @@
     <label class="field-label-row">
       <input type="checkbox" bind:checked={s3PathStyle} /> Force path-style addressing (MinIO / Wasabi)
     </label>
-    <label class="field-label">Base path (optional)
-      <input class="field-input" type="text" bind:value={s3BasePath} placeholder="prefix/inside/bucket" autocomplete="off" />
-    </label>
+    <div class="field-readonly">
+      <span class="field-readonly-label">Base path</span>
+      <span class="field-readonly-value">{s3BasePath || '— (vault at bucket root)'}</span>
+      <span class="field-readonly-hint">Locked after enrollment — changing this orphans your existing objects in the bucket. Forget &amp; re-add the provider if it really needs to move.</span>
+    </div>
   {:else}
     <p class="form-hint form-hint-warn">Editing isn't available for {type} providers yet.</p>
   {/if}
@@ -258,6 +269,27 @@
     box-sizing: border-box;
   }
   .field-textarea { resize: vertical; font-family: monospace; font-size: 0.8125rem; }
+  .field-readonly {
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 8px 12px;
+    background: var(--bg-surface, #161616);
+    border: 1px dashed var(--border, #2E2E2E);
+    border-radius: var(--r-input, 12px);
+  }
+  .field-readonly-label {
+    font-size: var(--t-label-size, 0.75rem);
+    color: var(--text-secondary, #999);
+  }
+  .field-readonly-value {
+    font-family: monospace;
+    font-size: var(--t-body-sm-size, 0.875rem);
+    color: var(--text-primary, #EDEDED);
+  }
+  .field-readonly-hint {
+    font-size: var(--t-label-size, 0.75rem);
+    color: var(--text-disabled, #757575);
+    line-height: 1.4;
+  }
   .form-error {
     margin: 4px 0 0;
     color: var(--danger, #D64545);
