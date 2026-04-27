@@ -20,12 +20,14 @@
     getVaultSessionId,
     getPrimaryProviderId,
     getManifest,
+    markDirty,
     bytesToBase64,
     base64ToBytes,
   } from '../../byo/VaultLifecycle';
   import { vaultStore } from '../../byo/stores/vaultStore';
   import { hydrateProvider, providerNeedsReauth, type ProviderCredentials } from '../../byo/ProviderHydrate';
   import { saveProviderConfig } from '../../byo/ProviderConfigStore';
+  import { queryRows } from '../../byo/ConflictResolver';
   import QrDisplay from './QrDisplay.svelte';
   import QrScanner from './QrScanner.svelte';
   import SasConfirmation from './SasConfirmation.svelte';
@@ -304,10 +306,11 @@ type EnrollStep =
             await byoWorker.Worker.byoEnrollmentSessionDecryptShard(sessionId, msg.envelope);
             shardReceived = true;
             await maybeAdvanceAfterTransfer();
-            // Keep the WebSocket open if we still expect primary_config — the
-            // relay doesn't have much to say after that, but the channel must
-            // stay live so we can receive the config (start-screen flow).
-            if (provider && shardReceived) cleanup();
+            // The WS stays open until handlePassphrase sends `done` to the
+            // sender. Closing it here (even after both shard + config are in)
+            // means handlePassphrase's `ws.send({type:'done'})` later silently
+            // no-ops because readyState is no longer OPEN, and the sender
+            // hits its 90 s stall timeout despite a successful enrollment.
           } catch (e: any) {
             error = e.message || 'Failed to decrypt shard';
             step = 'error';
@@ -693,6 +696,43 @@ type EnrollStep =
       });
       preopenedSessionId = null; // ownership transferred to unlockVault
 
+      // ── Step 9b: append this device to vault_meta.enrolled_devices ───────
+      // The slot table in the manifest header proves this device CAN unlock,
+      // but the visible "Enrolled devices" list in Settings is driven by the
+      // JSON blob in vault_meta. Without this, the new device authenticates
+      // fine but stays invisible in the management UI — the source can't see
+      // that the enrollment landed and can't revoke later. Best-effort: a
+      // failure here doesn't block the unlock, since the slot is the source
+      // of truth for access.
+      try {
+        const existingRows = queryRows(
+          db,
+          "SELECT value FROM vault_meta WHERE key = 'enrolled_devices'",
+        );
+        let enrolled: Array<{ device_id: string; device_name: string; enrolled_at: string }> = [];
+        if (existingRows.length > 0) {
+          try {
+            enrolled = JSON.parse(existingRows[0]['value'] as string);
+          } catch {
+            enrolled = [];
+          }
+        }
+        if (!enrolled.some((d) => d.device_id === deviceIdHex)) {
+          enrolled.push({
+            device_id: deviceIdHex,
+            device_name: navigator.userAgent.slice(0, 64),
+            enrolled_at: new Date().toISOString(),
+          });
+          db.run(
+            "INSERT OR REPLACE INTO vault_meta (key, value) VALUES ('enrolled_devices', ?)",
+            [JSON.stringify(enrolled)],
+          );
+          markDirty();
+        }
+      } catch (devListErr) {
+        console.warn('[DeviceEnrollment] enrolled_devices update failed', devListErr);
+      }
+
       // If we hydrated from a received primary_config (start-screen flow),
       // persist it so the vault now appears in the vault-list on next reload.
       // Then walk the manifest's secondary entries and persist them too —
@@ -778,10 +818,16 @@ type EnrollStep =
         }
       }
 
-      // Signal existing device that enrollment is done
+      // Signal existing device that enrollment is done. We hand the message
+      // off to the relay before closing — the relay then forwards to the
+      // sender's slot. Give the framing a tick to flush before cleanup()
+      // tears the WS down, otherwise a fast cleanup() can race the send and
+      // the sender hits its 90 s stall timer despite a successful enrollment.
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'done' }));
+        await new Promise((r) => setTimeout(r, 50));
       }
+      cleanup();
 
       // Close enrollment session (zeroizes remaining material in WASM)
       byoWorker.Worker.byoEnrollmentClose(enrollmentSessionId).catch(() => {/* best-effort */});
