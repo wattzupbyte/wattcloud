@@ -53,6 +53,12 @@
   const PROVIDERS: Array<{
     type: ProviderType;
     name: string;
+    /** Optional tile-only short label. Long-form `name` is still used in
+     *  the explainer popover, the sheet title when the form opens, and
+     *  the Settings → Add another provider list — only the picker tile
+     *  uses this so cards don't have to compete with the multi-vendor
+     *  description for horizontal space. */
+    tileName?: string;
     description: string;
     mode: 'oauth' | 'inline';
     icon: ComponentType;
@@ -74,7 +80,7 @@
     // Bring your own endpoint — inline-form credentials, no provider console needed.
     { type: 'webdav',   name: 'WebDAV',                  description: 'Nextcloud, ownCloud, Synology, …',   mode: 'inline', icon: HardDrives      },
     { type: 'sftp',     name: 'SFTP',                    description: 'Any SSH server you control',         mode: 'inline', icon: Terminal        },
-    { type: 's3',       name: 'S3 / R2 / Wasabi / MinIO',description: 'AWS, R2, Wasabi, MinIO, Backblaze',  mode: 'inline', icon: Database, comingSoon: true },
+    { type: 's3',       name: 'S3 / R2 / Wasabi / MinIO', tileName: 'S3', description: 'AWS, R2, Wasabi, MinIO, Backblaze',  mode: 'inline', icon: Database, comingSoon: true },
   ];
   const INLINE_PROVIDERS = PROVIDERS.filter((p) => p.mode === 'inline');
 
@@ -380,7 +386,7 @@
       <div class="fr-how-sep" aria-hidden="true">›</div>
       <div class="fr-how-step" role="listitem">
         <span class="fr-how-icon" aria-hidden="true"><CloudCheck size={22} weight="regular" /></span>
-        <span class="fr-how-label">Only ciphertext leaves</span>
+        <span class="fr-how-label">Ciphertext stored</span>
       </div>
     </div>
 
@@ -390,17 +396,28 @@
           class="tile"
           class:active={activeInline === p.type}
           class:coming-soon={p.comingSoon}
-          disabled={connecting || p.comingSoon}
-          onclick={() => { activeInline = p.type; error = ''; }}
+          disabled={connecting}
+          onclick={() => {
+            if (p.comingSoon) {
+              // Click-to-explain: surface the long-form name plus context
+              // via a toast instead of a static inline pill, so the tile
+              // stays visually consistent with the others. The picker
+              // still won't progress to the form (no activeInline set).
+              byoToast.show(
+                `${p.name} support is coming soon — pick WebDAV or SFTP for now.`,
+                { icon: 'info' },
+              );
+              return;
+            }
+            activeInline = p.type;
+            error = '';
+          }}
           aria-label={p.comingSoon ? `${p.name} — coming soon` : `Connect ${p.name}`}
         >
           <span class="tile-logo" aria-hidden="true">
             <p.icon size={32} weight="regular" />
           </span>
-          <span class="tile-name">{p.name}</span>
-          {#if p.comingSoon}
-            <span class="tile-pill">Coming soon</span>
-          {/if}
+          <span class="tile-name">{p.tileName ?? p.name}</span>
         </button>
       {/each}
     </div>
@@ -472,18 +489,18 @@
     <ul class="fr-features" aria-label="Core guarantees">
       <li class="fr-feature">
         <span class="fr-feature-icon" aria-hidden="true">
-          <CloudBadge size={22} variant="solid" color="var(--accent-text, #5FDB8A)" />
+          <CloudBadge size={22} variant="solid" color="var(--text-primary, #EDEDED)" />
         </span>
         <span class="fr-feature-name">Zero-knowledge</span>
         <span class="fr-feature-desc">No server ever sees plaintext.</span>
       </li>
       <li class="fr-feature">
-        <span class="fr-feature-icon" aria-hidden="true"><Key size={22} weight="regular" color="var(--accent-text, #5FDB8A)" /></span>
+        <span class="fr-feature-icon" aria-hidden="true"><Key size={22} weight="regular" color="var(--text-primary, #EDEDED)" /></span>
         <span class="fr-feature-name">You own the keys</span>
         <span class="fr-feature-desc">Lose them, lose access — but so does everyone else.</span>
       </li>
       <li class="fr-feature">
-        <span class="fr-feature-icon" aria-hidden="true"><HardDrives size={22} weight="regular" color="var(--accent-text, #5FDB8A)" /></span>
+        <span class="fr-feature-icon" aria-hidden="true"><HardDrives size={22} weight="regular" color="var(--text-primary, #EDEDED)" /></span>
         <span class="fr-feature-name">Any storage</span>
         <span class="fr-feature-desc">Switch provider anytime without re-encrypting.</span>
       </li>
@@ -1233,7 +1250,7 @@
   .fr-feature-name {
     font-size: var(--t-body-size, .9375rem);
     font-weight: 600;
-    color: var(--accent-text, #5FDB8A);
+    color: var(--text-primary, #EDEDED);
     line-height: 1.25;
   }
   .fr-feature-desc {

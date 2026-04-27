@@ -288,21 +288,26 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     <!-- Storage consumption — always visible on desktop (even at 0 bytes)
          so a fresh vault still reserves the section. For providers
          without a hard quota (e.g. SFTP) we drop the bar and just show
-         the usage figure. -->
+         the usage figure. Layout mirrors the shares row below: leading
+         icon + title/label/bar stack so the two info rows read as a
+         consistent pair. -->
     {#if !collapsed}
       <div class="drawer-section">
-        <div class="drawer-storage">
-          <span class="drawer-storage-title">Storage</span>
-          {#if storageQuotaBytes > 0}
-            <div class="storage-bar">
-              <div class="storage-bar-fill" style:width="{storagePercent}%" style:background-color={storageBarColor}></div>
-            </div>
-            <span class="drawer-storage-label">
-              {formatBytes(storageUsedBytes)} of {formatBytes(storageQuotaBytes)} used
-            </span>
-          {:else}
-            <span class="drawer-storage-label">{formatBytes(storageUsedBytes)} used</span>
-          {/if}
+        <div class="drawer-shares drawer-shares-static">
+          <span class="drawer-shares-icon" aria-hidden="true"><HardDrives size={16} weight="regular" /></span>
+          <span class="drawer-shares-body">
+            <span class="drawer-storage-title">Storage</span>
+            {#if storageQuotaBytes > 0}
+              <div class="storage-bar">
+                <div class="storage-bar-fill" style:width="{storagePercent}%" style:background-color={storageBarColor}></div>
+              </div>
+              <span class="drawer-storage-label">
+                {formatBytes(storageUsedBytes)} of {formatBytes(storageQuotaBytes)} used
+              </span>
+            {:else}
+              <span class="drawer-storage-label">{formatBytes(storageUsedBytes)} used</span>
+            {/if}
+          </span>
         </div>
       </div>
     {/if}
@@ -429,20 +434,24 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
       {/if}
 
       <!-- Storage consumption (mobile overlay) — always rendered so the
-           section is present even on a fresh vault. -->
+           section is present even on a fresh vault. Same icon-leading
+           layout as the shares row to keep the two info entries aligned. -->
       <div class="drawer-section">
-        <div class="drawer-storage">
-          <span class="drawer-storage-title">Storage</span>
-          {#if storageQuotaBytes > 0}
-            <div class="storage-bar">
-              <div class="storage-bar-fill" style:width="{storagePercent}%" style:background-color={storageBarColor}></div>
-            </div>
-            <span class="drawer-storage-label">
-              {formatBytes(storageUsedBytes)} of {formatBytes(storageQuotaBytes)} used
-            </span>
-          {:else}
-            <span class="drawer-storage-label">{formatBytes(storageUsedBytes)} used</span>
-          {/if}
+        <div class="drawer-shares drawer-shares-static">
+          <span class="drawer-shares-icon" aria-hidden="true"><HardDrives size={16} weight="regular" /></span>
+          <span class="drawer-shares-body">
+            <span class="drawer-storage-title">Storage</span>
+            {#if storageQuotaBytes > 0}
+              <div class="storage-bar">
+                <div class="storage-bar-fill" style:width="{storagePercent}%" style:background-color={storageBarColor}></div>
+              </div>
+              <span class="drawer-storage-label">
+                {formatBytes(storageUsedBytes)} of {formatBytes(storageQuotaBytes)} used
+              </span>
+            {:else}
+              <span class="drawer-storage-label">{formatBytes(storageUsedBytes)} used</span>
+            {/if}
+          </span>
         </div>
       </div>
 
@@ -534,15 +543,6 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     white-space: nowrap;
   }
 
-  .drawer-storage {
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-xs);
-    padding: var(--sp-sm) var(--sp-sm);
-    border-radius: var(--r-input);
-    justify-content: center;
-  }
-
   .drawer-storage-title,
   .drawer-section-title {
     font-size: var(--t-label-size, 0.75rem);
@@ -629,7 +629,17 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     transition: background 150ms;
   }
 
-  .drawer-shares:hover {
+  /* Non-interactive variant — used by the Storage row, which shares the
+     icon+body layout but doesn't navigate anywhere. Drop the pointer
+     affordances and the hover so it doesn't look tappable. */
+  .drawer-shares.drawer-shares-static {
+    cursor: default;
+  }
+  .drawer-shares.drawer-shares-static:hover {
+    background: transparent;
+  }
+
+  .drawer-shares:not(.drawer-shares-static):hover {
     background: var(--hover-bg, rgba(255, 255, 255, 0.04));
   }
 

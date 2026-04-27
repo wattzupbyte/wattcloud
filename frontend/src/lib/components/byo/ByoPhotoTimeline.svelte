@@ -17,6 +17,9 @@
   import CaretDown from 'phosphor-svelte/lib/CaretDown';
   import ArrowUp from 'phosphor-svelte/lib/ArrowUp';
   import ArrowDown from 'phosphor-svelte/lib/ArrowDown';
+  import GridFour from 'phosphor-svelte/lib/GridFour';
+  import SquaresFour from 'phosphor-svelte/lib/SquaresFour';
+  import GridNine from 'phosphor-svelte/lib/GridNine';
   import CalendarBlank from 'phosphor-svelte/lib/CalendarBlank';
   import MapPin from 'phosphor-svelte/lib/MapPin';
   import { parseExif } from '../../byo/ExifExtractor';
@@ -72,6 +75,47 @@
   let { loadFileData = null, sortDir = $bindable('desc'), selectionContext = null,
   onShareCollection,
   onUpload }: Props = $props();
+
+  // ── Density toggle ────────────────────────────────────────────────────────
+  // Cycles thumbnail size; pinned per-vault in localStorage so the choice
+  // survives reloads. Three steps span the useful range without an
+  // overwhelming menu — small (more thumbs, packed tight) → medium (the
+  // legacy default that all existing CSS was tuned for) → large (fewer
+  // thumbs, bigger glance area). The actual column counts differ between
+  // mobile and desktop so the relative density feels consistent across
+  // both — see the .photo-grid CSS rules below for the breakpoint values.
+  type PhotoDensity = 'small' | 'medium' | 'large';
+  const PHOTO_DENSITY_PREFIX = 'byo:photo_density:';
+  let photoDensity = $state<PhotoDensity>('medium');
+  $effect(() => {
+    const vId = get(vaultStore).vaultId;
+    if (!vId) return;
+    try {
+      const raw = localStorage.getItem(PHOTO_DENSITY_PREFIX + vId);
+      if (raw === 'small' || raw === 'medium' || raw === 'large') photoDensity = raw;
+    } catch { /* storage blocked */ }
+  });
+  function cycleDensity() {
+    const next: PhotoDensity = photoDensity === 'small'
+      ? 'medium'
+      : photoDensity === 'medium' ? 'large' : 'small';
+    photoDensity = next;
+    const vId = get(vaultStore).vaultId;
+    if (vId) {
+      try { localStorage.setItem(PHOTO_DENSITY_PREFIX + vId, next); }
+      catch { /* storage blocked */ }
+    }
+  }
+  let densityIcon = $derived(photoDensity === 'small' ? GridNine
+    : photoDensity === 'medium' ? GridFour
+    : SquaresFour);
+  let densityLabel = $derived(
+    photoDensity === 'small' ? 'Smaller thumbnails — click for medium'
+    : photoDensity === 'medium' ? 'Medium thumbnails — click for larger'
+    : 'Larger thumbnails — click for smaller'
+  );
+  let photoColsMobile = $derived(photoDensity === 'small' ? 4 : photoDensity === 'medium' ? 3 : 2);
+  let photoColsDesktop = $derived(photoDensity === 'small' ? 8 : photoDensity === 'medium' ? 5 : 3);
 function toggleSelection(fileId: number) {
     selectionContext?.toggle(fileId);
   }
@@ -454,7 +498,11 @@ function toggleSelection(fileId: number) {
     : false);
 </script>
 
-<div class="photo-timeline">
+<div
+  class="photo-timeline"
+  style:--photo-cols-mobile={photoColsMobile}
+  style:--photo-cols-desktop={photoColsDesktop}
+>
   <!-- Toolbar: view toggle + folder source picker (timeline only) -->
   <div class="photo-toolbar">
     <div class="view-toggle" role="tablist" aria-label="Photo view">
@@ -613,6 +661,15 @@ function toggleSelection(fileId: number) {
               </div>
             {/if}
           </div>
+
+          <button
+            class="filter-direction"
+            onclick={cycleDensity}
+            aria-label={densityLabel}
+            title={densityLabel}
+          >
+            <svelte:component this={densityIcon} size={14} />
+          </button>
 
           <button
             class="filter-direction"
@@ -1384,17 +1441,21 @@ function toggleSelection(fileId: number) {
     z-index: 2;
   }
 
-  /* Grid — §16.2: 3-col default, 5-col at ≥600px, 2px gap, no border-radius */
+  /* Grid — §16.2: 3-col default mobile, 5-col default desktop. The actual
+     column count is driven by --photo-cols-mobile / --photo-cols-desktop
+     CSS variables set on .photo-timeline by the density toggle so the
+     user can pack thumbs tighter or spread them out without leaving the
+     toolbar. Defaults below cover the no-vault / pre-effect render. */
   .photo-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(var(--photo-cols-mobile, 3), 1fr);
     /* Slightly looser gap — rounded corners need breathing room. */
     gap: var(--sp-xs, 4px);
   }
 
   @media (min-width: 600px) {
     .photo-grid {
-      grid-template-columns: repeat(5, 1fr);
+      grid-template-columns: repeat(var(--photo-cols-desktop, 5), 1fr);
     }
   }
 

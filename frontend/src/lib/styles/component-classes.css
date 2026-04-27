@@ -90,6 +90,16 @@
 
 /* Icon-only */
 .btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* SVG glyphs default to baseline-aligned inline content; without a
+     line-height of 0 the surrounding line-box pads the bottom of the
+     button by the difference between font line-height and the icon's
+     intrinsic height, which visually shifts the glyph upward inside
+     the circle. Zeroing it lets align-items: center actually center
+     the SVG against the button box. */
+  line-height: 0;
   background-color: transparent;
   color: var(--text-secondary);
   width: var(--touch-target);
@@ -504,6 +514,31 @@
   }
   .file-list-header-cell-right {
     text-align: right;
+  }
+}
+
+/* Wide-viewport enhancement: render the file list as a 2-column grid so
+   long flat lists don't waste the right half of a desktop window. Each
+   row keeps its own internal grid (icon · name · modified · size · action),
+   so the row layout doesn't change — we just lay them out in pairs.
+
+   1280px is past the drawer-expanded width (280px) + two minimum-viable
+   list rows (~360px each + gap). Below that we stay single-column so rows
+   keep room for the Modified/Size columns.
+
+   The single-column header row above can't visually align with two
+   parallel rows beneath without either duplicating it or splitting it
+   across columns — both look fussy. Hide it instead; the per-row meta
+   slots are self-labeled by position. */
+@media (min-width: 1280px) {
+  .file-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: var(--sp-md);
+    row-gap: var(--sp-xs);
+  }
+  .file-list-header {
+    display: none;
   }
 }
 

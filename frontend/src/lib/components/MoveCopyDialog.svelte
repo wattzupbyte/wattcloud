@@ -1,7 +1,7 @@
 <script lang="ts">
   import { folders } from '../stores/files';
   import Icon from './Icons.svelte';
-  import FolderTree from './FolderTree.svelte';
+  import FolderSimple from 'phosphor-svelte/lib/FolderSimple';
   import BottomSheet from './BottomSheet.svelte';
 
 
@@ -48,14 +48,20 @@
 
   let hasSelection = $derived(selectRoot || selectedDestinationId !== null);
 
-  // Use allFolders prop (BYO) or $folders store (managed)
+  // Use allFolders prop (BYO) or $folders store (managed). Sort by name
+  // since the flat browser below relies on alphabetical order — the tree
+  // view used to lean on the parent_id chain for ordering, but the flat
+  // list has no implicit hierarchy to surface.
   let sourceFolders = $derived(allFolders ?? $folders);
-  let filteredFolders = $derived(folderSearch
-    ? sourceFolders.filter(f => {
-        const name = f.decrypted_name || f.name;
-        return name.toLowerCase().includes(folderSearch.toLowerCase());
-      })
-    : sourceFolders);
+  let filteredFolders = $derived((() => {
+    const q = folderSearch.trim().toLowerCase();
+    const list = q
+      ? sourceFolders.filter((f) => (f.decrypted_name || f.name).toLowerCase().includes(q))
+      : sourceFolders.slice();
+    return list.sort((a, b) =>
+      (a.decrypted_name || a.name).localeCompare(b.decrypted_name || b.name),
+    );
+  })());
 
   let fileItems = $derived(items.filter(item => item.type === 'file'));
   let folderItems = $derived(items.filter(item => item.type === 'folder'));
@@ -236,7 +242,8 @@
   <div class="folder-tree-container">
     <!-- Vault root is a first-class destination (files/folders that live
          at the top level have folder_id = null). Listing it above the
-         folder tree lets the user move/copy items back out of nesting. -->
+         flat folder list lets the user move/copy items back out of
+         nesting. -->
     <button
       type="button"
       class="vault-root-option"
@@ -246,11 +253,37 @@
       <Icon name="home" size={16} />
       <span>Vault root</span>
     </button>
-    <FolderTree
-      folders={filteredFolders}
-      selected={selectRoot ? undefined : (selectedDestinationId ?? undefined)}
-      onSelect={handleDestinationSelect}
-    />
+
+    <!-- Flat folder browser. The previous tree view leaned on indenting
+         + expand/collapse; with deeper hierarchies that pushed names
+         off-screen and made the search filter feel broken because
+         matches inside collapsed branches stayed hidden until the user
+         expanded each ancestor. A flat list with one row per folder
+         skips the tree mechanics entirely — search filters in place,
+         every folder is a click away, and the only visual element is
+         the folder icon next to the name. -->
+    {#if filteredFolders.length === 0}
+      <p class="no-folders">No folders match.</p>
+    {:else}
+      <ul class="flat-folder-list" role="listbox">
+        {#each filteredFolders as folder (folder.id)}
+          <li>
+            <button
+              type="button"
+              class="flat-folder-item"
+              class:selected={!selectRoot && selectedDestinationId === folder.id}
+              onclick={() => handleDestinationSelect(folder.id)}
+            >
+              <FolderSimple
+                size={18}
+                weight={!selectRoot && selectedDestinationId === folder.id ? 'fill' : 'regular'}
+              />
+              <span class="flat-folder-name">{folder.decrypted_name || folder.name}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
   </div>
 
   {#if error}
@@ -439,6 +472,52 @@
     overflow-y: auto;
     background: var(--bg-input, #212121);
     margin-bottom: var(--sp-md, 16px);
+  }
+
+  .flat-folder-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .flat-folder-item {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm, 8px);
+    width: 100%;
+    min-height: 40px;
+    padding: 0 var(--sp-sm, 8px);
+    background: transparent;
+    border: none;
+    border-radius: var(--r-input, 12px);
+    color: var(--text-secondary, #999);
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    cursor: pointer;
+    text-align: left;
+    transition: background var(--duration-normal, 150ms) ease, color var(--duration-normal, 150ms) ease;
+  }
+  .flat-folder-item:hover {
+    background: var(--bg-surface-hover, #2E2E2E);
+    color: var(--text-primary, #EDEDED);
+  }
+  .flat-folder-item.selected {
+    background: var(--accent-muted, #1B3627);
+    color: var(--accent-text, #5FDB8A);
+  }
+  .flat-folder-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .no-folders {
+    margin: 0;
+    padding: var(--sp-md, 16px) var(--sp-sm, 8px);
+    text-align: center;
+    color: var(--text-disabled, #616161);
+    font-size: var(--t-body-sm-size, 0.8125rem);
   }
 
   /* Vault root option — visually a peer of the FolderTree's top-level
