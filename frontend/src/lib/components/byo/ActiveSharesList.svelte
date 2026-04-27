@@ -291,7 +291,7 @@
       </div>
 
       <div class="qr-body">
-        <div class="qr-frame">
+        <div class="qr-display-wrap">
           <QrDisplay data={shareUrl(qrShare)} ariaLabel="QR code for share link" />
         </div>
 
@@ -546,12 +546,12 @@
     flex-direction: column;
     gap: var(--sp-md, 16px);
   }
-  .qr-frame {
+  /* QrDisplay already renders its own dark frame + green corner brackets +
+     white canvas, so all we do here is center it. No background/padding,
+     otherwise we double-frame the QR. */
+  .qr-display-wrap {
     display: flex;
     justify-content: center;
-    background: #fff;
-    padding: var(--sp-md, 16px);
-    border-radius: var(--r-card, 16px);
   }
   .qr-link-row {
     display: flex;
