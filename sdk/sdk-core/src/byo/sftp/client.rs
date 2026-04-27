@@ -477,7 +477,8 @@ impl<T: RelayTransport> SftpRelayClient<T> {
     pub async fn stat(&self, path: &str) -> Result<(i64, u64, bool), ProviderError> {
         let result = self
             .call("stat", serde_json::json!({ "path": path }))
-            .await?;
+            .await
+            .map_err(|e| wrap_sftp_err(&format!("stat {path}"), e))?;
         let mtime = result["mtime"].as_i64().unwrap_or(0);
         let size = result["size"].as_u64().unwrap_or(0);
         let is_dir = result["isDir"].as_bool().unwrap_or(false);
@@ -488,7 +489,8 @@ impl<T: RelayTransport> SftpRelayClient<T> {
     pub async fn list(&self, path: &str) -> Result<Vec<StorageEntry>, ProviderError> {
         let result = self
             .call("list", serde_json::json!({ "path": path }))
-            .await?;
+            .await
+            .map_err(|e| wrap_sftp_err(&format!("list {path}"), e))?;
         let entries = result["entries"]
             .as_array()
             .ok_or(ProviderError::InvalidResponse)?;
@@ -533,14 +535,15 @@ impl<T: RelayTransport> SftpRelayClient<T> {
             {
                 Ok(())
             }
-            Err(e) => Err(e),
+            Err(e) => Err(wrap_sftp_err(&format!("mkdir {path}"), e)),
         }
     }
 
     /// Delete a remote file.
     pub async fn delete_file(&self, path: &str) -> Result<(), ProviderError> {
         self.call("delete", serde_json::json!({ "path": path }))
-            .await?;
+            .await
+            .map_err(|e| wrap_sftp_err(&format!("delete {path}"), e))?;
         self.state
             .lock()
             .map_err(|_| ProviderError::Provider("lock poisoned".into()))?
@@ -557,7 +560,8 @@ impl<T: RelayTransport> SftpRelayClient<T> {
             "rename",
             serde_json::json!({ "from": old_path, "to": new_path }),
         )
-        .await?;
+        .await
+        .map_err(|e| wrap_sftp_err(&format!("rename {old_path} -> {new_path}"), e))?;
         Ok(())
     }
 
@@ -565,6 +569,7 @@ impl<T: RelayTransport> SftpRelayClient<T> {
     pub async fn read(&self, path: &str) -> Result<Vec<u8>, ProviderError> {
         self.call_binary_read("read", serde_json::json!({ "path": path }))
             .await
+            .map_err(|e| wrap_sftp_err(&format!("read {path}"), e))
     }
 
     /// Write a remote file entirely (single-shot v1 protocol).
@@ -574,7 +579,8 @@ impl<T: RelayTransport> SftpRelayClient<T> {
             serde_json::json!({ "path": path, "size": data.len() }),
             data,
         )
-        .await?;
+        .await
+        .map_err(|e| wrap_sftp_err(&format!("write {path}"), e))?;
         Ok(())
     }
 
@@ -657,15 +663,10 @@ impl<T: RelayTransport> SftpRelayClient<T> {
         self.call("write_close", serde_json::json!({ "handle": handle }))
             .await
             .map_err(|e| wrap_sftp_err(&format!("write_close handle={handle}"), e))?;
-        // Atomic rename temp → final.
-        self.rename(&temp_path, &final_path)
-            .await
-            .map_err(|e| wrap_sftp_err(&format!("rename {temp_path} -> {final_path}"), e))?;
-        // Stat the final file to get the version.
-        let (mtime, size, _) = self
-            .stat(&final_path)
-            .await
-            .map_err(|e| wrap_sftp_err(&format!("stat {final_path}"), e))?;
+        // Atomic rename temp → final. `rename` self-wraps with op+paths.
+        self.rename(&temp_path, &final_path).await?;
+        // Stat the final file to get the version. `stat` self-wraps.
+        let (mtime, size, _) = self.stat(&final_path).await?;
         self.set_version(&final_path, mtime, size).await?;
         Ok(UploadResult {
             ref_: final_path,
@@ -753,27 +754,17 @@ impl<T: RelayTransport> SftpRelayClient<T> {
     }
 
     /// Stat `path`; if it doesn't exist, mkdir it.  Leaves other errors
-    /// (permission denied, etc.) to the caller.  On any failure we wrap the
-    /// underlying error with the path so the diagnostic in the toast tells
-    /// the user *which* step broke instead of a bare `No such file`.
+    /// (permission denied, etc.) to the caller.  `stat` and `mkdir` self-wrap
+    /// their errors with operation+path context, so callers always see *which*
+    /// step broke instead of a bare `No such file`.
     async fn ensure_dir(&self, path: &str) -> Result<(), ProviderError> {
         if path.is_empty() {
             return Ok(());
         }
         match self.stat(path).await {
             Ok(_) => Ok(()),
-            Err(ProviderError::SftpRelay(_)) => self.mkdir(path).await.map_err(|e| match e {
-                ProviderError::SftpRelay(msg) => {
-                    ProviderError::SftpRelay(format!("mkdir {path}: {msg}"))
-                }
-                other => other,
-            }),
-            Err(e) => Err(match e {
-                ProviderError::SftpRelay(msg) => {
-                    ProviderError::SftpRelay(format!("stat {path}: {msg}"))
-                }
-                other => other,
-            }),
+            Err(ProviderError::SftpRelay(_)) => self.mkdir(path).await,
+            Err(e) => Err(e),
         }
     }
 
