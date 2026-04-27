@@ -181,10 +181,63 @@
       const vaultHexId = getVaultId();
       const record = await getDeviceRecord(vaultHexId);
       currentDeviceId = record?.device_id ?? '';
+
+      // Auto-heal: if this device's device_id (from IDB) isn't in
+      // enrolled_devices but it does occupy a slot in the manifest header,
+      // it's a survivor from a path that wrote IDB but skipped the
+      // vault_meta append (ByoRecovery is the canonical case — it mints a
+      // new device_id and rewrites the slot table without touching
+      // enrolled_devices, so the "This device" badge can never match for
+      // anyone who's used recovery). Append + markDirty so the next save
+      // propagates the entry to every other device.
+      if (currentDeviceId && record) {
+        const inList = enrolledDevices.some((d) => d.device_id === currentDeviceId);
+        const inHeader = await deviceIdIsInManifestHeader(currentDeviceId);
+        if (!inList && inHeader) {
+          const updated = [
+            ...enrolledDevices,
+            {
+              device_id: currentDeviceId,
+              device_name: record.device_name,
+              enrolled_at: new Date().toISOString(),
+            },
+          ];
+          db.run(
+            "INSERT OR REPLACE INTO vault_meta (key, value) VALUES ('enrolled_devices', ?)",
+            [JSON.stringify(updated)],
+          );
+          markDirty();
+          enrolledDevices = updated;
+        }
+      }
     } catch (e: any) {
       showGlobalError(e.message ?? 'Failed to load devices');
     } finally {
       devicesLoading = false;
+    }
+  }
+
+  /** True iff `deviceIdHex` matches an active slot in the primary
+   * manifest header. Pulled from the live primary so we catch slot table
+   * changes another device made since this one unlocked. */
+  async function deviceIdIsInManifestHeader(deviceIdHex: string): Promise<boolean> {
+    const provider = getProvider();
+    if (!provider) return false;
+    try {
+      const { data } = await provider.download(provider.manifestRef());
+      const header = new Uint8Array(data.slice(0, HEADER_SIZE));
+      for (let i = 0; i < SLOT_COUNT; i++) {
+        const offset = DEVICE_SLOTS_OFFSET + i * SLOT_SIZE;
+        if (header[offset] !== 0x01) continue;
+        const slotDeviceId = Array.from(header.slice(offset + 1, offset + 17))
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+        if (slotDeviceId === deviceIdHex) return true;
+      }
+      return false;
+    } catch {
+      // Don't add an entry we can't verify against the header.
+      return false;
     }
   }
 
