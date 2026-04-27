@@ -895,21 +895,47 @@ async function _doSave(): Promise<void> {
 
     // Upload manifest to all online providers.
     // C5: manifest must be confirmed before WAL/journal are cleared.
+    //
+    // The PRIMARY upload is mandatory — vault_manifest.sc on the primary is
+    // the unlock-time source of truth, so a failed primary upload means the
+    // next reload will read a stale manifest (e.g. without a freshly-added
+    // secondary). Secondary uploads remain best-effort: if one is offline
+    // the save still succeeds, the secondary will sync on reconnect via
+    // its WAL. We track primary success explicitly instead of just counting
+    // total successes — counting any-success would let the save "succeed"
+    // when the primary fails but a secondary works (the freshly-attached
+    // secondary on retryOrphan can hide a primary failure this way).
+    let primaryManifestUploaded = false;
     let manifestUploadedCount = 0;
+    let primaryUploadErr: unknown = null;
     for (const pid of savePlan.manifest_upload_targets) {
       const provInst = _providers.get(pid);
       if (!provInst) continue;
       try {
         const { version: uploadedManifestVersion } = await provInst.upload(provInst.manifestRef(), 'vault_manifest.sc', manifestFile, {});
         manifestUploadedCount++;
+        if (pid === _primaryProviderId) primaryManifestUploaded = true;
         await storeCachedManifest(_vaultId, manifestBlobB64, uploadedManifestVersion, nextVersion).catch(() => {});
-      } catch {
-        // Best-effort — offline providers will sync on reconnect.
+      } catch (err) {
+        if (pid === _primaryProviderId) {
+          primaryUploadErr = err;
+          console.error('[saveVault] primary manifest upload failed:', err);
+        } else {
+          // Secondary failures are non-fatal — the secondary will catch up
+          // on reconnect — but still log so silent regressions don't hide.
+          console.warn('[saveVault] secondary manifest upload failed for', pid, err);
+        }
       }
     }
 
-    // At least one manifest upload must succeed (the primary). If zero succeed, the
-    // vault bodies are ahead of the manifest — leave dirty state for retry.
+    // Primary must succeed. If it didn't, the vault bodies are ahead of the
+    // primary's manifest — abort the save so dirty state stays set for retry
+    // and the caller surfaces a real error rather than a misleading success.
+    if (!primaryManifestUploaded) {
+      throw new Error(
+        `Manifest upload to primary failed — save aborted; dirty state preserved. Reason: ${describeErr(primaryUploadErr)}`,
+      );
+    }
     if (manifestUploadedCount === 0) {
       throw new Error('Manifest upload failed on all providers — save aborted; dirty state preserved');
     }
