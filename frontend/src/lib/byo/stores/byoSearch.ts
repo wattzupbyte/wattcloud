@@ -84,9 +84,13 @@ export async function performByoSearch(): Promise<void> {
       return;
     }
 
+    // Free-text query → name-index search; type-only filter (no query) →
+    // every file in the active provider so the Documents/Videos/Audio/…
+    // chips work standalone. listImageFiles was the previous fallback,
+    // which silently emptied the result for any non-image type filter.
     let results = query.trim()
       ? await _dataProvider.searchFiles(query.trim())
-      : await _dataProvider.listImageFiles(); // fallback for type-only filter
+      : await _dataProvider.listAllFiles();
 
     if (filters.fileType === 'document') {
       results = results.filter((f) => DOCUMENT_TYPES.has(f.file_type));

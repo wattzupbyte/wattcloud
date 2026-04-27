@@ -625,6 +625,20 @@ export class ByoDataProvider implements DataProvider {
     return folders.filter((f) => f.decrypted_name.toLowerCase().includes(q));
   }
 
+  /** Every file belonging to the active provider, any folder. Used by
+   *  search when only a type filter is set (no free-text query) so the
+   *  Documents / Videos / Audio / … chips can return matches across the
+   *  whole vault. listImageFiles is image-only and would silently empty
+   *  the result set for non-image filters. */
+  async listAllFiles(): Promise<FileEntry[]> {
+    const rows = queryRows(
+      this.db,
+      `SELECT * FROM files WHERE provider_id = ? ORDER BY created_at DESC`,
+      [this.activeProviderId],
+    );
+    return this.decryptFileRows(rows);
+  }
+
   async listImageFiles(folderId?: number | null): Promise<FileEntry[]> {
     // folderId:
     //   undefined → all images for the active provider, any folder.

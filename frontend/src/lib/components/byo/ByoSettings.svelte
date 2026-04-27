@@ -638,7 +638,12 @@
               {p.displayName}
               {#if p.isPrimary}<span class="primary-badge">Primary</span>{/if}
             </span>
-            {#if p.status !== 'offline_os'}
+            {#if p.status !== 'offline_os' && p.status !== 'offline'}
+              <!-- 'offline' is suppressed here: the per-provider OfflineBanner
+                   on the dashboard already calls the user's attention to the
+                   condition; surfacing the same status as a row badge is
+                   redundant and visually noisy. Other states (connected,
+                   syncing, error, unauthorized) still show. -->
               <span class="status-dot" style:background-color={statusDotColor(p.status)} aria-hidden="true"></span>
               <span class="status-label" style:color={statusDotColor(p.status)}>{statusLabel(p.status)}</span>
             {/if}

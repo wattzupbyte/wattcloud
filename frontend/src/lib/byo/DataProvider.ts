@@ -243,6 +243,10 @@ export interface DataProvider {
   /** Case-insensitive substring search over decrypted folder names. */
   searchFolders(query: string): Promise<FolderEntry[]>;
 
+  /** All files belonging to the active provider, any folder. Used as a
+   *  type-filter fallback when the search has no free-text query. */
+  listAllFiles(): Promise<FileEntry[]>;
+
   /**
    * List image files sorted by created_at descending.
    * - `undefined` → all images in the active provider.
