@@ -1848,10 +1848,22 @@ export class ByoDataProvider implements DataProvider {
   }
 
   listShares(): ShareEntry[] {
+    // Filter out shares whose expires_at has passed — the relay sweeper
+    // already purged the blob, so the local row is dead weight. Hiding
+    // them here also avoids the UX cliff the user reported: an expired
+    // row offering a "Revoke" button with the same confirmation copy as
+    // an active share. Extending isn't possible without re-uploading the
+    // ciphertext (the relay's blob is gone), so cleanup is the right
+    // default here. Rows are kept in the DB so a future history view
+    // could surface them; only the live-shares list filters.
+    const now = Date.now();
     const rows = queryRows(
       this.db,
-      'SELECT * FROM share_tokens WHERE revoked = 0 ORDER BY created_at DESC',
-      [],
+      `SELECT * FROM share_tokens
+       WHERE revoked = 0
+         AND (presigned_expires_at IS NULL OR presigned_expires_at > ?)
+       ORDER BY created_at DESC`,
+      [now],
     );
     return rows.map((r) => {
       const row = r as Record<string, unknown>;

@@ -32,6 +32,10 @@
   // Revoke confirmation (§11.2 — destructive action needs consequence line).
   let confirmShareId: string | null = $state(null);
   let confirmDisplayName = $state('');
+  /** True if the row's expiry has already passed at confirm-prompt time
+   *  — drives the modal's title + body so we don't tell the user they're
+   *  cutting off recipients who already lost access at expiry. */
+  let confirmIsExpired = $state(false);
 
   // QR sheet for a single share (only available when fragment is stored —
   // shares created before recoverable-link shipped have fragment=null).
@@ -116,6 +120,8 @@
   function promptRevoke(share: ShareEntry) {
     confirmShareId = share.share_id;
     confirmDisplayName = displayNames.get(share.share_id) ?? 'this share';
+    confirmIsExpired =
+      share.presigned_expires_at !== null && share.presigned_expires_at <= Date.now();
   }
 
   async function revokeConfirmed() {
@@ -306,9 +312,11 @@
 
 <ConfirmModal
   isOpen={confirmShareId !== null}
-  title="Revoke share link?"
-  message="Anyone holding this link will immediately lose access to {confirmDisplayName}. This cannot be undone."
-  confirmText="Revoke"
+  title={confirmIsExpired ? 'Remove expired share?' : 'Revoke share link?'}
+  message={confirmIsExpired
+    ? `${confirmDisplayName} expired and is no longer accessible — the relay already discarded the encrypted blob. Remove it from the list?`
+    : `Anyone holding this link will immediately lose access to ${confirmDisplayName}. This cannot be undone.`}
+  confirmText={confirmIsExpired ? 'Remove' : 'Revoke'}
   confirmClass="btn-danger"
   onConfirm={revokeConfirmed}
   onCancel={() => { confirmShareId = null; }}
