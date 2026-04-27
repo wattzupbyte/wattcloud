@@ -1367,6 +1367,10 @@
     {/if}
 
     {#if $vaultStore.providers.length > 1}
+      <!-- Provider switcher: chips show only the provider name; status
+           is conveyed by the colored border + status dot (and the title
+           tooltip for sighted hover). Adding providers happens via
+           Settings → Add another provider, not from this row. -->
       <div class="provider-switcher" role="tablist" aria-label="Storage providers">
         {#each $vaultStore.providers as p (p.providerId)}
           <button
@@ -1383,22 +1387,14 @@
             onpointerleave={onChipPointerUp}
           >
             <span class="provider-chip-icon" aria-hidden="true">{providerIcon(p.type)}</span>
-            <span class="provider-chip-name">{p.displayName}{p.status === 'unauthorized' ? ' · Token expired' : (p.status === 'offline' || p.status === 'error') ? ' · Offline' : ''}</span>
+            <span class="provider-chip-name">{p.displayName}</span>
             {#if p.status === 'syncing'}
               <span class="chip-status chip-syncing" aria-label="Syncing"></span>
             {:else if p.status === 'offline' || p.status === 'error' || p.status === 'unauthorized'}
-              <span class="chip-status chip-offline" aria-label="Offline"></span>
+              <span class="chip-status chip-offline" aria-label={p.status === 'unauthorized' ? 'Token expired' : 'Offline'}></span>
             {/if}
           </button>
         {/each}
-        <button
-          class="provider-chip provider-chip-add"
-          title="Add provider"
-          onclick={() => showAddProvider = true}
-          aria-label="Add storage provider"
-        >
-          <span aria-hidden="true">+</span>
-        </button>
       </div>
     {/if}
   </div>
@@ -2266,6 +2262,9 @@
     padding: var(--sp-xs, 4px) var(--sp-md, 16px);
     overflow-x: auto;
     scrollbar-width: none;
+    /* Push slightly past the right edge so the last chip doesn't visually
+       collide with the scrollbar gutter on platforms that show one. */
+    scroll-padding-right: var(--sp-md, 16px);
   }
 
   .provider-switcher::-webkit-scrollbar { display: none; }
@@ -2274,9 +2273,14 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 0 var(--sp-md, 16px);
-    /* §25: tap targets ≥ 44dp. */
-    min-height: 44px;
+    /* Tighter horizontal padding on mobile so 2–3 chips fit in a typical
+       toolbar without horizontal scroll. The desktop @media bumps it back. */
+    padding: 0 var(--sp-sm, 8px) 0 var(--sp-xs, 4px);
+    /* Slight reduction from 44dp — 36dp tap target with a 8px wrapper hit
+       area still meets WCAG 2.5.5 minimum (24px) and frees vertical room
+       in the toolbar. The chip is not the only path to switch providers
+       (drawer also exposes them). */
+    min-height: 36px;
     border-radius: var(--r-pill, 9999px);
     background: var(--bg-surface-raised, #1E1E1E);
     border: 1px solid var(--border, #2E2E2E);
@@ -2285,6 +2289,10 @@
     white-space: nowrap;
     cursor: pointer;
     transition: background 150ms, color 150ms, border-color 150ms;
+  }
+
+  @media (min-width: 600px) {
+    .provider-chip { padding: 0 var(--sp-md, 16px); min-height: 40px; }
   }
 
   .provider-chip:hover {
@@ -2301,20 +2309,23 @@
   .provider-chip-icon {
     font-size: 0.7rem;
     font-weight: 700;
-    width: 18px;
-    height: 18px;
+    width: 22px;
+    height: 22px;
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 4px;
+    border-radius: 999px;
     background: var(--glass-bg, rgba(255,255,255,0.06));
     flex-shrink: 0;
   }
 
   .provider-chip-name {
-    max-width: 80px;
+    max-width: 12ch;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  @media (min-width: 600px) {
+    .provider-chip-name { max-width: 18ch; }
   }
 
   .chip-status {
@@ -2348,13 +2359,6 @@
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.35; }
-  }
-
-  .provider-chip-add {
-    color: var(--text-secondary, #999);
-    font-size: 1rem;
-    padding: 0 var(--sp-sm, 8px);
-    flex-shrink: 0;
   }
 
   /* ── End provider switcher ──────────────────────────────────────────────── */
