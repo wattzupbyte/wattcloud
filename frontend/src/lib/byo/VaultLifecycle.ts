@@ -580,8 +580,11 @@ export async function unlockVault(
     provDb.close();
   }
 
-  // Run migrations (no-op for R6 greenfield vaults).
-  runMigrations(masterDb);
+  // Run migrations. `primaryEntry?.provider_id` lets the migration
+  // backfill files/folders/favorites.provider_id for legacy vaults that
+  // pre-date the per-row provider stamping (otherwise downloads resolve
+  // to the wrong provider when secondaries exist).
+  runMigrations(masterDb, primaryEntry?.provider_id);
 
   // ── Step 9: Read vault metadata ────────────────────────────────────────
   const metaRows = queryRows(masterDb, "SELECT key, value FROM vault_meta WHERE key IN ('vault_version', 'vault_id')");

@@ -94,8 +94,28 @@ function dropVariantColumn(db: Database): void {
  *
  * Ordering matters — additive ALTER TABLE first, then the variant-drop
  * rebuild (so the rebuilt table inherits the Phase-3b bundle columns).
+ *
+ * `primaryProviderId` is used to backfill rows that pre-date `provider_id`
+ * being a tracked column on files/folders/favorites. SQLite can't add
+ * NOT NULL columns to populated tables without a default, so we add the
+ * column nullable, backfill with the primary's id, and rely on every
+ * subsequent INSERT to set it explicitly (the schema's NOT NULL is on
+ * the CREATE TABLE only — pre-existing rows keep flowing).
  */
-export function runMigrations(db: Database): void {
+export function runMigrations(db: Database, primaryProviderId?: string): void {
+  // ── files / folders / favorites: provider_id backfill ────────────────────
+  // Existing vaults from before R6's per-row provider_id stamping have no
+  // such column, so ByoDataProvider.downloadFile reads `undefined` and
+  // resolveProvider falls back to the primary — wrong target whenever the
+  // file actually lives on a secondary. Add the column and stamp the
+  // primary's id on every legacy row. Skipped silently when the caller
+  // didn't pass a primary (e.g. tests).
+  if (primaryProviderId) {
+    backfillProviderIdColumn(db, 'files', primaryProviderId);
+    backfillProviderIdColumn(db, 'folders', primaryProviderId);
+    backfillProviderIdColumn(db, 'favorites', primaryProviderId);
+  }
+
   addColumn(db, 'share_tokens', 'kind', `TEXT DEFAULT 'file'`);
   addColumn(db, 'share_tokens', 'folder_id', `INTEGER`);
   addColumn(db, 'share_tokens', 'collection_id', `INTEGER`);
@@ -124,6 +144,16 @@ export function runMigrations(db: Database): void {
   // Vault-only columns; never sent to the relay.
   addColumn(db, 'share_tokens', 'bundle_kind', `TEXT`);
   addColumn(db, 'share_tokens', 'label', `TEXT`);
+}
+
+/** Add the provider_id column if missing, then UPDATE WHERE provider_id IS NULL
+ *  to stamp legacy rows with the vault's primary id. No-op when the column
+ *  already exists and every row is populated. */
+function backfillProviderIdColumn(db: Database, table: string, primaryId: string): void {
+  if (!hasColumn(db, table, 'provider_id')) {
+    db.run(`ALTER TABLE ${table} ADD COLUMN provider_id TEXT`);
+  }
+  db.run(`UPDATE ${table} SET provider_id = ? WHERE provider_id IS NULL OR provider_id = ''`, [primaryId]);
 }
 
 export function providerDisplayName(type: ProviderType): string {
