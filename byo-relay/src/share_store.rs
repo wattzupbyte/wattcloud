@@ -418,6 +418,15 @@ impl ShareStore {
     /// freed_bytes) — the caller (sweeper) uses the ids to release the
     /// ShareStoragePerIpTracker entries so the per-IP aggregate cap frees
     /// up as shares expire.
+    ///
+    /// Atomicity: filesystem cleanup happens before the SQL DELETE, and the
+    /// index row is only removed for shares whose directory was successfully
+    /// gone (or never existed). If `remove_dir_all` fails (permissions,
+    /// ENOSPC during journal log, race with a concurrent upload), the row
+    /// stays so the next sweep tick retries — preferable to silently
+    /// orphaning `.v7` files. Download endpoints already enforce
+    /// `revoked || expires_at <= now` at request time, so a lingering
+    /// row is inert from the user's perspective.
     pub fn purge_expired_and_revoked(&self, now: i64) -> Result<(Vec<String>, i64), StoreError> {
         // Gather victims first, release the lock before filesystem work.
         // "Victim" = revoked, expired, OR an unsealed bundle that missed its
@@ -440,21 +449,38 @@ impl ShareStore {
             collected
         };
 
-        let mut removed_ids = Vec::with_capacity(victims.len());
+        let mut to_clear: Vec<String> = Vec::with_capacity(victims.len());
         let mut freed = 0i64;
         for (share_id, bytes) in &victims {
             let dir = self.share_dir(share_id);
-            if dir.exists() {
-                let _ = fs::remove_dir_all(&dir);
+            match fs::remove_dir_all(&dir) {
+                Ok(()) => {
+                    to_clear.push(share_id.clone());
+                    freed += bytes;
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    // Directory was never created or got cleaned up out-of-band
+                    // (revoke path also wipes the dir). The row is still ours
+                    // to delete.
+                    to_clear.push(share_id.clone());
+                    freed += bytes;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        share_id = %share_id,
+                        error = %e,
+                        "share sweep: failed to remove on-disk directory; \
+                         leaving index row for next tick to retry"
+                    );
+                    // Skip the SQL delete — try again on the next sweep.
+                }
             }
-            removed_ids.push(share_id.clone());
-            freed += bytes;
         }
 
         // Clear the index rows. FK cascade handles blobs rows.
-        if !victims.is_empty() {
+        if !to_clear.is_empty() {
             let conn = self.conn.lock().map_err(|_| StoreError::LockPoisoned)?;
-            for (share_id, _) in &victims {
+            for share_id in &to_clear {
                 conn.execute(
                     "DELETE FROM shares WHERE share_id=?1",
                     rusqlite::params![share_id],
@@ -462,7 +488,7 @@ impl ShareStore {
             }
         }
 
-        Ok((removed_ids, freed))
+        Ok((to_clear, freed))
     }
 
     /// Return the path to the blobs directory — used by the disk-watermark
@@ -605,6 +631,83 @@ mod tests {
         let (removed, _) = store.purge_expired_and_revoked(2_000).unwrap();
         assert_eq!(removed.len(), 1);
         assert!(store.get_meta("old").unwrap().is_none());
+    }
+
+    #[test]
+    fn purge_removes_blob_files_from_disk() {
+        let (store, _d) = fresh_store();
+        let nonce = [11u8; 16];
+        store
+            .create_share("disk-bye", ShareKind::Folder, 1_000, &nonce)
+            .unwrap();
+        let blob_a = store.blob_path("disk-bye", "a");
+        let blob_b = store.blob_path("disk-bye", "b");
+        fs::write(&blob_a, vec![0u8; 50]).unwrap();
+        fs::write(&blob_b, vec![0u8; 70]).unwrap();
+        store.record_blob("disk-bye", "a", 50).unwrap();
+        store.record_blob("disk-bye", "b", 70).unwrap();
+
+        let (removed, freed) = store.purge_expired_and_revoked(2_000).unwrap();
+        assert_eq!(removed, vec!["disk-bye".to_string()]);
+        assert_eq!(freed, 120);
+        assert!(!blob_a.exists(), ".v7 must be gone after sweep");
+        assert!(!blob_b.exists(), ".v7 must be gone after sweep");
+        assert!(store.get_meta("disk-bye").unwrap().is_none());
+    }
+
+    #[test]
+    fn purge_handles_missing_directory() {
+        // If the on-disk dir is already gone (e.g. operator manually
+        // cleaned up, or revoke path raced), the sweeper still drops the
+        // index row instead of looping on it forever.
+        let (store, _d) = fresh_store();
+        let nonce = [12u8; 16];
+        store
+            .create_share("dirless", ShareKind::File, 1_000, &nonce)
+            .unwrap();
+        fs::remove_dir_all(store.share_dir("dirless")).unwrap();
+        let (removed, _) = store.purge_expired_and_revoked(2_000).unwrap();
+        assert_eq!(removed, vec!["dirless".to_string()]);
+        assert!(store.get_meta("dirless").unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn purge_retains_row_on_fs_failure() {
+        // Drop the parent's write bit so remove_dir_all on the share dir
+        // hits EACCES. We expect the index row to remain so the next
+        // sweep tick retries — silently orphaning the .v7 files would be
+        // worse than a row lingering past expiry (downloads already 404
+        // expired shares regardless of whether the index row is gone).
+        use std::os::unix::fs::PermissionsExt;
+        let (store, _d) = fresh_store();
+        let nonce = [13u8; 16];
+        store
+            .create_share("stuck", ShareKind::File, 1_000, &nonce)
+            .unwrap();
+        let blob = store.blob_path("stuck", "main");
+        fs::write(&blob, b"deadbeef").unwrap();
+        store.record_blob("stuck", "main", 8).unwrap();
+
+        let parent = store.blobs_dir().to_path_buf();
+        let original = fs::metadata(&parent).unwrap().permissions();
+        let mut locked = original.clone();
+        locked.set_mode(0o500); // r-x for owner — can't unlink children
+        fs::set_permissions(&parent, locked).unwrap();
+
+        let result = store.purge_expired_and_revoked(2_000);
+
+        // Restore permissions BEFORE asserting so TempDir's drop cleanup works
+        // even if the assertion below fails.
+        fs::set_permissions(&parent, original).unwrap();
+
+        let (removed, freed) = result.unwrap();
+        assert_eq!(removed.len(), 0, "fs-failed share must NOT be reported as removed");
+        assert_eq!(freed, 0);
+        assert!(
+            store.get_meta("stuck").unwrap().is_some(),
+            "row must remain so the next sweep retries"
+        );
     }
 
     #[test]
