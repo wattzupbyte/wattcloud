@@ -30,6 +30,7 @@
   import ActiveSharesList from './ActiveSharesList.svelte';
   import ProviderContextSheet from './ProviderContextSheet.svelte';
   import AddProviderSheet from './AddProviderSheet.svelte';
+  import EditProviderForm from './EditProviderForm.svelte';
   import ByoCredentialProtection from './ByoCredentialProtection.svelte';
   import AccessControlPanel from './AccessControlPanel.svelte';
   import DashboardHeader from '../DashboardHeader.svelte';
@@ -126,6 +127,8 @@
   // also useful when a remote was wiped and the local row points nowhere.
   let orphanProviders: HydratedProviderConfig[] = $state([]);
   let retryingOrphanId: string | null = $state(null);
+  let editingOrphanId: string | null = $state(null);
+  let savingOrphanEdit = $state(false);
 
   // About
   let storageUsage: StorageUsage | null = $state(null);
@@ -422,10 +425,49 @@
     } catch (e: any) {
       showGlobalError(
         `Couldn't reconnect ${o.display_name}: ${e?.message ?? e}. ` +
-          'Use Remove and add the provider fresh if the credentials have changed.',
+          'Use Edit to fix the credentials, or Remove and add the provider fresh.',
       );
     } finally {
       retryingOrphanId = null;
+    }
+  }
+
+  /** Persist edits made via the EditProviderForm against an orphan row, then
+   *  re-attempt the connect+addProvider with the fresh config. The new
+   *  config carries the same providerId so the orphaned vault body on the
+   *  remote (if any) gets reused. */
+  async function saveOrphanEdit(o: HydratedProviderConfig, newConfig: import('@wattcloud/sdk').ProviderConfig) {
+    savingOrphanEdit = true;
+    try {
+      const vid = getVaultId();
+      if (!vid) throw new Error('Vault not unlocked');
+      const cfgWithId = { ...newConfig, providerId: o.provider_id };
+      // Test-connect first so a typo doesn't overwrite a working IDB row with
+      // garbage that the next reload will fail to hydrate.
+      const instance = await hydrateProvider(cfgWithId);
+      // Persist the corrected config to IDB (upsert by provider_id).
+      const { saveProviderConfig } = await import('../../byo/ProviderConfigStore');
+      await saveProviderConfig(
+        {
+          provider_id: o.provider_id,
+          vault_id: vid,
+          vault_label: o.vault_label,
+          type: o.type,
+          display_name: o.display_name,
+          is_primary: o.is_primary,
+          saved_at: new Date().toISOString(),
+        },
+        cfgWithId,
+      );
+      // And re-attach into the live manifest using the connected instance.
+      await addProvider(instance, cfgWithId, o.display_name);
+      byoToast.show(`${o.display_name} reconnected with updated settings.`, { icon: 'seal' });
+      editingOrphanId = null;
+      await loadOrphans();
+    } catch (e: any) {
+      showGlobalError(`Couldn't apply: ${e?.message ?? e}`);
+    } finally {
+      savingOrphanEdit = false;
     }
   }
 
@@ -587,17 +629,35 @@
                 </span>
                 <button
                   class="orphan-btn"
-                  disabled={retryingOrphanId !== null}
+                  disabled={retryingOrphanId !== null || editingOrphanId !== null}
                   onclick={() => retryOrphan(o)}
                 >
                   {retryingOrphanId === o.provider_id ? 'Retrying…' : 'Retry'}
                 </button>
                 <button
+                  class="orphan-btn"
+                  disabled={retryingOrphanId !== null || editingOrphanId !== null}
+                  onclick={() => editingOrphanId = (editingOrphanId === o.provider_id ? null : o.provider_id)}
+                >Edit</button>
+                <button
                   class="orphan-btn orphan-danger"
-                  disabled={retryingOrphanId !== null}
+                  disabled={retryingOrphanId !== null || editingOrphanId !== null}
                   onclick={() => removeOrphan(o)}
                 >Remove</button>
               </div>
+              {#if editingOrphanId === o.provider_id}
+                <div class="orphan-edit">
+                  <EditProviderForm
+                    type={o.type}
+                    currentConfig={o.config}
+                    displayName={o.display_name}
+                    submitting={savingOrphanEdit}
+                    submitLabel="Save & retry"
+                    onSubmit={(cfg) => saveOrphanEdit(o, cfg)}
+                    onCancel={() => editingOrphanId = null}
+                  />
+                </div>
+              {/if}
             {/each}
           </div>
         {/if}
@@ -1124,6 +1184,11 @@
   }
   .orphan-btn.orphan-danger:hover:not(:disabled) {
     background: rgba(214, 69, 69, 0.1);
+  }
+  .orphan-edit {
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px) var(--sp-md, 16px);
+    border-top: 1px solid var(--border, #2E2E2E);
+    background: var(--bg-surface-raised, #1E1E1E);
   }
 
   /* ── Device rows (§18.1) ── */

@@ -76,8 +76,8 @@ pub use cross_provider_move::{
 };
 pub use manifest::{
     decrypt_manifest, encrypt_manifest, manifest_add_provider, manifest_rename_provider,
-    manifest_set_primary_provider, manifest_tombstone_provider, merge_manifests, validate_manifest,
-    Manifest, ManifestEntry, ManifestError,
+    manifest_set_primary_provider, manifest_tombstone_provider, manifest_update_provider_config,
+    merge_manifests, validate_manifest, Manifest, ManifestEntry, ManifestError,
 };
 pub use merge_rows::{merge_rows, MergeOp};
 pub use multi_vault::{

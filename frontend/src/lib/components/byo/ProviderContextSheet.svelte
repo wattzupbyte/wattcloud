@@ -12,11 +12,20 @@
    * Fires `on:change` after any successful mutation so the parent can refresh.
    */
   import { tick } from 'svelte';
+  import type { ProviderConfig } from '@wattcloud/sdk';
   import type { ProviderMeta } from '../../byo/stores/vaultStore';
-  import { renameProvider, setAsPrimaryProvider, removeProvider, reconnectSftpProvider } from '../../byo/VaultLifecycle';
+  import {
+    renameProvider,
+    setAsPrimaryProvider,
+    removeProvider,
+    reconnectSftpProvider,
+    updateProviderConfig,
+    getProviderConfig,
+  } from '../../byo/VaultLifecycle';
   import { deleteProviderConfig } from '../../byo/ProviderConfigStore';
   import * as byoWorker from '@wattcloud/sdk';
   import PasswordInput from '../common/PasswordInput.svelte';
+  import EditProviderForm from './EditProviderForm.svelte';
   import { byoToast } from '../../byo/stores/byoToasts';
 
   interface Props {
@@ -31,7 +40,7 @@
   onClose }: Props = $props();
 // ── State ────────────────────────────────────────────────────────────────
 
-  type Sheet = 'menu' | 'rename' | 'confirm-remove' | 'sftp-reconnect' | 'confirm-forget';
+  type Sheet = 'menu' | 'rename' | 'confirm-remove' | 'sftp-reconnect' | 'confirm-forget' | 'edit-config';
   let sheet: Sheet = $state('menu');
   // svelte-ignore state_referenced_locally
   let newName = $state(provider.displayName);
@@ -41,6 +50,34 @@
   let sftpKey = $state('');
   let sftpPassphrase = $state('');
   let reconnecting = $state(false);
+
+  // Edit-config form state
+  let editing = $state(false);
+  // svelte-ignore state_referenced_locally
+  let currentConfig: ProviderConfig | null = $state(getProviderConfig(provider.providerId));
+
+  function openEdit() {
+    currentConfig = getProviderConfig(provider.providerId);
+    if (!currentConfig) {
+      byoToast.show('Provider config not available — cannot edit.', { icon: 'danger' });
+      return;
+    }
+    sheet = 'edit-config';
+  }
+
+  async function handleEditSubmit(newConfig: ProviderConfig) {
+    editing = true;
+    try {
+      await updateProviderConfig(provider.providerId, newConfig);
+      byoToast.show(`${provider.displayName} settings updated.`, { icon: 'seal' });
+      onChange?.();
+      onClose?.();
+    } catch (e: any) {
+      byoToast.show(`Couldn't apply: ${e?.message ?? e}`, { icon: 'danger' });
+    } finally {
+      editing = false;
+    }
+  }
 
   // Svelte action: focus the input once it mounts. Replaces the
   // deprecated autofocus attribute so screen readers / modal-with-focus
@@ -156,6 +193,15 @@
           Rename
         </button>
 
+        {#if provider.type === 'sftp' || provider.type === 'webdav' || provider.type === 's3'}
+          <button class="action-row" onclick={openEdit}>
+            <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <path d="M4 13l1-6h10l1 6M5 7V5a3 3 0 016 0v2M3 13h14v3a1 1 0 01-1 1H4a1 1 0 01-1-1v-3z" stroke-linejoin="round"/>
+            </svg>
+            Edit settings
+          </button>
+        {/if}
+
         {#if provider.type === 'sftp' && provider.status === 'offline'}
           <button class="action-row action-accent" onclick={() => { sheet = 'sftp-reconnect'; }}>
             <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
@@ -235,6 +281,17 @@
           <button class="btn-danger-sm" onclick={handleRemove}>Remove</button>
         </div>
       </div>
+
+    {:else if sheet === 'edit-config' && currentConfig}
+      <EditProviderForm
+        type={provider.type}
+        currentConfig={currentConfig}
+        displayName={provider.displayName}
+        submitting={editing}
+        submitLabel="Save & connect"
+        onSubmit={handleEditSubmit}
+        onCancel={() => sheet = 'menu'}
+      />
 
     {:else if sheet === 'confirm-forget'}
       <div class="confirm-body">

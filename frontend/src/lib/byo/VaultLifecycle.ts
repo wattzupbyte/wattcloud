@@ -38,6 +38,7 @@ import {
   storeCachedManifest,
   loadCachedManifest,
 } from './VaultBodyCache';
+import { saveProviderConfig } from './ProviderConfigStore';
 // Re-export for backwards compat (ByoRecovery, ByoSetup import from VaultLifecycle).
 export { bytesToBase64, base64ToBytes } from './base64';
 import { bytesToBase64, base64ToBytes } from './base64';
@@ -1303,6 +1304,101 @@ export async function renameProvider(providerId: string, newName: string): Promi
   unsub();
   vaultStore.setProviders(current.map((p) => p.providerId === providerId ? { ...p, displayName: trimmed } : p));
   markDirty(_primaryProviderId);
+}
+
+/**
+ * Replace a provider's stored config (host, port, credentials, …) and reconnect.
+ *
+ * Always test-connects before committing: hydrates a fresh provider with the
+ * proposed config, and only mutates state if `init()` succeeds. This makes
+ * it safe to edit the primary — a typo in the host can't lock the user out
+ * because the bad config never reaches the manifest.
+ *
+ * On success:
+ *  - rewrites the manifest entry's `config_json` (peer devices pick up host
+ *    changes on their next merge);
+ *  - upserts the per-device IDB row via `saveProviderConfig` so reload
+ *    auto-hydrates with the new values;
+ *  - swaps the live `_providers` instance and clears the old WS;
+ *  - markDirty + save.
+ *
+ * `newDisplayName` is optional — pass null to keep the existing name.
+ */
+export async function updateProviderConfig(
+  providerId: string,
+  newConfig: ProviderConfig,
+  newDisplayName?: string | null,
+): Promise<void> {
+  if (!_manifest || _vaultSessionId === null) throw new Error('Vault not unlocked');
+  const entry = _manifest.providers.find((p) => p.provider_id === providerId && !p.tombstone);
+  if (!entry) throw new Error('Provider not found in manifest');
+
+  // Test-connect: hydrate a fresh provider against the new config. Throws on
+  // bad host / wrong credentials / TOFU mismatch / etc. Old live instance is
+  // untouched at this point.
+  const candidate = await hydrateProviderForUpdate({ ...newConfig, providerId });
+
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const newConfigJson = JSON.stringify({ ...newConfig, providerId });
+    const { manifestJson: updatedManifestJson } = await byoWorker.Worker.byoManifestUpdateProviderConfig(
+      JSON.stringify(_manifest), providerId, newConfigJson, nowSec,
+    );
+    _manifest = JSON.parse(updatedManifestJson) as ManifestJson;
+
+    // Persist to per-device IDB so reload picks up the new config too.
+    if (_vaultId) {
+      try {
+        await saveProviderConfig(
+          {
+            provider_id: providerId,
+            vault_id: _vaultId,
+            vault_label: entry.display_name,
+            type: candidate.type,
+            display_name: newDisplayName?.trim() || entry.display_name,
+            is_primary: entry.is_primary,
+            saved_at: new Date().toISOString(),
+          },
+          { ...newConfig, providerId },
+        );
+      } catch (persistErr) {
+        console.warn('[VaultLifecycle] saveProviderConfig during update failed', persistErr);
+      }
+    }
+
+    // Swap the live instance: disconnect the old session before we lose the
+    // reference (so the WebSocket closes cleanly), then install the candidate.
+    const old = _providers.get(providerId);
+    if (old) {
+      await old.disconnect().catch(() => {});
+    }
+    _providers.set(providerId, candidate);
+    if (providerId === _primaryProviderId) {
+      _provider = candidate;
+    }
+
+    let current: ProviderMeta[] = [];
+    const unsub = vaultStore.subscribe((s) => { current = s.providers; });
+    unsub();
+    vaultStore.setProviders(current.map((p) => p.providerId === providerId
+      ? { ...p, status: 'connected', failCount: 0, lastPingTs: Date.now() }
+      : p));
+
+    markDirty(_primaryProviderId);
+  } catch (e) {
+    // Commit failed after a successful test-connect. Drop the candidate
+    // session so we don't leak the WebSocket.
+    await candidate.disconnect().catch(() => {});
+    throw e;
+  }
+}
+
+/** Local wrapper around hydrateProvider that defers the import (the function
+ *  pulls in provider factory code that the byo worker bundle must not load
+ *  eagerly via VaultLifecycle's static graph). */
+async function hydrateProviderForUpdate(config: ProviderConfig): Promise<StorageProvider> {
+  const { hydrateProvider } = await import('./ProviderHydrate');
+  return hydrateProvider(config);
 }
 
 /** Set a provider as the primary. */

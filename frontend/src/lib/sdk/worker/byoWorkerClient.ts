@@ -68,7 +68,7 @@ const ENCRYPT_DECRYPT_OPS = new Set([
   'byoDerivePerVaultWalKey', 'byoDerivePerVaultJournalKeys',
   'byoJournalAppend', 'byoJournalParse',
   'byoMergeRows',
-  'byoManifestAddProvider', 'byoManifestRenameProvider', 'byoManifestSetPrimary', 'byoManifestTombstone',
+  'byoManifestAddProvider', 'byoManifestRenameProvider', 'byoManifestSetPrimary', 'byoManifestTombstone', 'byoManifestUpdateProviderConfig',
   'byoPlanUnlock', 'byoPlanSave', 'byoPlanCrossProviderMove', 'byoDeriveManifestAeadKey',
   'byoCrossProviderMoveDecideReplay', 'byoCrossProviderMovePlanReconcile',
   // Generic dispatcher (P8)
@@ -1914,6 +1914,24 @@ export async function byoManifestTombstone(
   nowUnixSecs: number,
 ): Promise<{ manifestJson: string }> {
   return sendRequest({ type: 'byoManifestTombstone', manifestJson, providerId, nowUnixSecs });
+}
+
+/** Replace a provider entry's config_json. Returns updated `manifestJson`.
+ *  Caller is expected to have already validated the new config (e.g. by
+ *  attempting init() against it) — the manifest layer treats config_json as opaque. */
+export async function byoManifestUpdateProviderConfig(
+  manifestJson: string,
+  providerId: string,
+  newConfigJson: string,
+  nowUnixSecs: number,
+): Promise<{ manifestJson: string }> {
+  return sendRequest({
+    type: 'byoManifestUpdateProviderConfig',
+    manifestJson,
+    providerId,
+    newConfigJson,
+    nowUnixSecs,
+  });
 }
 
 // ── Stats (Phase 5) ──────────────────────────────────────────────────────────

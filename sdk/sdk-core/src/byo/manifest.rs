@@ -576,6 +576,35 @@ pub fn manifest_set_primary_provider(
     Ok(())
 }
 
+/// Replace the `config_json` of an active provider entry.
+///
+/// Used when the user edits provider settings (host, port, credentials, …)
+/// after enrollment.  Updates `updated_at` so peer devices' merges treat
+/// this as the newer record.  Returns an error if the provider is not
+/// found or is tombstoned.  No validation of `new_config_json` content —
+/// the value is opaque to the manifest layer; callers are expected to
+/// have already verified the new config (e.g. by attempting `init()`)
+/// before persisting.
+pub fn manifest_update_provider_config(
+    manifest: &mut Manifest,
+    provider_id: &str,
+    new_config_json: &str,
+    now_unix_secs: u64,
+) -> Result<(), ManifestError> {
+    let entry = manifest
+        .providers
+        .iter_mut()
+        .find(|p| p.provider_id == provider_id && !p.tombstone)
+        .ok_or_else(|| {
+            ManifestError::InvariantViolated(format!(
+                "provider {provider_id} not found or tombstoned"
+            ))
+        })?;
+    entry.config_json = SecretConfigJson::new(new_config_json);
+    entry.updated_at = now_unix_secs;
+    Ok(())
+}
+
 /// Tombstone an active provider (marks it as removed).
 ///
 /// Sets `tombstone = true`, clears `is_primary`, and updates `updated_at`.
@@ -1051,5 +1080,67 @@ mod tests {
             validate_manifest(&m, u64::MAX).is_err(),
             "provider_id > 64 bytes must be rejected"
         );
+    }
+
+    // ── manifest_update_provider_config ──────────────────────────────────────
+
+    #[test]
+    fn update_provider_config_replaces_config_and_bumps_updated_at() {
+        let mut m = make_manifest(1, vec![make_entry("a", true, 1000)]);
+        manifest_update_provider_config(&mut m, "a", r#"{"type":"sftp","sftpHost":"new"}"#, 2000)
+            .unwrap();
+        let entry = m.providers.iter().find(|p| p.provider_id == "a").unwrap();
+        assert_eq!(entry.config_json.as_str(), r#"{"type":"sftp","sftpHost":"new"}"#);
+        assert_eq!(entry.updated_at, 2000);
+    }
+
+    #[test]
+    fn update_provider_config_works_on_primary() {
+        let mut m = make_manifest(1, vec![make_entry("a", true, 1000)]);
+        // Editing the primary's config must be allowed; the user needs this
+        // when their primary's host/credentials change.
+        assert!(manifest_update_provider_config(&mut m, "a", "{}", 1500).is_ok());
+        let entry = m.providers.iter().find(|p| p.provider_id == "a").unwrap();
+        assert!(entry.is_primary);
+        assert_eq!(entry.config_json.as_str(), "{}");
+    }
+
+    #[test]
+    fn update_provider_config_rejects_missing_provider() {
+        let mut m = make_manifest(1, vec![make_entry("a", true, 1000)]);
+        let err = manifest_update_provider_config(&mut m, "nope", "{}", 2000).unwrap_err();
+        match err {
+            ManifestError::InvariantViolated(msg) => assert!(msg.contains("not found")),
+            other => panic!("expected InvariantViolated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_provider_config_rejects_tombstoned() {
+        let mut m = make_manifest(
+            1,
+            vec![make_entry("a", true, 1000), make_tombstone("b", 1500)],
+        );
+        let err = manifest_update_provider_config(&mut m, "b", "{}", 2000).unwrap_err();
+        match err {
+            ManifestError::InvariantViolated(msg) => {
+                assert!(msg.contains("not found") || msg.contains("tombstoned"));
+            }
+            other => panic!("expected InvariantViolated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_provider_config_does_not_change_other_fields() {
+        let mut m = make_manifest(1, vec![make_entry("a", true, 1000)]);
+        let before = m.providers[0].duplicate();
+        manifest_update_provider_config(&mut m, "a", r#"{"x":1}"#, 2000).unwrap();
+        let after = &m.providers[0];
+        assert_eq!(after.provider_id, before.provider_id);
+        assert_eq!(after.provider_type, before.provider_type);
+        assert_eq!(after.display_name, before.display_name);
+        assert_eq!(after.is_primary, before.is_primary);
+        assert_eq!(after.created_at, before.created_at);
+        assert!(!after.tombstone);
     }
 }

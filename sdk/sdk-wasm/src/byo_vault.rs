@@ -248,6 +248,42 @@ pub fn byo_manifest_rename_provider(
     }
 }
 
+/// Replace a provider entry's `config_json`.
+///
+/// Used when the user edits provider settings (host, credentials, …) for an
+/// already-enrolled provider. The new value is treated as opaque by the
+/// manifest layer; the caller is expected to have already validated it
+/// (e.g. by attempting `init()` against the new config).
+///
+/// `now_unix_secs` — current Unix time (used to update `updated_at`).
+/// Returns `{ manifest_json: "<updated>" }` or `{ error }`.
+#[wasm_bindgen]
+pub fn byo_manifest_update_provider_config(
+    manifest_json: &str,
+    provider_id: &str,
+    new_config_json: &str,
+    now_unix_secs: f64,
+) -> JsValue {
+    use sdk_core::byo::manifest::manifest_update_provider_config;
+    let mut manifest: Manifest = match serde_json::from_str(manifest_json) {
+        Ok(m) => m,
+        Err(e) => return js_error(&format!("manifest parse error: {e}")),
+    };
+    let now = now_unix_secs as u64;
+    if let Err(e) = manifest_update_provider_config(&mut manifest, provider_id, new_config_json, now)
+    {
+        return js_error(&e.to_string());
+    }
+    match serde_json::to_string(&manifest) {
+        Err(e) => js_error(&format!("serialize error: {e}")),
+        Ok(json) => {
+            let obj = js_sys::Object::new();
+            js_set(&obj, "manifest_json", &JsValue::from_str(&json));
+            obj.into()
+        }
+    }
+}
+
 /// Designate a provider as the primary.
 ///
 /// Clears `is_primary` on all others; sets it on `provider_id`.
