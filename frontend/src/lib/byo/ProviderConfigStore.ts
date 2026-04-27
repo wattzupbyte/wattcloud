@@ -260,6 +260,36 @@ export async function clearAllProviderConfigs(): Promise<void> {
   });
 }
 
+/** Rename a single provider's display_name on this device.
+ *
+ * The wrapped config is left untouched — we only rewrite the meta so the
+ * vault-list landing screen (which reads IDB before any unlock) reflects
+ * the rename. Without this, `renameProvider` would only mutate the cloud
+ * manifest and the vault card would keep showing the original name on
+ * every reload until the user unlocked, hydrated, and re-saved. */
+export async function updateProviderDisplayNameLocal(
+  provider_id: string,
+  new_name: string,
+): Promise<void> {
+  const trimmed = new_name.trim();
+  if (!trimmed) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_PROVIDER_CONFIGS, 'readwrite');
+    const store = tx.objectStore(STORE_PROVIDER_CONFIGS);
+    const req = store.get(provider_id);
+    req.onsuccess = () => {
+      const row = req.result as StoredProviderConfig | undefined;
+      if (!row) return;
+      row.display_name = trimmed;
+      row.saved_at = new Date().toISOString();
+      store.put(row);
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 /** Rename a vault locally — touches every row sharing its vault_id. */
 export async function renameVaultLabel(vault_id: string, new_label: string): Promise<void> {
   const db = await openDB();

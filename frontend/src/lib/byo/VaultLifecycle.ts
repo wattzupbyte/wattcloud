@@ -38,7 +38,7 @@ import {
   storeCachedManifest,
   loadCachedManifest,
 } from './VaultBodyCache';
-import { saveProviderConfig } from './ProviderConfigStore';
+import { saveProviderConfig, updateProviderDisplayNameLocal } from './ProviderConfigStore';
 // Re-export for backwards compat (ByoRecovery, ByoSetup import from VaultLifecycle).
 export { bytesToBase64, base64ToBytes } from './base64';
 import { bytesToBase64, base64ToBytes } from './base64';
@@ -1362,6 +1362,14 @@ export async function renameProvider(providerId: string, newName: string): Promi
   const unsub = vaultStore.subscribe((s) => { current = s.providers; });
   unsub();
   vaultStore.setProviders(current.map((p) => p.providerId === providerId ? { ...p, displayName: trimmed } : p));
+  // Mirror the rename onto the per-device IDB row so the vault-list landing
+  // page (which reads display_name from IDB pre-unlock) reflects it on next
+  // reload. Best-effort — the manifest write above is the source of truth.
+  try {
+    await updateProviderDisplayNameLocal(providerId, trimmed);
+  } catch (e) {
+    console.warn('[VaultLifecycle] renameProvider: local IDB update failed', e);
+  }
   markDirty(_primaryProviderId);
   await saveVault();
 }

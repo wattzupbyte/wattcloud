@@ -82,6 +82,22 @@ export async function loadByoPhotoTimeline(): Promise<void> {
 
   byoPhotosLoading.set(true);
   try {
+    // Sibling $effects (ByoApp + ByoPhotoTimeline) both react to
+    // vaultStore.activeProviderId changes. Svelte's scheduler doesn't
+    // guarantee parent-first order, so without this re-sync the timeline
+    // can fire its load before ByoApp has pushed the new id onto the
+    // dataProvider — listImageFiles would then query under the previous
+    // active provider and the user sees the wrong vault's photos. Reading
+    // the store directly here keeps the load self-contained. The cast
+    // is safe in practice: BYO mode always supplies a ByoDataProvider,
+    // and the abstract DataProvider interface intentionally doesn't
+    // expose the active-id mutator (single-provider managed mode has
+    // no concept of an active id).
+    const activeId = get(vaultStore).activeProviderId;
+    const dpAny = _dataProvider as unknown as { activeProviderId?: string; setActiveProviderId?(id: string): void };
+    if (activeId && dpAny.activeProviderId !== activeId && typeof dpAny.setActiveProviderId === 'function') {
+      dpAny.setActiveProviderId(activeId);
+    }
     const folderFilter = get(byoPhotoFolderFilter);
     const files = await _dataProvider.listImageFiles(folderFilter);
     byoPhotoTimeline.set(groupByDay(files));

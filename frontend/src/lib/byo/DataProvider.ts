@@ -240,6 +240,9 @@ export interface DataProvider {
   /** Case-insensitive substring search over decrypted filenames. */
   searchFiles(query: string): Promise<FileEntry[]>;
 
+  /** Case-insensitive substring search over decrypted folder names. */
+  searchFolders(query: string): Promise<FolderEntry[]>;
+
   /**
    * List image files sorted by created_at descending.
    * - `undefined` → all images in the active provider.

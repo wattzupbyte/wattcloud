@@ -72,6 +72,10 @@ export class ByoDataProvider implements DataProvider {
   activeProviderId: string;
   readonly searchIndex: SearchIndex;
   readonly trash: TrashManager;
+  /** Set on first searchFiles() call so existing rows are seeded into the
+   *  filename index — the constructor can't await the per-row decrypt and
+   *  on-mount upserts only cover newly-uploaded/renamed files. */
+  private searchIndexBuilt = false;
 
   constructor(
     db: import('sql.js').Database,
@@ -85,6 +89,19 @@ export class ByoDataProvider implements DataProvider {
     this.sessionId = sessionId;
     this.searchIndex = new SearchIndex();
     this.trash = new TrashManager(db, provider, this.onMutate.bind(this));
+  }
+
+  /** Decrypt every file row once and seed the in-memory filename index.
+   *  Idempotent — guarded by `searchIndexBuilt`, so repeat search calls
+   *  hit the already-populated map. Lazy on purpose: the search UI only
+   *  exists on Files/Favorites and most users never invoke it, so we
+   *  avoid the upfront decrypt cost on unlock. */
+  private async ensureSearchIndex(): Promise<void> {
+    if (this.searchIndexBuilt) return;
+    const rows = queryRows(this.db, 'SELECT * FROM files');
+    const files = await this.decryptFileRows(rows);
+    this.searchIndex.build(files);
+    this.searchIndexBuilt = true;
   }
 
   /** Switch the active provider (called when user selects a different tab). */
@@ -584,6 +601,7 @@ export class ByoDataProvider implements DataProvider {
   // ── Search ─────────────────────────────────────────────────────────────
 
   async searchFiles(query: string): Promise<FileEntry[]> {
+    await this.ensureSearchIndex();
     const matchingIds = this.searchIndex.search(query);
     if (matchingIds.length === 0) return [];
 
@@ -594,6 +612,17 @@ export class ByoDataProvider implements DataProvider {
       matchingIds as import('sql.js').BindParams,
     );
     return this.decryptFileRows(rows);
+  }
+
+  /** Substring search over folder names within the active provider.
+   *  No per-folder index — folder counts stay small (low hundreds even
+   *  for power users), so a one-shot decrypt + JS filter is fast enough
+   *  and avoids the bookkeeping a separate index would need. */
+  async searchFolders(query: string): Promise<FolderEntry[]> {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    const folders = await this.listAllFolders();
+    return folders.filter((f) => f.decrypted_name.toLowerCase().includes(q));
   }
 
   async listImageFiles(folderId?: number | null): Promise<FileEntry[]> {

@@ -14,7 +14,7 @@
   import { byoFolders, byoSelectedFiles, byoSelectedFolders, byoSelectionMode, toggleByoFileSelection, toggleByoFolderSelection, clearByoSelection, resetByoFileStores } from '../../byo/stores/byoFileStore';
   import { byoUploadQueue } from '../../byo/stores/byoUploadQueue';
   import { byoDownloadQueue } from '../../byo/stores/byoDownloadQueue';
-  import { setByoSearchDataProvider, clearByoSearch, byoSearchQuery, byoSearchResults, hasByoActiveFilters, setByoSearchQuery, setByoFileTypeFilter } from '../../byo/stores/byoSearch';
+  import { setByoSearchDataProvider, clearByoSearch, byoSearchQuery, byoSearchResults, byoSearchFolderResults, hasByoActiveFilters, setByoSearchQuery, setByoFileTypeFilter } from '../../byo/stores/byoSearch';
   import { setByoPhotosDataProvider, resetByoPhotos, byoPhotoTimeline, loadByoPhotoTimeline } from '../../byo/stores/byoPhotos';
   import {
     byoCollections,
@@ -238,7 +238,9 @@
 
   // DashboardHeader uses plural tokens ('images', 'documents'…) matching
   // the managed search. BYO's DataProvider expects singular ('image',
-  // 'document'…). Map once at the boundary.
+  // 'document'…). Map once at the boundary. 'folder' is the sentinel
+  // byoSearch's performByoSearch reads — it suppresses file results and
+  // populates byoSearchFolderResults instead.
   const FILE_TYPE_MAP: Record<string, string | null> = {
     '': null,
     images: 'image',
@@ -247,7 +249,7 @@
     archives: 'archive',
     audio: 'audio',
     code: 'code',
-    folders: null, // BYO search doesn't filter folders separately
+    folders: 'folder',
   };
   function normalizeFileType(v: string | undefined | null): string | null {
     if (!v) return null;
@@ -381,6 +383,22 @@
   // ── Navigation ─────────────────────────────────────────────────────────────
 
   function openFolder(folder: FolderEntry) {
+    // Folder hits surfaced by search aren't necessarily children of the
+    // current breadcrumb. Detect the search-result case (folder isn't in
+    // the current folder's children) and jump to it from Home; otherwise
+    // append to the breadcrumb stack as usual.
+    const isCurrentChild = currentFolders.some((f) => f.id === folder.id);
+    if (!isCurrentChild) {
+      if (get(hasByoActiveFilters)) {
+        showSearch = false;
+        clearByoSearch();
+      }
+      folderStack = [
+        { id: null, name: 'Home' },
+        { id: folder.id, name: folder.decrypted_name },
+      ];
+      return;
+    }
     folderStack = [...folderStack, { id: folder.id, name: folder.decrypted_name }];
   }
 
@@ -1284,10 +1302,16 @@
         ? favoriteFiles
         : $hasByoActiveFilters ? ($byoSearchResults as unknown as FileEntry[]) : currentFiles,
     ))(sortBy as SortByT, sortDir));
+  // When search is active, folders come from byoSearchFolderResults instead
+  // of being hidden — the chip filter "Folders" sets fileType=folder which
+  // suppresses file results, and a free-text query also surfaces matching
+  // folder names so the user can navigate by name from the search bar.
   let sortedFolders = $derived(((_by: SortByT, _dir: 'asc' | 'desc') =>
     view === 'favorites'
       ? sortFolders(favoriteFolders)
-      : $hasByoActiveFilters ? [] : sortFolders(currentFolders))(sortBy as SortByT, sortDir));
+      : $hasByoActiveFilters
+        ? sortFolders($byoSearchFolderResults as unknown as FolderEntry[])
+        : sortFolders(currentFolders))(sortBy as SortByT, sortDir));
   // Sorting state for SortControl
   let sortingState = $derived({ by: sortBy as SortByT, direction: (sortDir === 'asc' ? 'up' : 'down') as SortDirT });
   // Typed aliases for template use (Svelte 4 / Acorn doesn't support `as` casts in templates)
@@ -1393,11 +1417,13 @@
       canShare={canShareSelection}
       canRename={canRenameSelection}
       canAddToCollection={view === 'photos' && $byoSelectedFiles.size > 0}
+      canMoveToProvider={$vaultStore.providers.length > 1 && $byoSelectedFiles.size > 0 && $byoSelectedFolders.size === 0}
       favoriteState={favCount === 0 ? 'none' : favCount === totalSel ? 'all' : 'mixed'}
       onClear={clearByoSelection}
       onRename={triggerRenameFromToolbar}
       onMove={async () => { moveCopyMode = 'move'; await refreshMoveCopyFolders(); showMoveCopyDialog = true; }}
       onCopy={async () => { moveCopyMode = 'copy'; await refreshMoveCopyFolders(); showMoveCopyDialog = true; }}
+      onMoveToProvider={() => { showProviderMoveSheet = true; }}
       onFavorite={() => bulkToggleFavorite(true)}
       onUnfavorite={() => bulkToggleFavorite(false)}
       onDownload={() => handleDownloadSelection()}
