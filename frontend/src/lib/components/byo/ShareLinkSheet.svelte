@@ -38,11 +38,12 @@
   import Warning from 'phosphor-svelte/lib/Warning';
   import QrDisplay from './QrDisplay.svelte';
 /**
-   * One of four mutually exclusive sources:
+   * One of five mutually exclusive sources:
    *   - { kind: 'file', file }              — single-blob share
    *   - { kind: 'folder', folder }          — folder bundle (all descendant files)
    *   - { kind: 'collection', collection }  — photo-collection bundle
    *   - { kind: 'files', files }            — multi-file selection bundle (flat)
+   *   - { kind: 'mixed', folders, files }   — folders + loose files in one link
    *
    * Svelte disallows `export type` in component script blocks, so consumers
    * use a structural literal type matching this shape.
@@ -51,7 +52,8 @@
     | { kind: 'file'; file: FileEntry }
     | { kind: 'folder'; folder: FolderEntry }
     | { kind: 'collection'; collection: CollectionEntry }
-    | { kind: 'files'; files: FileEntry[] };
+    | { kind: 'files'; files: FileEntry[] }
+    | { kind: 'mixed'; folders: FolderEntry[]; files: FileEntry[] };
 
   interface Props {
     source: ShareSource;
@@ -209,6 +211,20 @@
             progressTotal = total;
           },
         });
+      } else if (source.kind === 'mixed') {
+        result = await dataProvider.createMixedShare(
+          {
+            folderIds: source.folders.map((f) => f.id),
+            fileIds: source.files.map((f) => f.id),
+          },
+          {
+            ...commonOpts,
+            onProgress: (done, total) => {
+              progressDone = done;
+              progressTotal = total;
+            },
+          },
+        );
       } else {
         result = await dataProvider.createFilesShare(
           source.files.map((f) => f.id),
@@ -272,27 +288,37 @@
   function close() {
     onClose?.();
   }
-  let sourceName = $derived(source.kind === 'file'
-    ? source.file.decrypted_name
-    : source.kind === 'folder'
-      ? source.folder.decrypted_name
-      : source.kind === 'collection'
-        ? source.collection.decrypted_name
-        : `${source.files.length} files`);
-  let sourceLabelTitle = $derived(source.kind === 'file'
-    ? `Share '${sourceName}'`
-    : source.kind === 'folder'
-      ? `Share folder '${sourceName}'`
-      : source.kind === 'collection'
-        ? `Share collection '${sourceName}'`
-        : `Share ${sourceName}`);
-  let bundleHint = $derived(source.kind === 'file'
-    ? ''
-    : source.kind === 'folder'
-      ? 'Every file in this folder (and its subfolders) will be uploaded to the relay.'
-      : source.kind === 'collection'
-        ? 'Every photo in this collection will be uploaded to the relay.'
-        : 'The selected files will be uploaded to the relay and delivered as one zip archive.');
+  let sourceName = $derived(
+    source.kind === 'file'
+      ? source.file.decrypted_name
+      : source.kind === 'folder'
+        ? source.folder.decrypted_name
+        : source.kind === 'collection'
+          ? source.collection.decrypted_name
+          : source.kind === 'mixed'
+            ? `${source.folders.length + source.files.length} items`
+            : `${source.files.length} files`,
+  );
+  let sourceLabelTitle = $derived(
+    source.kind === 'file'
+      ? `Share '${sourceName}'`
+      : source.kind === 'folder'
+        ? `Share folder '${sourceName}'`
+        : source.kind === 'collection'
+          ? `Share collection '${sourceName}'`
+          : `Share ${sourceName}`,
+  );
+  let bundleHint = $derived(
+    source.kind === 'file'
+      ? ''
+      : source.kind === 'folder'
+        ? 'Every file in this folder (and its subfolders) will be uploaded to the relay.'
+        : source.kind === 'collection'
+          ? 'Every photo in this collection will be uploaded to the relay.'
+          : source.kind === 'mixed'
+            ? 'Every selected folder (with its subfolders) and loose file will be uploaded to the relay and delivered as one zip archive.'
+            : 'The selected files will be uploaded to the relay and delivered as one zip archive.',
+  );
   // Password strength meter (only shown when password toggle is on).
   let strength = $derived(passwordStrength(password));
   let strengthLabel = $derived(['', 'Weak', 'Fair', 'Good', 'Strong'][strength]);
@@ -564,7 +590,10 @@
       </div>
 
       <details class="streaming-hint-details">
-        <summary>Make Firefox stream uploads instead</summary>
+        <summary>
+          <CaretDown size={14} weight="bold" class="streaming-hint-summary-caret" />
+          <span>Make Firefox stream uploads instead</span>
+        </summary>
         <p class="streaming-hint-explainer">
           Firefox supports streaming uploads but ships with the feature off
           by default. Browsers can't open <code>about:</code> pages from a
@@ -937,12 +966,30 @@
   }
   .streaming-hint-details > summary {
     cursor: pointer;
-    color: var(--accent-text, #5FDB8A);
+    color: var(--text-primary, #ededed);
     font-weight: 500;
     list-style: none;
     user-select: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 1px solid var(--border, #2E2E2E);
+    border-radius: var(--r-input, 12px);
+    background: var(--bg-surface, #1C1C1C);
+    transition: background 150ms;
+  }
+  .streaming-hint-details > summary:hover {
+    background: var(--bg-surface-raised, #1E1E1E);
   }
   .streaming-hint-details > summary::-webkit-details-marker { display: none; }
+  .streaming-hint-details > summary :global(.streaming-hint-summary-caret) {
+    transition: transform 200ms ease;
+    color: var(--text-secondary, #999);
+  }
+  .streaming-hint-details[open] > summary :global(.streaming-hint-summary-caret) {
+    transform: rotate(180deg);
+  }
   .streaming-hint-explainer {
     margin: var(--sp-sm, 8px) 0 var(--sp-sm, 8px) !important;
     color: var(--text-secondary, #999);

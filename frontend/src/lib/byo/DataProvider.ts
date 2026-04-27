@@ -113,6 +113,11 @@ export interface ShareEntry {
   blob_count: number | null;
   created_at: number;
   revoked: boolean;
+  /** URL fragment (key + optional bundle name) needed to reconstruct the
+   *  share link after the create-flow modal is dismissed. NULL for shares
+   *  created before the recoverable-link change shipped — those remain
+   *  copy-once. Never POSTed; vault SQLite is wrapped under vault_key. */
+  fragment: string | null;
 }
 
 export interface TrashEntry {
@@ -306,6 +311,19 @@ export interface DataProvider {
    */
   createFilesShare(
     fileIds: number[],
+    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void },
+  ): Promise<{ entry: ShareEntry; fragment: string }>;
+
+  /**
+   * Mixed-source bundle share — any combination of folders + loose files
+   * in a single link. Folder descendants keep their tree (rel_path =
+   * `<folder>/<nested>/<file>`); loose files land at the bundle root.
+   * Use this when the selection has folders AND files, or two-or-more
+   * folders. Single-folder / single-file flows still go through their
+   * dedicated methods for clearer recipient titles.
+   */
+  createMixedShare(
+    args: { folderIds: number[]; fileIds: number[] },
     options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void },
   ): Promise<{ entry: ShareEntry; fragment: string }>;
 

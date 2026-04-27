@@ -209,7 +209,8 @@
     | { kind: 'file'; file: FileEntry }
     | { kind: 'folder'; folder: FolderEntry }
     | { kind: 'collection'; collection: CollectionEntry }
-    | { kind: 'files'; files: FileEntry[] };
+    | { kind: 'files'; files: FileEntry[] }
+    | { kind: 'mixed'; folders: FolderEntry[]; files: FileEntry[] };
   let shareSource: ShareSheetSource | null = $state(null);
 
   // Favorites
@@ -713,6 +714,32 @@
     }
     if (resolved.length < 2) return;
     shareSource = { kind: 'files', files: resolved };
+    showShareSheet = true;
+  }
+
+  /** Open the share sheet for any mixed selection: multiple folders, or
+   *  folders + loose files. Single-file / single-folder go through their
+   *  dedicated openers so the recipient title stays specific. */
+  function openMixedShareSheet(folderIds: number[], fileIds: number[]) {
+    const folderLookup = new Map<number, FolderEntry>();
+    for (const f of currentFolders) folderLookup.set(f.id, f);
+    for (const f of favoriteFolders) if (!folderLookup.has(f.id)) folderLookup.set(f.id, f);
+    const folders: FolderEntry[] = [];
+    for (const id of folderIds) {
+      const f = folderLookup.get(id);
+      if (f) folders.push(f);
+    }
+    const fileLookup = new Map<number, FileEntry>();
+    for (const f of sortedFiles) fileLookup.set(f.id, f);
+    for (const f of currentFiles) if (!fileLookup.has(f.id)) fileLookup.set(f.id, f);
+    for (const f of favoriteFiles) if (!fileLookup.has(f.id)) fileLookup.set(f.id, f);
+    const files: FileEntry[] = [];
+    for (const id of fileIds) {
+      const f = fileLookup.get(id);
+      if (f) files.push(f);
+    }
+    if (folders.length + files.length === 0) return;
+    shareSource = { kind: 'mixed', folders, files };
     showShareSheet = true;
   }
 
@@ -1406,12 +1433,11 @@
     {@const selIds = [...$byoSelectedFiles]}
     {@const favCount = selIds.filter((id) => favoriteFileIds.has(id)).length + [...$byoSelectedFolders].filter((id) => favoriteFolderIds.has(id)).length}
     {@const totalSel = $byoSelectedFiles.size + $byoSelectedFolders.size}
-    <!-- canShare: single file OR single folder OR 2+ files (no folders).
-         Mixed / multi-folder shares are not implemented. -->
-    {@const canShareSelection =
-      ($byoSelectedFiles.size === 1 && $byoSelectedFolders.size === 0) ||
-      ($byoSelectedFolders.size === 1 && $byoSelectedFiles.size === 0) ||
-      ($byoSelectedFiles.size >= 2 && $byoSelectedFolders.size === 0)}
+    <!-- canShare: anything except an empty selection. Single-file/single-
+         folder still go through their dedicated flows for clearer
+         recipient titles; everything else funnels through the mixed
+         bundle path. -->
+    {@const canShareSelection = ($byoSelectedFiles.size + $byoSelectedFolders.size) > 0}
     {@const canRenameSelection =
       ($byoSelectedFiles.size === 1 && $byoSelectedFolders.size === 0) ||
       ($byoSelectedFolders.size === 1 && $byoSelectedFiles.size === 0)}
@@ -1446,14 +1472,14 @@
         } else if (folderIds.length === 1 && fileIds.length === 0) {
           openFolderShareSheet(folderIds[0]);
         } else if (fileIds.length >= 2 && folderIds.length === 0) {
-          // Multi-file selection always packs into one zip bundle —
-          // consistent with the folder-share flow and the >9 owner
-          // download threshold. Recipient gets a single link.
+          // Multi-file selection (no folders) — flat bundle. Recipient gets
+          // every file at the zip root with " (n)" dedup on collisions.
           openFilesShareSheet(fileIds);
+        } else {
+          // Mixed (folders + files) or multi-folder. The bundle preserves
+          // each folder's tree and lays loose files at the root.
+          openMixedShareSheet(folderIds, fileIds);
         }
-        // Mixed selections (folders + files) and multi-folder share are
-        // intentionally unsupported for now — the share toolbar button
-        // is disabled by SelectionToolbar's canShare guard for those.
       }}
       onDelete={() => {
         const ids = [...get(byoSelectedFiles)];

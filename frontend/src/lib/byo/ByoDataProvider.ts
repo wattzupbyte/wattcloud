@@ -1182,6 +1182,7 @@ export class ByoDataProvider implements DataProvider {
       totalBytes: ciphertextSize,
       blobCount: 1,
       plaintextSize,
+      fragment,
     });
 
     recordEvent('share_create', { share_variant: 'B2' });
@@ -1290,6 +1291,111 @@ export class ByoDataProvider implements DataProvider {
       options,
     });
     return { entry, fragment };
+  }
+
+  /**
+   * Mixed-source share — one link covering any combination of folders +
+   * loose files. Folder descendants are walked the same way as a single-
+   * folder share (rel_path = `<folder>/<nested>/<file>`); loose files
+   * land at the bundle root with their decrypted name. Filename
+   * collisions across the merged tree are de-duplicated with " (n)" so
+   * the recipient's zip extraction doesn't silently overwrite anything.
+   *
+   * Rides the same 'folder' kind on the relay (relay schema is closed at
+   * file/folder/collection — multi-source bundles already share the
+   * 'folder' lane with folder_id=null, see createFilesShare).
+   */
+  async createMixedShare(
+    args: { folderIds: number[]; fileIds: number[] },
+    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void },
+  ): Promise<{ entry: ShareEntry; fragment: string }> {
+    const folderIds = [...new Set(args.folderIds)];
+    const fileIds = [...new Set(args.fileIds)];
+    if (folderIds.length === 0 && fileIds.length === 0) {
+      throw new Error('Nothing selected to share.');
+    }
+
+    type Item = { file: FileEntry; relPath: string };
+    const items: Item[] = [];
+
+    // 1. Walk every selected folder, prefix entries with the folder's name.
+    for (const folderId of folderIds) {
+      const folderRows = queryRows(this.db, 'SELECT * FROM folders WHERE id = ?', [folderId]);
+      if (folderRows.length === 0) continue;
+      const descendants = await this.collectFolderDescendants(folderId);
+      const folderFiles = await this.collectFilesInFolders(descendants.folderIds);
+      if (folderFiles.length === 0) continue;
+      const rootName = await this.decryptFilename(
+        folderRows[0]['name'] as string | Uint8Array,
+        folderRows[0]['name_key'] as string | Uint8Array,
+      );
+      const relPathForFile = (f: FileEntry): string => {
+        const parts: string[] = [f.decrypted_name];
+        let parent = f.folder_id;
+        while (parent !== null && parent !== folderId) {
+          const d = descendants.folderPaths.get(parent);
+          if (!d) break;
+          parts.unshift(d.name);
+          parent = d.parent_id;
+        }
+        return parts.join('/');
+      };
+      for (const f of folderFiles) {
+        items.push({ file: f, relPath: `${rootName}/${relPathForFile(f)}` });
+      }
+    }
+
+    // 2. Append loose files at the bundle root.
+    if (fileIds.length > 0) {
+      const placeholders = fileIds.map(() => '?').join(',');
+      const rows = queryRows(
+        this.db,
+        `SELECT * FROM files WHERE id IN (${placeholders})`,
+        fileIds as import('sql.js').BindParams,
+      );
+      const looseFiles = await this.decryptFileRows(rows);
+      for (const f of looseFiles) {
+        items.push({ file: f, relPath: f.decrypted_name });
+      }
+    }
+
+    if (items.length === 0) {
+      throw new Error('Selection is empty (folders had no files, or loose files were unavailable).');
+    }
+
+    // 3. Deduplicate colliding rel_paths so the recipient's zip extraction
+    //    doesn't drop or overwrite. Mirrors the createFilesShare uniq() but
+    //    keys on the full rel_path so a name collision deep inside a folder
+    //    + same name at root doesn't surface.
+    const seenPath = new Map<string, number>();
+    const dedupe = (rel: string): string => {
+      const n = seenPath.get(rel) ?? 0;
+      seenPath.set(rel, n + 1);
+      if (n === 0) return rel;
+      const slash = rel.lastIndexOf('/');
+      const dir = slash >= 0 ? rel.slice(0, slash + 1) : '';
+      const tail = slash >= 0 ? rel.slice(slash + 1) : rel;
+      const dot = tail.lastIndexOf('.');
+      const dedupedTail = dot === -1
+        ? `${tail} (${n})`
+        : `${tail.slice(0, dot)} (${n})${tail.slice(dot)}`;
+      return `${dir}${dedupedTail}`;
+    };
+    for (const it of items) it.relPath = dedupe(it.relPath);
+
+    const total = folderIds.length + fileIds.length;
+    const bundleName = total === 1
+      ? (items[0]?.relPath.split('/')[0] ?? `${total} items`)
+      : `${total} items`;
+
+    return await this.createBundleShare({
+      kind: 'folder',
+      folderId: null,
+      collectionId: null,
+      files: items,
+      bundleName,
+      options,
+    });
   }
 
   // ── Private: bundle share builder ───────────────────────────────────────
@@ -1536,6 +1642,7 @@ export class ByoDataProvider implements DataProvider {
       totalBytes: totalCiphertextBytes,
       blobCount: entries.length + 1, // +1 for _manifest
       plaintextSize: 0,
+      fragment,
     });
     recordEvent('share_create', { share_variant: 'B2' });
     refreshShareStats(this);
@@ -1557,12 +1664,16 @@ export class ByoDataProvider implements DataProvider {
     totalBytes: number;
     blobCount: number;
     plaintextSize: number;
+    /** URL fragment carrying the decryption key + bundle name. Stored so
+     *  the user can copy the share link again from Settings later. Never
+     *  reaches the relay. */
+    fragment: string;
   }): Promise<ShareEntry> {
     const sql = `INSERT INTO share_tokens
          (share_id, kind, file_id, folder_id, collection_id, provider_id,
           provider_ref, public_link, presigned_expires_at,
-          owner_token, total_bytes, blob_count, created_at, revoked)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 0)`;
+          owner_token, total_bytes, blob_count, created_at, revoked, fragment)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 0, ?)`;
     const params = [
       row.shareId,
       row.kind,
@@ -1576,6 +1687,7 @@ export class ByoDataProvider implements DataProvider {
       row.totalBytes,
       row.blobCount,
       row.createdAt,
+      row.fragment,
     ];
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
@@ -1594,6 +1706,7 @@ export class ByoDataProvider implements DataProvider {
       blob_count: row.blobCount,
       created_at: row.createdAt,
       revoked: false,
+      fragment: row.fragment,
     };
   }
 
@@ -1728,6 +1841,7 @@ export class ByoDataProvider implements DataProvider {
         blob_count: (row['blob_count'] as number | null) ?? null,
         created_at: row['created_at'] as number,
         revoked: false,
+        fragment: (row['fragment'] as string | null) ?? null,
       };
     });
   }

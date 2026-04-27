@@ -1629,7 +1629,14 @@ function getVaultSchema(): string {
       total_bytes INTEGER,
       blob_count INTEGER,
       created_at INTEGER NOT NULL,
-      revoked INTEGER NOT NULL DEFAULT 0
+      revoked INTEGER NOT NULL DEFAULT 0,
+      -- URL fragment carrying the bundle/content key. Stored locally so
+      -- the user can recover the share link from Settings → Active shares
+      -- after the create-flow modal is dismissed. The fragment is the
+      -- decryption key + (optional) bundle name; never sent to the relay.
+      -- Vault SQLite is wrapped under vault_key (SECURITY.md §4), same
+      -- threat model as every other secret in the vault.
+      fragment TEXT
     );
     CREATE TABLE IF NOT EXISTS collections (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

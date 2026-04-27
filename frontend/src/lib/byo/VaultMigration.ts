@@ -105,6 +105,15 @@ export function runMigrations(db: Database): void {
   if (hasColumn(db, 'share_tokens', 'variant')) {
     dropVariantColumn(db);
   }
+
+  // Recoverable share links: fragment column persists the URL fragment
+  // so the user can copy the share link again from Settings after the
+  // create-flow modal is dismissed. Added AFTER dropVariantColumn so
+  // the rebuilt table picks it up via this ALTER without needing the
+  // rebuild SQL to know about it. Backfill is intentionally NULL —
+  // shares created before this column existed don't have the key
+  // anymore (it was zeroized on create), so they remain copy-only-once.
+  addColumn(db, 'share_tokens', 'fragment', `TEXT`);
 }
 
 export function providerDisplayName(type: ProviderType): string {
