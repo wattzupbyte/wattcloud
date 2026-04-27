@@ -998,6 +998,12 @@ type EnrollStep =
     flex-direction: column;
     gap: var(--sp-md, 16px);
     align-items: center;
+    justify-content: center;
+    /* The byo-shell parent is a flex column with flex:1, so flex:1 here
+       fills the available height and the content vertically centers
+       instead of pinning to the top with a tall empty band below. */
+    flex: 1;
+    width: 100%;
     max-width: 420px;
     margin: 0 auto;
     padding: var(--sp-lg, 24px) var(--sp-md, 16px);

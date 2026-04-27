@@ -754,8 +754,13 @@
 
   function handleLockAnimationDone() {
     showLockAnimation = false;
-    // Only navigate after unlock path — not when locking.
-    if (dataProvider && appState === 'unlock') appState = 'dashboard';
+    // Navigate after any unlock path — vault unlock OR device enrollment
+    // (link-device-sink). Without including 'link-device-sink' here, the
+    // receiver's DeviceEnrollment stays mounted at step='unlocking' even
+    // though handleUnlocked has already wired up the dataProvider.
+    if (dataProvider && (appState === 'unlock' || appState === 'link-device-sink')) {
+      appState = 'dashboard';
+    }
   }
 
   // ── Lock ───────────────────────────────────────────────────────────────
