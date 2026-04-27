@@ -1156,6 +1156,7 @@ export function getProviders(): Map<string, StorageProvider> { return _providers
 export function getPrimaryProviderId(): string { return _primaryProviderId; }
 export function getManifest(): ManifestJson | null { return _manifest; }
 
+/** Get the VaultJournal for a provider. */
 export function getJournalForProvider(providerId: string): VaultJournal | null {
   return _journals.get(providerId) ?? null;
 }

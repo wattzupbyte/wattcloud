@@ -38,7 +38,7 @@ import type {
   TrashEntry,
   ShareEntry,
 } from './DataProvider';
-import { markDirty, getProvider, getJournal, getWalKey, getWalKeyForProvider, getVaultId, getOrInitProvider } from './VaultLifecycle';
+import { markDirty, getProvider, getJournalForProvider, getWalKeyForProvider, getVaultId, getOrInitProvider } from './VaultLifecycle';
 import { extractExif, serializeExif } from './ExifExtractor';
 import { bytesToBase64 as _bytesToBase64, base64ToBytes as _base64ToBytes } from './base64';
 import { parseShareLimitError } from './shareLimitCopy';
@@ -1895,14 +1895,26 @@ export class ByoDataProvider implements DataProvider {
    * Called before every SQL mutation:
    *   1. Appends WAL entry for crash recovery
    *   2. Appends journal entry for cloud-side journal
+   *
+   * Both the WAL and the journal are per-provider — pre-fix this used
+   * the primary's key/journal regardless of which provider's slice was
+   * being mutated, so writes via a secondary never made it into that
+   * secondary's WAL/journal and were silently lost on reload when the
+   * secondary was offline (saveVault skips body uploads for offline
+   * dirty providers, and WAL replay was the safety net that would have
+   * caught it). Scope to `activeProviderId` so the WAL key matches the
+   * walId saveVault clears (`vaultId + ':' + pid`) and the journal
+   * matches the one saveVault commits.
    */
   private async onMutate(sql: string, params: unknown[]): Promise<void> {
     const vaultId = getVaultId();
-    const walKey = getWalKey();
-    const journal = getJournal();
+    const pid = this.activeProviderId;
+    if (!pid) return;
+    const walKey = getWalKeyForProvider(pid);
+    const journal = getJournalForProvider(pid);
 
     if (walKey) {
-      await appendWal(vaultId, walKey, sql, params);
+      await appendWal(`${vaultId}:${pid}`, walKey, sql, params);
     }
 
     if (journal) {
