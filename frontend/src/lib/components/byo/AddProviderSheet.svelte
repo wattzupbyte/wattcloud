@@ -683,17 +683,23 @@
               <button
                 class="provider-btn"
                 class:active={activeInline === p.type}
-                disabled={connecting}
+                class:coming-soon={p.comingSoon}
+                disabled={connecting || p.comingSoon}
                 onclick={() => { activeInline = activeInline === p.type ? null : p.type; error = ''; }}
+                aria-label={p.comingSoon ? `${p.name} — coming soon` : `Connect ${p.name}`}
               >
                 <span class="provider-icon" aria-hidden="true">
                   <p.icon size={22} weight="regular" />
                 </span>
                 <span class="provider-name">{p.name}</span>
                 <span class="provider-desc">{p.description}</span>
-                <span class="trailing" class:rotated={activeInline === p.type} aria-hidden="true">
-                  <CaretDown size={14} weight="bold" />
-                </span>
+                {#if p.comingSoon}
+                  <span class="provider-pill">Coming soon</span>
+                {:else}
+                  <span class="trailing" class:rotated={activeInline === p.type} aria-hidden="true">
+                    <CaretDown size={14} weight="bold" />
+                  </span>
+                {/if}
               </button>
 
               {#if activeInline === 'webdav' && p.type === 'webdav'}
@@ -967,7 +973,8 @@
     position: relative;
   }
   .tile.coming-soon:disabled { opacity: 0.7; }
-  .tile-pill {
+  .tile-pill,
+  .provider-pill {
     font-size: 0.6875rem;
     font-weight: 500;
     line-height: 1;
@@ -977,6 +984,11 @@
     color: var(--accent-warm, #E0A320);
     letter-spacing: 0.02em;
   }
+  /* Same coming-soon dimming for the Settings → Add another provider
+     row layout. The button is already disabled; opacity tweaked so the
+     pill stays legible. */
+  .provider-btn.coming-soon { opacity: 0.7; }
+  .provider-btn.coming-soon:disabled { opacity: 0.7; }
 
   .tile-logo {
     display: inline-flex;
