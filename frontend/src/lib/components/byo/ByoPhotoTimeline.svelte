@@ -1014,7 +1014,11 @@ function toggleSelection(fileId: number) {
   .folder-picker-item.sub { padding-left: 24px; font-size: var(--t-label-size); color: var(--text-secondary); }
   .folder-picker-item.sub.selected { color: var(--accent-text); }
   .folder-picker-divider { height: 1px; background: var(--border); margin: 4px 0; }
-  .folder-picker-menu.place-menu { min-width: 320px; padding: var(--sp-sm); }
+  /* Place menu houses the PlaceSearch component whose own results dropdown
+     can show up to 8 items (~420px) — the parent's 320px cap clipped it.
+     Override here so only this variant grows; the plain folder pickers
+     above stay compact. */
+  .folder-picker-menu.place-menu { min-width: 320px; max-height: 560px; padding: var(--sp-sm); }
 
   .toggle-btn {
     display: inline-flex;
