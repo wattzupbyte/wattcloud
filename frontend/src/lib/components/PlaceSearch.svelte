@@ -126,7 +126,7 @@ let query = $state('');
     margin: 0; padding: var(--sp-xs) 0;
     background: var(--bg-surface-raised); border: 1px solid var(--border);
     border-top: none; border-radius: 0 0 var(--r-input) var(--r-input);
-    box-shadow: var(--shadow-dropdown); max-height: 280px; overflow-y: auto; z-index: 10;
+    box-shadow: var(--shadow-dropdown); max-height: 420px; overflow-y: auto; z-index: 10;
   }
   .result-item {
     display: flex; align-items: center; gap: var(--sp-sm);
