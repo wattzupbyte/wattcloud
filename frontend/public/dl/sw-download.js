@@ -119,6 +119,14 @@ self.addEventListener('message', (event) => {
       registeredAt: Date.now(),
       bytes: 0,
       chunks: 0,
+      // Orphan-only flag: true until the corresponding /dl/<id> fetch
+      // is intercepted. The 30s safety timer below errors the entry
+      // ONLY when this is still false at fire time, so legitimate
+      // downloads slower than 30s aren't killed mid-stream. Without
+      // this distinction, a 10 MB bundle on residential uplink (the
+      // user's reproducer) trips the timer at byte ~8 MB and Firefox's
+      // download manager reports the .part as unreadable.
+      fetchAttached: false,
       enqueue(chunk) {
         if (controllerRef) controllerRef.enqueue(chunk);
         else if (pending) pending.push(chunk);
@@ -139,15 +147,19 @@ self.addEventListener('message', (event) => {
     const port = Array.isArray(event.ports) ? event.ports[0] : undefined;
     if (port) port.postMessage({ type: 'ready', id });
 
-    // Safety: release the SW lifetime after REGISTRATION_TTL_MS even if the
-    // client never consumed the stream. Auto-errors any orphaned entry.
+    // Orphan reaper: if the page never triggered the /dl/<id> fetch
+    // within 30s of register (page navigated away, click swallowed,
+    // etc.), error the entry so its lifetime promise resolves and the
+    // SW can be evicted. Active downloads are not affected — once
+    // fetchAttached flips to true, the reaper is a no-op regardless of
+    // how long the actual byte transfer takes.
     setTimeout(() => {
       const entry = STREAMS.get(id);
-      if (entry && Date.now() - entry.registeredAt >= REGISTRATION_TTL_MS) {
-        try { entry.error('registration timed out'); } catch (_) { /* drop */ }
-        try { entry.releaseLifetime(); } catch (_) { /* drop */ }
-        STREAMS.delete(id);
-      }
+      if (!entry) return;
+      if (entry.fetchAttached) return;
+      try { entry.error('registration timed out'); } catch (_) { /* drop */ }
+      try { entry.releaseLifetime(); } catch (_) { /* drop */ }
+      STREAMS.delete(id);
     }, REGISTRATION_TTL_MS);
     return;
   }
@@ -206,6 +218,9 @@ self.addEventListener('fetch', (event) => {
     // Fall through to the network, which will 404.
     return;
   }
+  // The orphan reaper must NOT fire on this entry now that the fetch
+  // has arrived — see `fetchAttached` comment in the register handler.
+  entry.fetchAttached = true;
 
   const { stream, filename, mime, contentLength } = entry;
 
