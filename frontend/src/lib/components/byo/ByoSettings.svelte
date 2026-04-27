@@ -125,7 +125,10 @@
   // provider_id isn't in the live manifest. Typically left behind when a
   // post-addProvider save crashed before the manifest reached the primary;
   // also useful when a remote was wiped and the local row points nowhere.
-  let orphanProviders: HydratedProviderConfig[] = $state([]);
+  // Includes rows whose decrypt failed — those still take up space and
+  // need a removal path even though Retry/Edit can't operate on them.
+  type OrphanRow = HydratedProviderConfig | (import('../../byo/ProviderConfigStore').ProviderConfigMeta & { config: null });
+  let orphanProviders: OrphanRow[] = $state([]);
   let retryingOrphanId: string | null = $state(null);
   let editingOrphanId: string | null = $state(null);
   let savingOrphanEdit = $state(false);
@@ -389,15 +392,25 @@
     const vid = getVaultId();
     if (!vid) { orphanProviders = []; return; }
     try {
-      const { hydrated } = await loadProvidersForVault(vid);
+      const { hydrated, failed } = await loadProvidersForVault(vid);
       const live = new Set($vaultStore.providers.map((p) => p.providerId));
-      orphanProviders = hydrated.filter((o) => !live.has(o.provider_id));
+      const orphans: OrphanRow[] = [];
+      for (const o of hydrated) {
+        if (!live.has(o.provider_id)) orphans.push(o);
+      }
+      // Rows we couldn't decrypt are still IDB rows the user can see in the
+      // Your Vaults provider count. They can't be Retried / Edited (we have
+      // no plaintext config) but we still surface them so Remove is reachable.
+      for (const f of failed) {
+        if (!live.has(f.provider_id)) orphans.push({ ...f, config: null });
+      }
+      orphanProviders = orphans;
     } catch {
       orphanProviders = [];
     }
   }
 
-  function removeOrphan(o: HydratedProviderConfig) {
+  function removeOrphan(o: { provider_id: string; display_name: string }) {
     showConfirm(
       'Remove saved provider',
       `Remove the saved credentials for "${o.display_name}" on this device? ` +
@@ -621,31 +634,37 @@
               Retry to attach, or remove the saved credentials.
             </p>
             {#each orphanProviders as o (o.provider_id)}
-              <div class="orphan-row" title="{o.type.toUpperCase()} · saved {formatDate(o.saved_at)}">
+              {@const decrypted = o.config !== null}
+              <div class="orphan-row" title="{o.type.toUpperCase()} · saved {formatDate(o.saved_at)}{decrypted ? '' : ' · decrypt failed'}">
                 <span class="prow-icon" aria-hidden="true">{providerIcon(o.type)}</span>
                 <span class="row-label">
                   {o.display_name}
-                  <span class="orphan-meta">{o.type.toUpperCase()} · saved {formatDate(o.saved_at)}</span>
+                  <span class="orphan-meta">
+                    {o.type.toUpperCase()} · saved {formatDate(o.saved_at)}
+                    {#if !decrypted} · can't decrypt on this device{/if}
+                  </span>
                 </span>
-                <button
-                  class="orphan-btn"
-                  disabled={retryingOrphanId !== null || editingOrphanId !== null}
-                  onclick={() => retryOrphan(o)}
-                >
-                  {retryingOrphanId === o.provider_id ? 'Retrying…' : 'Retry'}
-                </button>
-                <button
-                  class="orphan-btn"
-                  disabled={retryingOrphanId !== null || editingOrphanId !== null}
-                  onclick={() => editingOrphanId = (editingOrphanId === o.provider_id ? null : o.provider_id)}
-                >Edit</button>
+                {#if decrypted}
+                  <button
+                    class="orphan-btn"
+                    disabled={retryingOrphanId !== null || editingOrphanId !== null}
+                    onclick={() => retryOrphan(o as HydratedProviderConfig)}
+                  >
+                    {retryingOrphanId === o.provider_id ? 'Retrying…' : 'Retry'}
+                  </button>
+                  <button
+                    class="orphan-btn"
+                    disabled={retryingOrphanId !== null || editingOrphanId !== null}
+                    onclick={() => editingOrphanId = (editingOrphanId === o.provider_id ? null : o.provider_id)}
+                  >Edit</button>
+                {/if}
                 <button
                   class="orphan-btn orphan-danger"
                   disabled={retryingOrphanId !== null || editingOrphanId !== null}
                   onclick={() => removeOrphan(o)}
                 >Remove</button>
               </div>
-              {#if editingOrphanId === o.provider_id}
+              {#if editingOrphanId === o.provider_id && o.config !== null}
                 <div class="orphan-edit">
                   <EditProviderForm
                     type={o.type}
@@ -653,7 +672,7 @@
                     displayName={o.display_name}
                     submitting={savingOrphanEdit}
                     submitLabel="Save & retry"
-                    onSubmit={(cfg) => saveOrphanEdit(o, cfg)}
+                    onSubmit={(cfg) => saveOrphanEdit(o as HydratedProviderConfig, cfg)}
                     onCancel={() => editingOrphanId = null}
                   />
                 </div>
