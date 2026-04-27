@@ -966,12 +966,11 @@ async fn handle_text_command(
                 Ok(f) => f,
                 Err(e) => {
                     tracing::warn!(path = %path, error = %e, "sftp read_open failed");
-                    let _ = sink
-                        .send(Message::Text(err_json(
-                            id,
-                            format!("read_open {path}: {e}"),
-                        )))
-                        .await;
+                    // Plain russh-sftp error — sdk-core's read_open wrapper
+                    // adds the "read_open {path}: " prefix once. Pre-existing
+                    // double prefix here is what produced the duplicated
+                    // "read_open /x: read_open /x: …" the user reported.
+                    let _ = sink.send(Message::Text(err_json(id, e))).await;
                     return;
                 }
             };
@@ -1026,9 +1025,10 @@ async fn handle_text_command(
                         error = %e,
                         "sftp read_chunk failed"
                     );
-                    let _ = sink
-                        .send(Message::Text(err_json(id, format!("read_chunk: {e}"))))
-                        .await;
+                    // sdk-core's read_chunk wrapper adds the verb+handle
+                    // prefix; emit the plain russh-sftp error here so we
+                    // don't double-prefix.
+                    let _ = sink.send(Message::Text(err_json(id, e))).await;
                     // Drop the session on read error — caller should reopen.
                     read_sessions.remove(&handle);
                     return;
