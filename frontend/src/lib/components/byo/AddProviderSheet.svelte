@@ -714,10 +714,13 @@
                   <p.icon size={22} weight="regular" />
                 </span>
                 <span class="provider-name">{p.name}</span>
-                <span class="provider-desc">{p.description}</span>
                 {#if p.comingSoon}
+                  <!-- Pill replaces the description on disabled rows so it
+                       has room to render on a single line — the description
+                       is redundant when the row can't be tapped anyway. -->
                   <span class="provider-pill">Coming soon</span>
                 {:else}
+                  <span class="provider-desc">{p.description}</span>
                   <span class="trailing" class:rotated={activeInline === p.type} aria-hidden="true">
                     <CaretDown size={14} weight="bold" />
                   </span>
