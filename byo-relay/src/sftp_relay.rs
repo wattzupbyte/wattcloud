@@ -691,7 +691,7 @@ async fn handle_text_command(
             };
             let resp = match sftp.metadata(&path).await {
                 Ok(m) => {
-                    tracing::warn!(path = %path, is_dir = m.file_type().is_dir(), size = m.size.unwrap_or(0), "sftp stat ok");
+                    tracing::debug!(path = %path, is_dir = m.file_type().is_dir(), size = m.size.unwrap_or(0), "sftp stat ok");
                     ok_json(
                         id,
                         serde_json::json!({
@@ -1077,7 +1077,7 @@ async fn handle_text_command(
             };
             let resp = match sftp.create_dir(&path).await {
                 Ok(_) => {
-                    tracing::warn!(path = %path, "sftp mkdir ok");
+                    tracing::debug!(path = %path, "sftp mkdir ok");
                     ok_json(id, serde_json::json!({}))
                 }
                 Err(e) => {
