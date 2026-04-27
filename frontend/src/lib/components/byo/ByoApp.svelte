@@ -63,6 +63,7 @@
   import ConfirmModal from '../ConfirmModal.svelte';
   import Drawer from '../Drawer.svelte';
   import BottomNav from '../BottomNav.svelte';
+  import CloudBadge from '../CloudBadge.svelte';
   import { byoSelectionMode } from '../../byo/stores/byoFileStore';
   import { drawerOpen, drawerCollapsed } from '../../stores/drawer';
   import { storageUsage, resetStorageUsage } from '../../stores/storageUsage';
@@ -811,7 +812,9 @@
       {#if appState === 'check-vault'}
         <div class="byo-centered">
           <div class="checking">
-            <div class="spinner"></div>
+            <div class="cloud-pulse" aria-hidden="true">
+              <CloudBadge size={56} />
+            </div>
             <p>Connecting to provider…</p>
           </div>
         </div>
@@ -1050,16 +1053,23 @@
 
   .checking p { margin: 0; font-size: var(--t-body-sm-size, 0.8125rem); }
 
-  .spinner {
-    width: 32px;
-    height: 32px;
-    border: 2px solid var(--border, #2E2E2E);
-    border-top-color: var(--accent, #2EB860);
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
+  /* Brand-on-brand loading indicator: gentle scale + opacity pulse on
+     the CloudBadge motif so the connecting state shows the same icon
+     the user sees once the dashboard renders, instead of a generic
+     spinner that gets replaced. */
+  .cloud-pulse {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    animation: cloud-pulse 1.6s ease-in-out infinite;
   }
-
-  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes cloud-pulse {
+    0%, 100% { transform: scale(1);    opacity: 1; }
+    50%      { transform: scale(0.92); opacity: 0.6; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cloud-pulse { animation: none; }
+  }
 
   /* Bottom-nav wrapper — slides down + fades when BYO selection mode is on
      (matches what ByoDashboard used to do before the hoist). */
