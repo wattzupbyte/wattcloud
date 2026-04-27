@@ -432,6 +432,8 @@
       // will re-create vault directories if needed, then addProvider re-adds
       // the manifest entry and triggers a save.
       const instance = await hydrateProvider(o.config);
+      // addProvider force-saves inline so the new manifest entry survives
+      // an immediate reload — no need to await saveVault separately here.
       await addProvider(instance, o.config, o.display_name);
       byoToast.show(`${o.display_name} reconnected.`, { icon: 'seal' });
       await loadOrphans();
@@ -472,7 +474,8 @@
         },
         cfgWithId,
       );
-      // And re-attach into the live manifest using the connected instance.
+      // Re-attach into the live manifest. addProvider force-saves inline
+      // so the new entry persists across reload.
       await addProvider(instance, cfgWithId, o.display_name);
       byoToast.show(`${o.display_name} reconnected with updated settings.`, { icon: 'seal' });
       editingOrphanId = null;

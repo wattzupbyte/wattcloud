@@ -1307,10 +1307,22 @@ export async function addProvider(
   vaultStore.setProviders([...currentProviders, newMeta]);
 
   markDirty(_primaryProviderId);
+  // Force-save inline so the new provider's manifest entry survives an
+  // immediate reload (see renameProvider for rationale). Saving failures
+  // propagate so the caller can surface "couldn't persist" rather than
+  // returning a providerId that won't be there on next unlock.
+  await saveVault();
   return providerId;
 }
 
-/** Rename a provider's display name in the manifest. */
+/** Rename a provider's display name in the manifest.
+ *
+ * Force-saves inline rather than relying on the 3 s debounce so the rename
+ * survives an immediate reload. Without the inline save, the manifest entry
+ * lives only in memory until debounce fires; if the user reloads before
+ * that, the rename is lost and they'd see the old name re-appear with no
+ * indication anything went wrong.
+ */
 export async function renameProvider(providerId: string, newName: string): Promise<void> {
   if (!_manifest) throw new Error('Vault not unlocked');
   const trimmed = newName.trim();
@@ -1325,6 +1337,7 @@ export async function renameProvider(providerId: string, newName: string): Promi
   unsub();
   vaultStore.setProviders(current.map((p) => p.providerId === providerId ? { ...p, displayName: trimmed } : p));
   markDirty(_primaryProviderId);
+  await saveVault();
 }
 
 /**
@@ -1406,6 +1419,9 @@ export async function updateProviderConfig(
       : p));
 
     markDirty(_primaryProviderId);
+    // Force-save so the manifest_json change reaches the primary before any
+    // reload (see renameProvider for rationale).
+    await saveVault();
   } catch (e) {
     // Commit failed after a successful test-connect. Drop the candidate
     // session so we don't leak the WebSocket.
@@ -1422,7 +1438,11 @@ async function hydrateProviderForUpdate(config: ProviderConfig): Promise<Storage
   return hydrateProvider(config);
 }
 
-/** Set a provider as the primary. */
+/** Set a provider as the primary.
+ *
+ * Force-saves inline so primary-swap survives an immediate reload (see
+ * renameProvider for rationale).
+ */
 export async function setAsPrimaryProvider(providerId: string): Promise<void> {
   if (!_manifest) throw new Error('Vault not unlocked');
   const nowSec = Math.floor(Date.now() / 1000);
@@ -1437,6 +1457,7 @@ export async function setAsPrimaryProvider(providerId: string): Promise<void> {
   vaultStore.setProviders(current.map((p) => ({ ...p, isPrimary: p.providerId === providerId })));
   vaultStore.setPrimaryProviderId(providerId);
   markDirty(_primaryProviderId);
+  await saveVault();
 }
 
 /** Remove a non-primary provider (tombstones the manifest entry). */
@@ -1470,6 +1491,9 @@ export async function removeProvider(providerId: string): Promise<void> {
   vaultStore.setProviders(current.filter((p) => p.providerId !== providerId));
   vaultStore.setActiveProviderId(_primaryProviderId);
   markDirty(_primaryProviderId);
+  // Force-save inline so removal persists across an immediate reload (see
+  // renameProvider for rationale).
+  await saveVault();
 }
 
 // ── Before-unload handler ──────────────────────────────────────────────────
