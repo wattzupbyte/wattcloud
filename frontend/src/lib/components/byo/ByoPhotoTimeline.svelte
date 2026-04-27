@@ -215,6 +215,36 @@ function toggleSelection(fileId: number) {
   let locationPlace: PlaceBounds | null = $state(null);
   let placeSheetOpen = $state(false);
 
+  // Refs for the place chip + its menu so we can clamp the menu's left
+  // edge inside the viewport on narrow phones. Pure CSS can't compute
+  // "shift menu right when its natural left would fall off-screen"
+  // because right:0 anchoring depends on the chip's runtime viewport
+  // position, which CSS doesn't expose.
+  let placeChipEl = $state<HTMLDivElement | undefined>(undefined);
+  let placeMenuEl = $state<HTMLDivElement | undefined>(undefined);
+
+  $effect(() => {
+    // Re-clamp every time the menu opens (or the toolbar layout shifts
+    // it). Reading these state vars makes the effect re-run.
+    if (!placeSheetOpen) return;
+    if (!placeChipEl || !placeMenuEl) return;
+    const chipEl = placeChipEl;
+    const menuEl = placeMenuEl;
+    // Reset before measuring so we don't compound a previous shift.
+    menuEl.style.right = '';
+    requestAnimationFrame(() => {
+      if (!menuEl.isConnected || !chipEl.isConnected) return;
+      const chipRect = chipEl.getBoundingClientRect();
+      const menuWidth = menuEl.offsetWidth;
+      const naturalLeft = chipRect.right - menuWidth;
+      const desiredLeft = Math.max(12, naturalLeft);
+      const shift = desiredLeft - naturalLeft;
+      // Negative `right` pushes the menu rightward (so its left edge
+      // lands at desiredLeft instead of naturalLeft).
+      if (shift > 0) menuEl.style.right = `${-shift}px`;
+    });
+  });
+
   function fileHasLocation(f: { metadata?: string }): boolean {
     const e = parseExif(f.metadata);
     return typeof e.lat === 'number' && typeof e.lon === 'number';
@@ -510,7 +540,7 @@ function toggleSelection(fileId: number) {
             </div>
           {/if}
 
-          <div class="folder-picker" class:open={placeSheetOpen}>
+          <div class="folder-picker" class:open={placeSheetOpen} bind:this={placeChipEl}>
             <button
               class="filter-chip"
               class:has-filter={!!locationPlace || locationOnly}
@@ -524,7 +554,7 @@ function toggleSelection(fileId: number) {
               <CaretDown size={12} />
             </button>
             {#if placeSheetOpen}
-              <div class="folder-picker-menu place-menu">
+              <div class="folder-picker-menu place-menu" bind:this={placeMenuEl}>
                 <button
                   class="folder-picker-item"
                   class:selected={!locationPlace && !locationOnly}
