@@ -354,6 +354,19 @@ function toggleSelection(fileId: number) {
     loadByoPhotoTimeline();
   });
 
+  // Reload the timeline when the active provider changes (e.g. user picks
+  // a different provider in the drawer). listImageFiles is provider-scoped,
+  // so without this effect a switch would leave the previous provider's
+  // photos on screen until the user remounts the timeline.
+  let _photoActiveIdSeen: string | null = null;
+  $effect(() => {
+    const id = $vaultStore.activeProviderId;
+    if (_photoActiveIdSeen === null) { _photoActiveIdSeen = id; return; }
+    if (id === _photoActiveIdSeen) return;
+    _photoActiveIdSeen = id;
+    loadByoPhotoTimeline();
+  });
+
   function openPreview(file: FileEntry) {
     previewFile = file as any;
     previewOpen = true;

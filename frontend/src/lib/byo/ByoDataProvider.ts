@@ -589,31 +589,36 @@ export class ByoDataProvider implements DataProvider {
 
   async listImageFiles(folderId?: number | null): Promise<FileEntry[]> {
     // folderId:
-    //   undefined → all images (any provider, any folder).
-    //   null      → images at the vault root (no folder).
+    //   undefined → all images for the active provider, any folder.
+    //   null      → images at the vault root (no folder) for the active provider.
     //   number    → images inside that folder and all its descendants.
-    // No provider_id filter on the "all" path — matches the original
-    // behavior; the photos timeline has always been cross-provider.
+    //
+    // Scoped to the active provider so the timeline tracks the drawer's
+    // provider switcher, matching how listFiles / listAllFolders behave.
+    // Cross-provider photo browsing is a future affordance; today the
+    // user's mental model is "this is the SFTP-Hetzner-2 vault" and the
+    // timeline should reflect that.
+    const pid = this.activeProviderId;
     let rows: Array<Record<string, unknown>>;
     if (folderId === undefined) {
       rows = queryRows(
         this.db,
-        `SELECT * FROM files WHERE file_type = 'image' ORDER BY created_at DESC`,
-        [],
+        `SELECT * FROM files WHERE file_type = 'image' AND provider_id = ? ORDER BY created_at DESC`,
+        [pid],
       );
     } else if (folderId === null) {
       rows = queryRows(
         this.db,
-        `SELECT * FROM files WHERE file_type = 'image' AND folder_id IS NULL ORDER BY created_at DESC`,
-        [],
+        `SELECT * FROM files WHERE file_type = 'image' AND folder_id IS NULL AND provider_id = ? ORDER BY created_at DESC`,
+        [pid],
       );
     } else {
       // Recursive descent — pull all descendant folder ids then filter files.
       const ids = new Set<number>([folderId]);
       const stack: number[] = [folderId];
       while (stack.length > 0) {
-        const pid = stack.pop()!;
-        const children = queryRows(this.db, 'SELECT id FROM folders WHERE parent_id = ?', [pid]);
+        const parentId = stack.pop()!;
+        const children = queryRows(this.db, 'SELECT id FROM folders WHERE parent_id = ?', [parentId]);
         for (const c of children) {
           const cid = c['id'] as number;
           if (!ids.has(cid)) { ids.add(cid); stack.push(cid); }
@@ -622,8 +627,8 @@ export class ByoDataProvider implements DataProvider {
       const placeholders = Array.from(ids).map(() => '?').join(', ');
       rows = queryRows(
         this.db,
-        `SELECT * FROM files WHERE file_type = 'image' AND folder_id IN (${placeholders}) ORDER BY created_at DESC`,
-        Array.from(ids) as import('sql.js').BindParams,
+        `SELECT * FROM files WHERE file_type = 'image' AND folder_id IN (${placeholders}) AND provider_id = ? ORDER BY created_at DESC`,
+        [...Array.from(ids), pid] as import('sql.js').BindParams,
       );
     }
     return this.decryptFileRows(rows);

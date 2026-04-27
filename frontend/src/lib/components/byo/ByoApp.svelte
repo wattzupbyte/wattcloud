@@ -179,6 +179,21 @@
   setContext<DataProviderHolder>('byo:dataProvider', dataProviderHolder);
   setContext<StorageProviderHolder>('byo:storageProvider', storageProviderHolder);
 
+  // Keep dataProvider's activeProviderId in sync with the vault store
+  // regardless of which screen is mounted. ByoDashboard owns its own
+  // $effect that reloads the file list when the active provider changes,
+  // but that effect only runs while the dashboard is mounted — switching
+  // providers from the drawer while on Settings/Trash would otherwise
+  // leave dataProvider on the previous provider, so the next visit to
+  // Files would list rows from the wrong vault until the user toggled
+  // the switcher again.
+  $effect(() => {
+    const id = $vaultStore.activeProviderId;
+    if (!dataProvider || !id) return;
+    if (dataProvider.activeProviderId === id) return;
+    dataProvider.setActiveProviderId(id);
+  });
+
   onMount(async () => {
     // Kick off stats initialisation in the background — fire-and-forget.
     initStatsClient().catch(() => {});

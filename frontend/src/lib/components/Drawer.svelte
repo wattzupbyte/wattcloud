@@ -271,7 +271,7 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
                 <span class="provider-link-dot" style:background-color={providerStatusColor(p.status)} aria-hidden="true"></span>
               {/if}
             {:else}
-              <TypeIcon size={18} weight={p.providerId === activeProviderId ? 'fill' : 'regular'} />
+              <TypeIcon size={20} weight={p.providerId === activeProviderId ? 'fill' : 'regular'} />
               <span class="provider-link-name">{p.displayName}</span>
               {#if p.isPrimary}
                 <span class="provider-link-badge">Primary</span>
@@ -415,7 +415,7 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
               aria-pressed={p.providerId === activeProviderId}
               onclick={() => selectProvider(p.providerId)}
             >
-              <TypeIcon size={18} weight={p.providerId === activeProviderId ? 'fill' : 'regular'} />
+              <TypeIcon size={20} weight={p.providerId === activeProviderId ? 'fill' : 'regular'} />
               <span class="provider-link-name">{p.displayName}</span>
               {#if p.isPrimary}
                 <span class="provider-link-badge">Primary</span>
@@ -570,6 +570,13 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    /* <button> defaults to text-align:center per UA stylesheet, and that
+       inherits into non-flex descendants (the span here is a flex item
+       but its text content is regular flow inside the span). Without this
+       override the inactive provider name renders horizontally centered
+       in the row while nav-link labels — which are bare text flex children,
+       not wrapped in a span — render left-aligned. */
+    text-align: left;
   }
   .provider-link-badge {
     flex-shrink: 0;
