@@ -198,7 +198,7 @@ export class ByoDataProvider implements DataProvider {
     };
 
     this.searchIndex.upsert(lastId, file.name);
-    markDirty();
+    markDirty(this.activeProviderId);
     return entry;
   }
 
@@ -354,7 +354,7 @@ export class ByoDataProvider implements DataProvider {
     this.db.run(deleteSql, [fileId]);
 
     this.searchIndex.remove(fileId);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async moveFile(fileId: number, targetFolderId: number | null): Promise<void> {
@@ -378,7 +378,7 @@ export class ByoDataProvider implements DataProvider {
     const params = [targetFolderId ?? null, now, fileId];
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async renameFile(fileId: number, newName: string): Promise<void> {
@@ -395,7 +395,7 @@ export class ByoDataProvider implements DataProvider {
     this.db.run(sql, params as import('sql.js').BindParams);
 
     this.searchIndex.upsert(fileId, newName);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async updateFileMetadata(fileId: number, metadataJson: string): Promise<void> {
@@ -406,7 +406,7 @@ export class ByoDataProvider implements DataProvider {
     const params = [metadataJson, now, fileId];
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   // ── Folder operations ──────────────────────────────────────────────────
@@ -451,7 +451,7 @@ export class ByoDataProvider implements DataProvider {
       updated_at: now,
     };
 
-    markDirty();
+    markDirty(this.activeProviderId);
     return entry;
   }
 
@@ -478,7 +478,7 @@ export class ByoDataProvider implements DataProvider {
     await this.onMutate(deleteSql, [folderId]);
     this.db.run(deleteSql, [folderId]);
 
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async renameFolder(folderId: number, newName: string): Promise<void> {
@@ -494,7 +494,7 @@ export class ByoDataProvider implements DataProvider {
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
 
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async moveFolder(folderId: number, targetParentId: number | null): Promise<void> {
@@ -519,7 +519,7 @@ export class ByoDataProvider implements DataProvider {
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
 
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   // ── Favorites ──────────────────────────────────────────────────────────
@@ -552,7 +552,7 @@ export class ByoDataProvider implements DataProvider {
       const params = [type, id];
       await this.onMutate(sql, params);
       this.db.run(sql, params as import('sql.js').BindParams);
-      markDirty();
+      markDirty(this.activeProviderId);
       return false;
     } else {
       // Resolve the row's provider_id from the target table so the favorite
@@ -567,7 +567,7 @@ export class ByoDataProvider implements DataProvider {
       const params = [type, id, providerId, now];
       await this.onMutate(sql, params);
       this.db.run(sql, params as import('sql.js').BindParams);
-      markDirty();
+      markDirty(this.activeProviderId);
       return true;
     }
   }
@@ -690,7 +690,7 @@ export class ByoDataProvider implements DataProvider {
     this.db.run(sql, params as import('sql.js').BindParams);
 
     const lastId = queryRows(this.db, 'SELECT last_insert_rowid() AS id')[0]['id'] as number;
-    markDirty();
+    markDirty(this.activeProviderId);
 
     return {
       id: lastId,
@@ -717,7 +717,7 @@ export class ByoDataProvider implements DataProvider {
     const params = [encName, nameKey, now, collectionId];
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async deleteCollection(collectionId: number): Promise<void> {
@@ -733,7 +733,7 @@ export class ByoDataProvider implements DataProvider {
     const sql = 'DELETE FROM collections WHERE id = ?';
     await this.onMutate(sql, [collectionId]);
     this.db.run(sql, [collectionId]);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async listCollectionFiles(collectionId: number): Promise<FileEntry[]> {
@@ -770,7 +770,7 @@ export class ByoDataProvider implements DataProvider {
       this.db.run(coverSql, coverParams as import('sql.js').BindParams);
     }
 
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async setCollectionCover(collectionId: number, fileId: number | null): Promise<void> {
@@ -780,7 +780,7 @@ export class ByoDataProvider implements DataProvider {
     const params = [fileId, now, collectionId];
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async removeFilesFromCollection(collectionId: number, fileIds: number[]): Promise<void> {
@@ -811,7 +811,7 @@ export class ByoDataProvider implements DataProvider {
       this.db.run(coverSql, coverParams as import('sql.js').BindParams);
     }
 
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   // ── Storage usage ──────────────────────────────────────────────────────
@@ -1718,7 +1718,7 @@ export class ByoDataProvider implements DataProvider {
     ];
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
-    markDirty();
+    markDirty(this.activeProviderId);
     return {
       share_id: row.shareId,
       kind: row.kind,
@@ -1811,7 +1811,7 @@ export class ByoDataProvider implements DataProvider {
     const revokeShareSql = 'UPDATE share_tokens SET revoked = 1 WHERE share_id = ?';
     await this.onMutate(revokeShareSql, [shareId]);
     this.db.run(revokeShareSql, [shareId]);
-    markDirty();
+    markDirty(this.activeProviderId);
     recordEvent('share_revoke', { share_variant: 'B2' });
     refreshShareStats(this);
   }
