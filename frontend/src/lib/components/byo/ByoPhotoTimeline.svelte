@@ -1020,9 +1020,13 @@ function toggleSelection(fileId: number) {
      content height, so the scroll trigger never fires for the dropdown
      overflow). Drop overflow on this variant and remove max-height —
      the static rows here (Any location / Located only / search input /
-     Re-scan) are bounded; the dropdown spills below them naturally. */
+     Re-scan) are bounded; the dropdown spills below them naturally.
+     Width clamps to the viewport minus a small inset so on narrow
+     phones (≤340px) the menu doesn't extend past the left edge and
+     clip its content under the screen. */
   .folder-picker-menu.place-menu {
-    min-width: 320px;
+    width: min(320px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
     max-height: none;
     overflow: visible;
     padding: var(--sp-sm);
