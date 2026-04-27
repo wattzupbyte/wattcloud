@@ -56,6 +56,11 @@
     description: string;
     mode: 'oauth' | 'inline';
     icon: ComponentType;
+    /** Hide from the picker behind a "Coming soon" pill — feature not yet
+     *  production-ready. Existing vaults that already use this provider
+     *  type continue to load via ProviderConfigStore + hydrateProvider;
+     *  only the *new* enrollment entry point is gated. */
+    comingSoon?: boolean;
   }> = [
     // OAuth cloud accounts — deferred. Keep rows commented out (not deleted)
     // so re-enabling is a one-line change once the OAuth flow is shipped.
@@ -69,7 +74,7 @@
     // Bring your own endpoint — inline-form credentials, no provider console needed.
     { type: 'webdav',   name: 'WebDAV',                  description: 'Nextcloud, ownCloud, Synology, …',   mode: 'inline', icon: HardDrives      },
     { type: 'sftp',     name: 'SFTP',                    description: 'Any SSH server you control',         mode: 'inline', icon: Terminal        },
-    { type: 's3',       name: 'S3 / R2 / Wasabi / MinIO',description: 'AWS, R2, Wasabi, MinIO, Backblaze',  mode: 'inline', icon: Database        },
+    { type: 's3',       name: 'S3 / R2 / Wasabi / MinIO',description: 'AWS, R2, Wasabi, MinIO, Backblaze',  mode: 'inline', icon: Database, comingSoon: true },
   ];
   const INLINE_PROVIDERS = PROVIDERS.filter((p) => p.mode === 'inline');
 
@@ -366,14 +371,18 @@
         <button
           class="tile"
           class:active={activeInline === p.type}
-          disabled={connecting}
+          class:coming-soon={p.comingSoon}
+          disabled={connecting || p.comingSoon}
           onclick={() => { activeInline = p.type; error = ''; }}
-          aria-label={`Connect ${p.name}`}
+          aria-label={p.comingSoon ? `${p.name} — coming soon` : `Connect ${p.name}`}
         >
           <span class="tile-logo" aria-hidden="true">
             <p.icon size={32} weight="regular" />
           </span>
           <span class="tile-name">{p.name}</span>
+          {#if p.comingSoon}
+            <span class="tile-pill">Coming soon</span>
+          {/if}
         </button>
       {/each}
     </div>
@@ -949,6 +958,25 @@
   }
   .tile:disabled { opacity: 0.5; cursor: not-allowed; }
   .tile.active { border-color: var(--accent, #2EB860); }
+
+  /* Coming-soon variant: dim less than full-disabled (we want users to
+     read the pill, not just see a greyed-out blob), and keep the cursor
+     not-allowed so the affordance is clear. */
+  .tile.coming-soon {
+    opacity: 0.7;
+    position: relative;
+  }
+  .tile.coming-soon:disabled { opacity: 0.7; }
+  .tile-pill {
+    font-size: 0.6875rem;
+    font-weight: 500;
+    line-height: 1;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: var(--accent-warm-muted, #3D2F10);
+    color: var(--accent-warm, #E0A320);
+    letter-spacing: 0.02em;
+  }
 
   .tile-logo {
     display: inline-flex;

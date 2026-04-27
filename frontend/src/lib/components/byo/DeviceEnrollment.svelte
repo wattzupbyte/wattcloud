@@ -19,6 +19,7 @@
     unlockVault,
     getVaultSessionId,
     getPrimaryProviderId,
+    getManifest,
     bytesToBase64,
     base64ToBytes,
   } from '../../byo/VaultLifecycle';
@@ -624,18 +625,23 @@ type EnrollStep =
 
       // If we hydrated from a received primary_config (start-screen flow),
       // persist it so the vault now appears in the vault-list on next reload.
-      // Secondaries rehydrate from the unlocked manifest's config_json entries
-      // the first time they're opened — we only persist the primary because
-      // without it the new device can't fetch the manifest at all.
+      // Then walk the manifest's secondary entries and persist them too —
+      // their config_json carries the same credentials the source uses, so
+      // the new device gets multi-provider parity without re-adding each
+      // secondary by hand. Configs whose secret is missing (legacy vaults
+      // that never persisted creds) still land in the store; they'll fall
+      // through to the reauth sheet on next open like any legacy row.
+      const cfgLabel = receivedConfig
+        ? (receivedLabel.trim().length > 0
+            ? receivedLabel
+            : (provider?.displayName ?? receivedConfig.type))
+        : '';
       if (receivedConfig) {
         // After unlockVault returns, VaultLifecycle has parsed the manifest
         // and populated _primaryProviderId with the authoritative UUID.
         // Reusing that UUID keeps this device's ProviderConfigStore row in
         // sync with every other device's row for the same vault.
         const providerIdForLink = getPrimaryProviderId() || crypto.randomUUID();
-        const cfgLabel = receivedLabel.trim().length > 0
-          ? receivedLabel
-          : (provider?.displayName ?? receivedConfig.type);
         try {
           await saveProviderConfig(
             {
@@ -659,6 +665,46 @@ type EnrollStep =
           // Non-fatal: the vault is unlocked and usable; the user will just
           // have to re-add the provider on next reload. Log for diagnostics.
           console.warn('[DeviceEnrollment] saveProviderConfig failed', persistErr);
+        }
+
+        // Mirror every non-tombstoned, non-primary manifest entry into the
+        // per-device store so reload uses the local IDB hydrate path
+        // instead of re-reading config_json. Each row carries the same
+        // creds the source has on its end (post the credential-persistence
+        // change). One bad entry doesn't block the others.
+        try {
+          const manifest = getManifest();
+          if (manifest) {
+            for (const entry of manifest.providers) {
+              if (entry.tombstone) continue;
+              if (entry.provider_id === providerIdForLink) continue;
+              let secondaryConfig: ProviderConfig;
+              try {
+                secondaryConfig = JSON.parse(entry.config_json) as ProviderConfig;
+              } catch (parseErr) {
+                console.warn('[DeviceEnrollment] secondary config_json parse failed', entry.provider_id, parseErr);
+                continue;
+              }
+              try {
+                await saveProviderConfig(
+                  {
+                    provider_id: entry.provider_id,
+                    vault_id: vaultId,
+                    vault_label: cfgLabel,
+                    type: secondaryConfig.type,
+                    display_name: entry.display_name,
+                    is_primary: false,
+                    saved_at: new Date().toISOString(),
+                  },
+                  secondaryConfig,
+                );
+              } catch (persistErr) {
+                console.warn('[DeviceEnrollment] secondary saveProviderConfig failed', entry.provider_id, persistErr);
+              }
+            }
+          }
+        } catch (manifestErr) {
+          console.warn('[DeviceEnrollment] manifest secondaries persist failed', manifestErr);
         }
       }
 
