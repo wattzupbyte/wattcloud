@@ -107,6 +107,15 @@ const _lastBodySizesPerProvider: Map<string, number> = new Map();
 let _manifestVersion: number = 1;
 
 /**
+ * Cached manifest header bytes (1227 bytes) from unlock. Saving needs the
+ * header to recompute the HMAC + reassemble vault_manifest.sc; re-reading
+ * from the primary on every save is fragile (the underlying storage may
+ * have been wiped between sessions, or a fresh-secondary flow can race the
+ * first manifest write). Used as a fallback when the live read fails.
+ */
+let _manifestHeader: Uint8Array | null = null;
+
+/**
  * Resolver that releases the navigator.locks exclusive vault lock held by this tab.
  * null when no lock is held or when navigator.locks is unavailable.
  * C6: prevents two tabs from concurrently unlocking/saving the same vault.
@@ -683,6 +692,7 @@ export async function unlockVault(
   _providers = providerInstances;
   _primaryProviderId = primaryEntry?.provider_id ?? '';
   _dirtyProviders.clear();
+  _manifestHeader = new Uint8Array(headerBytes);
 
   // ── Step 16: Populate vaultStore ──────────────────────────────────────
   const providerMetas: ProviderMeta[] = mergedManifest.providers
@@ -837,9 +847,20 @@ async function _doSave(): Promise<void> {
     );
     const manifestBlob = base64ToBytes(manifestBlobB64);
 
-    // Re-read header from primary provider to get the latest HMAC.
-    const { data: currentManifestFile } = await _provider.download(_provider.manifestRef());
-    const currentHeader = currentManifestFile.slice(0, VAULT_HEADER_SIZE);
+    // Re-read header from primary so cross-device slot updates land here. If
+    // the primary's manifest is unreadable (no-such-file from a wiped server,
+    // or any other I/O error), fall back to the header we cached at unlock —
+    // saving still produces a valid file, the user just won't pick up
+    // header-level changes from other devices until the next unlock.
+    let currentHeader: Uint8Array;
+    try {
+      const { data: currentManifestFile } = await _provider.download(_provider.manifestRef());
+      currentHeader = currentManifestFile.slice(0, VAULT_HEADER_SIZE);
+    } catch (readErr) {
+      if (!_manifestHeader) throw readErr;
+      console.warn('[saveVault] Primary manifest re-read failed; using cached header from unlock:', readErr);
+      currentHeader = _manifestHeader;
+    }
 
     // Recompute header HMAC.
     const headerPrefixB64 = bytesToBase64(currentHeader.slice(0, VAULT_HEADER_HMAC_OFFSET));
@@ -1042,6 +1063,7 @@ export function lockVault(): void {
   _lastBodySizesPerProvider.clear();
   _vaultId = '';
   _manifestVersion = 1;
+  _manifestHeader = null;
   _mutationCountInWindow = 0;
   _batchMode = false;
 
