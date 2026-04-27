@@ -9,10 +9,17 @@
     getVaultId,
     getProvider,
     markDirty,
+    addProvider,
     bytesToBase64,
     base64ToBytes,
   } from '../../byo/VaultLifecycle';
   import { getDeviceRecord } from '../../byo/DeviceKeyStore';
+  import {
+    loadProvidersForVault,
+    deleteProviderConfig,
+    type HydratedProviderConfig,
+  } from '../../byo/ProviderConfigStore';
+  import { hydrateProvider } from '../../byo/ProviderHydrate';
   import { vaultStore } from '../../byo/stores/vaultStore';
   import type { ProviderMeta } from '../../byo/stores/vaultStore';
   import { queryRows } from '../../byo/ConflictResolver';
@@ -112,6 +119,13 @@
   // Provider context sheet
   let contextProvider: ProviderMeta | null = $state(null);
   let showAddProvider = $state(false);
+
+  // Orphan providers — `provider_configs` IDB rows for this vault whose
+  // provider_id isn't in the live manifest. Typically left behind when a
+  // post-addProvider save crashed before the manifest reached the primary;
+  // also useful when a remote was wiped and the local row points nowhere.
+  let orphanProviders: HydratedProviderConfig[] = $state([]);
+  let retryingOrphanId: string | null = $state(null);
 
   // About
   let storageUsage: StorageUsage | null = $state(null);
@@ -368,6 +382,60 @@
     return 'var(--text-disabled, #616161)';
   }
 
+  async function loadOrphans() {
+    const vid = getVaultId();
+    if (!vid) { orphanProviders = []; return; }
+    try {
+      const { hydrated } = await loadProvidersForVault(vid);
+      const live = new Set($vaultStore.providers.map((p) => p.providerId));
+      orphanProviders = hydrated.filter((o) => !live.has(o.provider_id));
+    } catch {
+      orphanProviders = [];
+    }
+  }
+
+  function removeOrphan(o: HydratedProviderConfig) {
+    showConfirm(
+      'Remove saved provider',
+      `Remove the saved credentials for "${o.display_name}" on this device? ` +
+        "This doesn't touch any files on the remote storage.",
+      async () => {
+        await deleteProviderConfig(o.provider_id);
+        await loadOrphans();
+      },
+      true,
+    );
+  }
+
+  async function retryOrphan(o: HydratedProviderConfig) {
+    retryingOrphanId = o.provider_id;
+    try {
+      // Reuse the saved providerId so the orphaned vault_<id>.sc body on the
+      // remote (uploaded by the original failed attempt) gets reused instead
+      // of leaving a second copy behind. hydrateProvider runs init() which
+      // will re-create vault directories if needed, then addProvider re-adds
+      // the manifest entry and triggers a save.
+      const instance = await hydrateProvider(o.config);
+      await addProvider(instance, o.config, o.display_name);
+      byoToast.show(`${o.display_name} reconnected.`, { icon: 'seal' });
+      await loadOrphans();
+    } catch (e: any) {
+      showGlobalError(
+        `Couldn't reconnect ${o.display_name}: ${e?.message ?? e}. ` +
+          'Use Remove and add the provider fresh if the credentials have changed.',
+      );
+    } finally {
+      retryingOrphanId = null;
+    }
+  }
+
+  $effect(() => {
+    // Re-derive orphans whenever the live provider list changes (e.g.
+    // after an orphan retry succeeds and shifts a row into the live list).
+    void $vaultStore.providers;
+    loadOrphans();
+  });
+
   function statusTooltip(p: ProviderMeta): string {
     if (p.status === 'connected' || p.status === 'syncing') return '';
     if (p.status === 'offline_os') return 'Reconnect when your network is back.';
@@ -503,6 +571,35 @@
         {/if}
         {#if $vaultStore.providers.length === 0}
           <p class="group-empty">No providers connected.</p>
+        {/if}
+        {#if orphanProviders.length > 0}
+          <div class="orphans-block">
+            <p class="orphans-help">
+              Saved on this device but not in the vault — usually left over from a connect that didn't finish.
+              Retry to attach, or remove the saved credentials.
+            </p>
+            {#each orphanProviders as o (o.provider_id)}
+              <div class="orphan-row" title="{o.type.toUpperCase()} · saved {formatDate(o.saved_at)}">
+                <span class="prow-icon" aria-hidden="true">{providerIcon(o.type)}</span>
+                <span class="row-label">
+                  {o.display_name}
+                  <span class="orphan-meta">{o.type.toUpperCase()} · saved {formatDate(o.saved_at)}</span>
+                </span>
+                <button
+                  class="orphan-btn"
+                  disabled={retryingOrphanId !== null}
+                  onclick={() => retryOrphan(o)}
+                >
+                  {retryingOrphanId === o.provider_id ? 'Retrying…' : 'Retry'}
+                </button>
+                <button
+                  class="orphan-btn orphan-danger"
+                  disabled={retryingOrphanId !== null}
+                  onclick={() => removeOrphan(o)}
+                >Remove</button>
+              </div>
+            {/each}
+          </div>
         {/if}
         <button class="settings-row" onclick={() => showAddProvider = true}>
           <span class="row-icon"><Icon name="plus" size={16} /></span>
@@ -971,6 +1068,62 @@
     color: var(--accent-text, #5FDB8A);
     padding: 1px 6px;
     margin-left: var(--sp-xs, 4px);
+  }
+
+  /* ── Orphan provider rows ── */
+  .orphans-block {
+    border-top: 1px solid var(--border, #2E2E2E);
+    background: var(--bg-surface, rgba(255,255,255,0.03));
+  }
+  .orphans-help {
+    margin: 0;
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px) 0;
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    color: var(--text-secondary, #999);
+    line-height: 1.45;
+  }
+  .orphan-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm, 8px);
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px);
+    min-height: 48px;
+  }
+  .orphan-row .row-label {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .orphan-meta {
+    font-size: var(--t-label-size, 0.75rem);
+    color: var(--text-disabled, #757575);
+  }
+  .orphan-btn {
+    flex-shrink: 0;
+    border: 1px solid var(--border, #2E2E2E);
+    border-radius: var(--r-input, 12px);
+    background: transparent;
+    color: var(--text-primary, #EDEDED);
+    font-size: var(--t-label-size, 0.75rem);
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+  .orphan-btn:hover:not(:disabled) {
+    background: var(--bg-surface-hover, #2E2E2E);
+  }
+  .orphan-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .orphan-btn.orphan-danger {
+    color: var(--danger, #D64545);
+    border-color: var(--danger, #D64545);
+  }
+  .orphan-btn.orphan-danger:hover:not(:disabled) {
+    background: rgba(214, 69, 69, 0.1);
   }
 
   /* ── Device rows (§18.1) ── */
