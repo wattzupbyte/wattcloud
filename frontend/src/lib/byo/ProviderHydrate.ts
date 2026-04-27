@@ -63,7 +63,13 @@ export async function hydrateProvider(
   config: ProviderConfig,
   creds?: ProviderCredentials,
 ): Promise<StorageProvider> {
-  const instance = createProvider(config.type);
+  // Pass providerId through so the factory's cache slot is keyed by id, not
+  // by the type-only `'<type>:primary'` fallback. Without this the cache
+  // would hand a sibling provider's already-init'd instance back to us, and
+  // our subsequent init(config) call would mutate that shared object's
+  // host/basePath in place — silently swapping the OTHER provider's storage
+  // target. See ProviderFactory.createProvider for the full failure mode.
+  const instance = createProvider(config.type, config.providerId);
 
   // Splice freshly-typed creds back into the config for providers whose
   // init() reads the secret directly from ProviderConfig (WebDAV, S3).

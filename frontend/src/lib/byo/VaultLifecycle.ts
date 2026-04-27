@@ -908,41 +908,13 @@ async function _doSave(): Promise<void> {
     let primaryManifestUploaded = false;
     let manifestUploadedCount = 0;
     let primaryUploadErr: unknown = null;
-    console.info(
-      '[saveVault] phase4 plan: targets=',
-      savePlan.manifest_upload_targets,
-      'primaryId=', _primaryProviderId,
-      'providers map keys=', Array.from(_providers.keys()),
-    );
     for (const pid of savePlan.manifest_upload_targets) {
       const provInst = _providers.get(pid);
-      if (!provInst) {
-        console.warn(
-          '[saveVault] phase4 skip: no provider instance for',
-          pid,
-          '(isPrimary=', pid === _primaryProviderId, ')',
-        );
-        continue;
-      }
-      // Inspect the actual SFTP host + WebSocket readyState behind this
-      // instance — phase 4 is reporting "upload ok 2255" for the primary
-      // even though the relay's primary session shows no write traffic.
-      // If host/readyState don't match what we expect, the upload is
-      // somehow going through a different session.
-      const anyInst = provInst as unknown as { host?: string; ws?: WebSocket | null };
-      const wsState = anyInst.ws ? anyInst.ws.readyState : 'no-ws';
-      console.info(
-        '[saveVault] phase4 upload start: pid=', pid,
-        'isPrimary=', pid === _primaryProviderId,
-        'ref=', provInst.manifestRef(),
-        'instance.host=', anyInst.host,
-        'ws.readyState=', wsState,
-      );
+      if (!provInst) continue;
       try {
         const { version: uploadedManifestVersion } = await provInst.upload(provInst.manifestRef(), 'vault_manifest.sc', manifestFile, {});
         manifestUploadedCount++;
         if (pid === _primaryProviderId) primaryManifestUploaded = true;
-        console.info('[saveVault] phase4 upload ok: pid=', pid, 'version=', uploadedManifestVersion);
         await storeCachedManifest(_vaultId, manifestBlobB64, uploadedManifestVersion, nextVersion).catch(() => {});
       } catch (err) {
         if (pid === _primaryProviderId) {

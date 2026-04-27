@@ -59,9 +59,17 @@ describe('ProviderFactory', () => {
       expect(getProvider('gdrive-personal')).toBe(p2);
     });
 
-    it('falls back to "primary" key when no provider_id given', () => {
-      const p = createProvider('gdrive');
-      expect(getProvider('primary')).toBe(p);
+    it('returns a fresh instance each call when no provider_id given', () => {
+      // Without a providerId there is no safe cache slot — the previous
+      // `'<type>:primary'` fallback let two unrelated callers share the same
+      // instance, so init(newConfig) on one would mutate host/basePath of
+      // the other in place. createProvider now skips the cache entirely
+      // when providerId is omitted, and getProvider('primary') returns
+      // undefined because nothing is registered under that legacy key.
+      const p1 = createProvider('gdrive');
+      const p2 = createProvider('gdrive');
+      expect(p1).not.toBe(p2);
+      expect(getProvider('primary')).toBeUndefined();
     });
   });
 

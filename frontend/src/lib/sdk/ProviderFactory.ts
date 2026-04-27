@@ -25,11 +25,25 @@ const providerInstances = new Map<string, StorageProvider>();
 
 /**
  * Create or return a cached provider instance keyed by provider_id.
- * Falls back to type-only key ('primary') when no provider_id is supplied,
- * preserving backward-compatibility with single-provider vaults.
+ *
+ * Without a providerId we MUST NOT return a cached instance — multiple
+ * callers (AddProviderSheet for new adds, hydrateProvider when the
+ * config lacks a providerId) all share the same `'<type>:primary'` cache
+ * slot and would otherwise hand back the same object. init(newConfig)
+ * mutates that shared instance's host/basePath, so the previous holder
+ * (e.g. the actual primary provider in `_providers[primaryId]`) silently
+ * starts pointing at the new host. Saves then route to the wrong server
+ * and the manifest never lands on the real primary on reload — manifest
+ * uploads "succeed" to the secondary's storage but the primary's
+ * vault_manifest.sc on disk is left stale, making freshly-added
+ * secondaries vanish on every reload.
  */
 export function createProvider(type: ProviderType, providerId?: string): StorageProvider {
-  const key = `${type}:${providerId ?? 'primary'}`;
+  if (!providerId) {
+    // Fresh instance every call — no cache slot to collide on.
+    return makeProvider(type);
+  }
+  const key = `${type}:${providerId}`;
   const existing = providerInstances.get(key);
   if (existing?.isReady()) return existing;
 
