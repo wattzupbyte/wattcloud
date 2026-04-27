@@ -13,7 +13,6 @@
   
   
   // ─────────────────────────────────────────────────────────────────────────
-  import CloudEncBadge from './CloudEncBadge.svelte';
 
   // Phosphor icons (v2.x imports)
   import FolderSimple from 'phosphor-svelte/lib/FolderSimple';
@@ -55,8 +54,6 @@
     showFolderContext?: boolean;
     folderNames?: Record<number, string>;
     viewMode?: 'list' | 'grid';
-    /** BYO mode: show encryption badge on all file thumbnails (§29.1). */
-    showEncryptionBadge?: boolean;
   }
 
   let {
@@ -71,7 +68,6 @@
     showFolderContext = false,
     folderNames = {},
     viewMode = 'list',
-    showEncryptionBadge = false,
     onRefresh,
     onPreview,
     onUpload
@@ -445,9 +441,6 @@ let draggedFileId: number | null = $state(null);
               <File size={20} color="var(--text-primary)" />
             {/if}
           </div>
-          {#if showEncryptionBadge}
-            <span class="enc-badge"><CloudEncBadge size={14} /></span>
-          {/if}
         </div>
 
         {#if renamingFileId === file.id}

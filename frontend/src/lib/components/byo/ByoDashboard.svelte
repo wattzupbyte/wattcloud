@@ -1144,6 +1144,9 @@
     (dataProvider as any).setActiveProviderId?.(id);
     folderStack = [{ id: null, name: 'Home' }];
     loadCurrentFolder().catch(() => {/* surfaced via byoToast inside */});
+    // Favorites are now provider-scoped — reload so the Favorites view
+    // (and the star indicators on file rows) reflect the new provider.
+    loadFavorites().catch(() => {/* non-fatal */});
   });
 
   async function onProviderAdded(e: { providerId?: string }) {
@@ -1605,7 +1608,6 @@
             favoriteFileIds={favoriteFileIds}
             bind:renameFileId
             onRename={handleRenameFile}
-            showEncryptionBadge={true}
             onPreview={(file) => { previewFile = file; previewOpen = !!previewFile; }}
             onUpload={handleFabUpload}
           />
@@ -1760,7 +1762,6 @@
             favoriteFileIds={favoriteFileIds}
             bind:renameFileId
             onRename={handleRenameFile}
-            showEncryptionBadge={true}
             onPreview={(file) => { previewFile = file; previewOpen = !!previewFile; }}
             onUpload={handleFabUpload}
           />

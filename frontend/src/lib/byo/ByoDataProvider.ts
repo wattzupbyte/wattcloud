@@ -525,13 +525,22 @@ export class ByoDataProvider implements DataProvider {
   // ── Favorites ──────────────────────────────────────────────────────────
 
   async getFavorites(): Promise<{ files: FileEntry[]; folders: FolderEntry[] }> {
+    // Scoped to the active provider so navigating into a starred folder
+    // can't dead-end on "empty" because the folder lives in another
+    // provider's vault. Cross-provider browsing is intentionally absent
+    // from the rest of the multi-provider UI; Favorites follows the same
+    // rule for consistency. Switching providers from the drawer reloads
+    // the favorites list (ByoDashboard $effect on activeProviderId).
+    const pid = this.activeProviderId;
     const fileRows = queryRows(
       this.db,
-      "SELECT f.* FROM files f JOIN favorites fav ON fav.item_id = f.id WHERE fav.item_type = 'file'",
+      "SELECT f.* FROM files f JOIN favorites fav ON fav.item_id = f.id WHERE fav.item_type = 'file' AND f.provider_id = ?",
+      [pid],
     );
     const folderRows = queryRows(
       this.db,
-      "SELECT f.* FROM folders f JOIN favorites fav ON fav.item_id = f.id WHERE fav.item_type = 'folder'",
+      "SELECT f.* FROM folders f JOIN favorites fav ON fav.item_id = f.id WHERE fav.item_type = 'folder' AND f.provider_id = ?",
+      [pid],
     );
     const files = await this.decryptFileRows(fileRows);
     const folders = await this.decryptFolderRows(folderRows);
