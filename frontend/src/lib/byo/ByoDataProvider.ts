@@ -1114,8 +1114,12 @@ export class ByoDataProvider implements DataProvider {
         text = await resp.text();
         size = tapped.bytes();
       } else {
-        // Fallback: drain first, then POST as a Uint8Array.
-        console.warn('[share] browser lacks streaming request bodies — buffering ciphertext');
+        // Fallback: drain first, then POST as a Uint8Array. Firefox gates
+        // fetch upload streams behind `network.fetch.upload_streams` —
+        // ShareLinkSheet surfaces a one-time hint to the user.
+        console.warn(
+          '[share] browser lacks streaming request bodies — buffering ciphertext (peak heap ≈ ciphertext size)',
+        );
         const buf = await drainToBuffer(fullBody);
         const resp = await fetch('/relay/share/b2', {
           method: 'POST',
@@ -1423,7 +1427,10 @@ export class ByoDataProvider implements DataProvider {
             }
             size = tapped.bytes();
           } else {
-            console.warn('[share] browser lacks streaming request bodies — buffering ciphertext');
+            // See ByoDataProvider line ~1118 — Firefox-default fallback.
+            console.warn(
+              '[share] browser lacks streaming request bodies — buffering ciphertext (peak heap ≈ ciphertext size)',
+            );
             const buf = await drainToBuffer(fullBody);
             const resp = await fetch(blobUrl, {
               method: 'POST',

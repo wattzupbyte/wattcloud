@@ -5,11 +5,20 @@
  * materialise the whole ciphertext in JS heap before the upload starts.
  *
  * Two browser paths:
- *   1. `fetch(url, { body: readable, duplex: 'half' })` — supported on
- *      Chrome 105+, Firefox 105+, Safari 17.4+. True streaming POST.
- *   2. Buffer-and-forward fallback — for older browsers. Preserves the
- *      previous behaviour but emits a diagnostic warn so we can see in
- *      telemetry how many clients still hit it.
+ *   1. `fetch(url, { body: readable, duplex: 'half' })` — true streaming
+ *      POST. Default-on in Chrome 105+ and Safari 17.4+. Firefox has the
+ *      implementation but gates it behind the `network.fetch.upload_streams`
+ *      pref (off by default through current stable releases).
+ *   2. Buffer-and-forward fallback — drains the V7 ciphertext into a
+ *      contiguous Uint8Array first, then POSTs that. Correctness-equivalent
+ *      to path 1 (same wire bytes); cost is JS heap proportional to the
+ *      share size during the upload window. ShareLinkSheet shows a
+ *      one-time hint when this path will fire so the user knows what to
+ *      expect (and how to flip the Firefox pref if they want streaming).
+ *
+ * Regular file uploads to a storage provider (StorageProvider.upload_stream)
+ * never hit this code path — they chunk through WASM with bounded per-POST
+ * bodies, so heap stays at one chunk regardless of file size.
  */
 
 /**

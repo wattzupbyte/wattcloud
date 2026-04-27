@@ -27,6 +27,7 @@
   import type { DataProvider, FileEntry, FolderEntry, CollectionEntry, ShareEntry } from '../../byo/DataProvider';
   import { SHARE_EXPLAINER_ITEMS, SHARE_EXPLAINER_HEADER } from '../../byo/copy/share-explainer';
   import { isShareLimitError } from '../../byo/shareLimitCopy';
+  import { supportsRequestStreams } from '../../byo/shareUploadStreaming';
   import ShieldCheck from 'phosphor-svelte/lib/ShieldCheck';
   import PasswordInput from '../common/PasswordInput.svelte';
   import Copy from 'phosphor-svelte/lib/Copy';
@@ -34,7 +35,9 @@
   import CaretDown from 'phosphor-svelte/lib/CaretDown';
   import CaretUp from 'phosphor-svelte/lib/CaretUp';
   import QrCode from 'phosphor-svelte/lib/QrCode';
+  import Warning from 'phosphor-svelte/lib/Warning';
   import QrDisplay from './QrDisplay.svelte';
+  import ConfirmModal from '../ConfirmModal.svelte';
 /**
    * One of four mutually exclusive sources:
    *   - { kind: 'file', file }              — single-blob share
@@ -85,6 +88,51 @@
   let showExplainer = $state(false);
   let showQr = $state(false);
 
+  // ── Buffer-fallback hint (Firefox-default browsers) ──────────────────────────
+  // The share upload path uses fetch() with a ReadableStream body to avoid
+  // materialising multi-GB ciphertext in JS heap. Firefox gates that feature
+  // behind `network.fetch.upload_streams`, so by default it falls back to
+  // buffer-and-forward. Surface a one-time hint before the first share so the
+  // user knows about the heap cost and can flip the pref if they want.
+  // Regular file uploads (StorageProvider.upload_stream) chunk through WASM
+  // with bounded per-POST bodies, so this prompt does NOT apply there.
+  const STREAMING_HINT_KEY = 'sc-byo-streaming-upload-hint-dismissed';
+  let streamingHintOpen = $state(false);
+  let streamingHintDontShowAgain = $state(false);
+  let streamingHintFlagCopied = $state(false);
+  let streamingHintAboutCopied = $state(false);
+  // Cache the capability check so the hint decision is consistent within
+  // this sheet's lifetime even though `supportsRequestStreams` is itself
+  // memoised.
+  const browserStreams = supportsRequestStreams();
+  function streamingHintDismissed(): boolean {
+    if (typeof localStorage === 'undefined') return false;
+    return localStorage.getItem(STREAMING_HINT_KEY) === '1';
+  }
+  async function copyToClipboard(text: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+
+  async function handleStreamingHintConfirm() {
+    if (streamingHintDontShowAgain && typeof localStorage !== 'undefined') {
+      localStorage.setItem(STREAMING_HINT_KEY, '1');
+    }
+    streamingHintOpen = false;
+    await runGenerate();
+  }
+
+  function handleStreamingHintCancel() {
+    if (streamingHintDontShowAgain && typeof localStorage !== 'undefined') {
+      localStorage.setItem(STREAMING_HINT_KEY, '1');
+    }
+    streamingHintOpen = false;
+  }
 
   function passwordStrength(p: string): 0 | 1 | 2 | 3 | 4 {
     if (!p) return 0;
@@ -117,6 +165,21 @@
         return;
       }
     }
+    // Buffer-fallback hint: pause before the actual upload so the user can
+    // see the memory tradeoff and flip the Firefox pref if they want. The
+    // hint only fires when (a) the browser doesn't support fetch upload
+    // streams, AND (b) the user hasn't dismissed it permanently.
+    if (!browserStreams && !streamingHintDismissed()) {
+      streamingHintDontShowAgain = false;
+      streamingHintFlagCopied = false;
+      streamingHintAboutCopied = false;
+      streamingHintOpen = true;
+      return;
+    }
+    await runGenerate();
+  }
+
+  async function runGenerate() {
     generating = true;
     progressDone = 0;
     progressTotal = 0;
@@ -466,6 +529,89 @@
   </div>
 </div>
 
+<ConfirmModal
+  isOpen={streamingHintOpen}
+  title="Streaming uploads are off in this browser"
+  confirmText="Continue anyway"
+  confirmClass="btn-primary"
+  onConfirm={handleStreamingHintConfirm}
+  onCancel={handleStreamingHintCancel}
+>
+  <div class="streaming-hint">
+    <div class="streaming-hint-callout" role="note">
+      <span class="streaming-hint-icon" aria-hidden="true">
+        <Warning size={18} weight="regular" />
+      </span>
+      <p>
+        The share will work, but the encrypted ciphertext sits in this tab's
+        memory while it uploads. For shares of a few hundred MB or less, you
+        won't notice. Larger shares may use significant RAM until the
+        upload finishes.
+      </p>
+    </div>
+
+    <details class="streaming-hint-details">
+      <summary>Make Firefox stream uploads instead</summary>
+      <p class="streaming-hint-explainer">
+        Firefox supports streaming uploads but ships with the feature off
+        by default. Browsers can't open <code>about:</code> pages from a
+        regular tab — copy the values below and paste them in:
+      </p>
+      <ol class="streaming-hint-steps">
+        <li>
+          <span class="step-text">Open a new tab and paste:</span>
+          <button
+            type="button"
+            class="streaming-hint-copy"
+            onclick={async () => {
+              streamingHintAboutCopied = await copyToClipboard('about:config');
+              if (streamingHintAboutCopied) {
+                setTimeout(() => { streamingHintAboutCopied = false; }, 2000);
+              }
+            }}
+          >
+            <code>about:config</code>
+            <Copy size={14} weight="regular" />
+            {#if streamingHintAboutCopied}
+              <span class="streaming-hint-copied">Copied</span>
+            {/if}
+          </button>
+        </li>
+        <li>
+          Accept the warning, then search for:
+          <button
+            type="button"
+            class="streaming-hint-copy"
+            onclick={async () => {
+              streamingHintFlagCopied = await copyToClipboard('network.fetch.upload_streams');
+              if (streamingHintFlagCopied) {
+                setTimeout(() => { streamingHintFlagCopied = false; }, 2000);
+              }
+            }}
+          >
+            <code>network.fetch.upload_streams</code>
+            <Copy size={14} weight="regular" />
+            {#if streamingHintFlagCopied}
+              <span class="streaming-hint-copied">Copied</span>
+            {/if}
+          </button>
+        </li>
+        <li>Toggle the value to <strong>true</strong>.</li>
+        <li>Reload this page and create your share.</li>
+      </ol>
+      <p class="streaming-hint-note">
+        Other browsers (Chrome, Edge, Safari 17.4+) ship streaming on by
+        default — no flag needed.
+      </p>
+    </details>
+
+    <label class="streaming-hint-dontshow">
+      <input type="checkbox" bind:checked={streamingHintDontShowAgain} />
+      <span>Don't show this again on this device</span>
+    </label>
+  </div>
+</ConfirmModal>
+
 <style>
   .overlay {
     position: fixed;
@@ -709,4 +855,98 @@
     flex-shrink: 0;
     margin-top: 2px;
   }
+
+  /* ── Streaming-fallback hint modal ─────────────────────────────────── */
+  .streaming-hint {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-md, 16px);
+    color: var(--text-primary, #EDEDED);
+    line-height: 1.5;
+    font-size: var(--t-body-sm-size, 0.8125rem);
+  }
+  .streaming-hint p { margin: 0; }
+  .streaming-hint-callout {
+    display: flex;
+    gap: var(--sp-sm, 8px);
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px);
+    background: var(--accent-warm-muted, #3D2F10);
+    border: 1px solid color-mix(in srgb, var(--accent-warm, #E0A320) 35%, transparent);
+    border-radius: var(--r-input, 12px);
+    color: var(--accent-warm, #E0A320);
+  }
+  .streaming-hint-callout p {
+    color: var(--text-primary, #EDEDED);
+    flex: 1;
+  }
+  .streaming-hint-icon {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .streaming-hint-details > summary {
+    cursor: pointer;
+    color: var(--accent-text, #5FDB8A);
+    font-weight: 500;
+    list-style: none;
+    user-select: none;
+  }
+  .streaming-hint-details > summary::-webkit-details-marker { display: none; }
+  .streaming-hint-explainer {
+    margin: var(--sp-sm, 8px) 0 var(--sp-sm, 8px) !important;
+    color: var(--text-secondary, #999);
+  }
+  .streaming-hint-steps {
+    margin: 0;
+    padding-left: var(--sp-md, 16px);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-sm, 8px);
+    color: var(--text-primary, #EDEDED);
+  }
+  .streaming-hint-steps li { line-height: 1.6; }
+  .streaming-hint-steps code {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.8125rem;
+    background: var(--bg-surface, #1C1C1C);
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+  .streaming-hint-copy {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    margin-left: 4px;
+    background: var(--bg-surface, #1C1C1C);
+    border: 1px solid var(--border, #2E2E2E);
+    border-radius: 6px;
+    color: var(--text-primary, #EDEDED);
+    cursor: pointer;
+    font-size: inherit;
+    line-height: 1;
+    vertical-align: baseline;
+  }
+  .streaming-hint-copy:hover { background: var(--bg-surface-hover, #2E2E2E); }
+  .streaming-hint-copy code { background: transparent; padding: 0; }
+  .streaming-hint-copied {
+    color: var(--accent-text, #5FDB8A);
+    font-size: 0.6875rem;
+    margin-left: 4px;
+  }
+  .streaming-hint-note {
+    margin: var(--sp-sm, 8px) 0 0 !important;
+    color: var(--text-disabled, #616161);
+    font-size: 0.75rem;
+  }
+  .streaming-hint-dontshow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-secondary, #999);
+    font-size: 0.8125rem;
+    cursor: pointer;
+  }
+  .streaming-hint-dontshow input { cursor: pointer; }
 </style>
