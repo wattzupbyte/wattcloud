@@ -951,6 +951,9 @@
       shareCount={dataProvider ? $byoShareStats.count : null}
       shareBytes={dataProvider ? $byoShareStats.bytes : null}
       relayHeadroomFreeBytes={$byoRelayHeadroom?.freeBytes ?? null}
+      providers={$vaultStore.providers}
+      activeProviderId={$vaultStore.activeProviderId ?? ''}
+      onSelectProvider={(providerId) => vaultStore.setActiveProviderId(providerId)}
       onNavigate={handleDrawerNavigate}
       onLockVault={handleLock}
       onSharesClick={openSharesSettings}

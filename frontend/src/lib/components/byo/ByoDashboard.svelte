@@ -67,7 +67,6 @@
   import ByoUploadQueue from './ByoUploadQueue.svelte';
   import ByoDownloadQueue from './ByoDownloadQueue.svelte';
   import ShareLinkSheet from './ShareLinkSheet.svelte';
-  import ProviderContextSheet from './ProviderContextSheet.svelte';
   import ByoPhotoTimeline from './ByoPhotoTimeline.svelte';
   import ByoFileDetails from './ByoFileDetails.svelte';
   import ProviderMoveSheet from './ProviderMoveSheet.svelte';
@@ -1123,56 +1122,37 @@
     }
   }
 
-  // ── Provider switcher (P9) ────────────────────────────────────────────────
+  // ── Provider switching ─────────────────────────────────────────────────────
+  // Switching now happens through the Drawer's Providers section (Drawer.svelte),
+  // which writes to vaultStore.activeProviderId. We react reactively below to
+  // reset the folder stack and reload — same effect the old chip handler had,
+  // just sourced from store changes instead of a chip click.
 
   let showAddProvider = $state(false);
 
-  // Provider context sheet (long-press / right-click on chip)
-  let contextSheetProvider: ProviderMeta | null = $state(null);
-  let longPressTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function openContextSheet(p: ProviderMeta) {
-    contextSheetProvider = p;
-  }
-
-  function onChipContextMenu(e: MouseEvent, p: ProviderMeta) {
-    e.preventDefault();
-    openContextSheet(p);
-  }
-
-  function onChipPointerDown(e: PointerEvent, p: ProviderMeta) {
-    if (e.button !== 0) return;
-    longPressTimer = setTimeout(() => { openContextSheet(p); }, 600);
-  }
-
-  function onChipPointerUp() {
-    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-  }
+  let _activeIdLastSeen: string | null = null;
+  $effect(() => {
+    const id = $vaultStore.activeProviderId;
+    if (_activeIdLastSeen === null) {
+      // First read after mount — onMount's loadCurrentFolder() handles the
+      // initial load, so we just record the baseline.
+      _activeIdLastSeen = id;
+      return;
+    }
+    if (id === _activeIdLastSeen) return;
+    _activeIdLastSeen = id;
+    (dataProvider as any).setActiveProviderId?.(id);
+    folderStack = [{ id: null, name: 'Home' }];
+    loadCurrentFolder().catch(() => {/* surfaced via byoToast inside */});
+  });
 
   async function onProviderAdded(e: { providerId?: string }) {
     showAddProvider = false;
     if (e.providerId) {
+      // The $effect above will pick up the activeProviderId change and
+      // reload the folder list automatically.
       vaultStore.setActiveProviderId(e.providerId);
-      (dataProvider as any).setActiveProviderId?.(e.providerId);
-      folderStack = [{ id: null, name: 'Home' }];
-      await loadCurrentFolder();
     }
-  }
-
-  async function switchProvider(meta: ProviderMeta) {
-    if (meta.providerId === $vaultStore.activeProviderId) return;
-    vaultStore.setActiveProviderId(meta.providerId);
-    (dataProvider as any).setActiveProviderId?.(meta.providerId);
-    // Reset folder navigation and reload
-    folderStack = [{ id: null, name: 'Home' }];
-    await loadCurrentFolder();
-  }
-
-  function providerIcon(type: string): string {
-    const icons: Record<string, string> = {
-      gdrive: 'G', dropbox: 'D', onedrive: 'O', webdav: 'W', sftp: 'S', box: 'B', pcloud: 'P', s3: 'S3',
-    };
-    return icons[type] ?? '?';
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -1352,51 +1332,18 @@
     }}
   />
 
-  <!-- Provider-switcher row — only rendered when the user actually has
-       2+ providers. Saved/Saving/Unsaved/Offline pills moved into
-       DashboardHeader so single-provider screens never shift layout. -->
-  {#if $vaultStore.providers.length > 1 || offlineProviderCount > 0}
+  <!-- Multi-provider status pill — shown when one or more secondary
+       providers are offline, regardless of which provider is active.
+       The provider switcher itself moved into the Drawer (above the
+       Storage section); this row exists only for the offline notice. -->
+  {#if offlineProviderCount > 0}
   <div class="status-bar">
-    {#if offlineProviderCount > 0}
-      <div class="status-pills">
-        <span class="status-pill status-offline offline-global-pill">
-          <CloudSlash size={12} />
-          {offlineProviderCount === 1 ? '1 provider offline' : `${offlineProviderCount} providers offline`}
-        </span>
-      </div>
-    {/if}
-
-    {#if $vaultStore.providers.length > 1}
-      <!-- Provider switcher: chips show only the provider name; status
-           is conveyed by the colored border + status dot (and the title
-           tooltip for sighted hover). Adding providers happens via
-           Settings → Add another provider, not from this row. -->
-      <div class="provider-switcher" role="tablist" aria-label="Storage providers">
-        {#each $vaultStore.providers as p (p.providerId)}
-          <button
-            class="provider-chip"
-            class:active={p.providerId === $vaultStore.activeProviderId}
-            class:chip-is-offline={p.status === 'offline' || p.status === 'error' || p.status === 'unauthorized'}
-            role="tab"
-            aria-selected={p.providerId === $vaultStore.activeProviderId}
-            title="{p.displayName}{p.status === 'unauthorized' ? ' · Token expired' : (p.status === 'offline' || p.status === 'error') ? ' · Offline' : ''}"
-            onclick={() => switchProvider(p)}
-            oncontextmenu={(e) => onChipContextMenu(e, p)}
-            onpointerdown={(e) => onChipPointerDown(e, p)}
-            onpointerup={onChipPointerUp}
-            onpointerleave={onChipPointerUp}
-          >
-            <span class="provider-chip-icon" aria-hidden="true">{providerIcon(p.type)}</span>
-            <span class="provider-chip-name">{p.displayName}</span>
-            {#if p.status === 'syncing'}
-              <span class="chip-status chip-syncing" aria-label="Syncing"></span>
-            {:else if p.status === 'offline' || p.status === 'error' || p.status === 'unauthorized'}
-              <span class="chip-status chip-offline" aria-label={p.status === 'unauthorized' ? 'Token expired' : 'Offline'}></span>
-            {/if}
-          </button>
-        {/each}
-      </div>
-    {/if}
+    <div class="status-pills">
+      <span class="status-pill status-offline offline-global-pill">
+        <CloudSlash size={12} />
+        {offlineProviderCount === 1 ? '1 provider offline' : `${offlineProviderCount} providers offline`}
+      </span>
+    </div>
   </div>
   {/if}
 
@@ -1956,15 +1903,6 @@
     />
   {/if}
 
-  {#if contextSheetProvider}
-    <ProviderContextSheet
-      provider={contextSheetProvider}
-      isOnlyProvider={$vaultStore.providers.length <= 1}
-      onClose={() => contextSheetProvider = null}
-      onChange={() => { contextSheetProvider = null; }}
-    />
-  {/if}
-
   <!-- Add-to-collection picker -->
   {#if showAddToCollection}
     <div class="atc-overlay" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) showAddToCollection = false; }} onkeydown={() => {}}>
@@ -2214,27 +2152,6 @@
     flex: 1;
   }
 
-  .status-bar .provider-switcher {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    flex-shrink: 0;
-  }
-
-  .status-bar .provider-chip {
-    /* Compact chip in the status bar — still keeps tap target ≥ 36dp. */
-    min-height: 36px;
-    padding: 0 var(--sp-sm, 8px);
-    font-size: var(--t-label-size, 0.75rem);
-  }
-
-  .status-bar .provider-chip-name {
-    max-width: 80px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .status-pill {
     /* §31.8 performance budget: content-layer pills shouldn't blur.
        Opaque surface tone keeps GPU headroom for chrome. */
@@ -2253,112 +2170,10 @@
   .status-dirty { color: var(--accent-warm, #E0A320); }
   .status-saved { color: var(--accent-text, #5FDB8A); }
 
-  /* ── Provider switcher (P9) ─────────────────────────────────────────────── */
-
-  .provider-switcher {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-xs, 4px);
-    padding: var(--sp-xs, 4px) var(--sp-md, 16px);
-    overflow-x: auto;
-    scrollbar-width: none;
-    /* Push slightly past the right edge so the last chip doesn't visually
-       collide with the scrollbar gutter on platforms that show one. */
-    scroll-padding-right: var(--sp-md, 16px);
-  }
-
-  .provider-switcher::-webkit-scrollbar { display: none; }
-
-  .provider-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    /* Tighter horizontal padding on mobile so 2–3 chips fit in a typical
-       toolbar without horizontal scroll. The desktop @media bumps it back. */
-    padding: 0 var(--sp-sm, 8px) 0 var(--sp-xs, 4px);
-    /* Slight reduction from 44dp — 36dp tap target with a 8px wrapper hit
-       area still meets WCAG 2.5.5 minimum (24px) and frees vertical room
-       in the toolbar. The chip is not the only path to switch providers
-       (drawer also exposes them). */
-    min-height: 36px;
-    border-radius: var(--r-pill, 9999px);
-    background: var(--bg-surface-raised, #1E1E1E);
-    border: 1px solid var(--border, #2E2E2E);
-    color: var(--text-secondary, #999);
-    font-size: var(--t-body-sm-size, 0.8125rem);
-    white-space: nowrap;
-    cursor: pointer;
-    transition: background 150ms, color 150ms, border-color 150ms;
-  }
-
-  @media (min-width: 600px) {
-    .provider-chip { padding: 0 var(--sp-md, 16px); min-height: 40px; }
-  }
-
-  .provider-chip:hover {
-    background: var(--surface-2, #222);
-    color: var(--text-primary, #ededed);
-  }
-
-  .provider-chip.active {
-    background: var(--accent-muted, rgba(46, 184, 96, 0.15));
-    border-color: var(--accent, #2EB860);
-    color: var(--accent-text, #5FDB8A);
-  }
-
-  .provider-chip-icon {
-    font-size: 0.7rem;
-    font-weight: 700;
-    width: 22px;
-    height: 22px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 999px;
-    background: var(--glass-bg, rgba(255,255,255,0.06));
-    flex-shrink: 0;
-  }
-
-  .provider-chip-name {
-    max-width: 12ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  @media (min-width: 600px) {
-    .provider-chip-name { max-width: 18ch; }
-  }
-
-  .chip-status {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .chip-syncing {
-    background: var(--accent, #2EB860);
-    animation: pulse 1.2s ease-in-out infinite;
-  }
-
-  .chip-error { background: var(--danger, #D64545); }
-  .chip-offline { background: var(--danger, #D64545); }
-
-  .chip-is-offline {
-    border-color: var(--danger, #D64545);
-    color: var(--danger, #D64545);
-  }
-
-  .chip-is-offline .provider-chip-icon {
-    background: color-mix(in srgb, var(--danger, #D64545) 20%, transparent);
-  }
-
+  /* Provider chips moved to the Drawer's Providers section. The only
+     leftover from this row is the offline pill below. */
   .offline-global-pill {
     margin-left: auto;
-  }
-
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.35; }
   }
 
   /* ── End provider switcher ──────────────────────────────────────────────── */

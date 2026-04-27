@@ -9,6 +9,16 @@
   import SignOut from 'phosphor-svelte/lib/SignOut';
   import LinkIcon from 'phosphor-svelte/lib/Link';
   import CloudBadge from './CloudBadge.svelte';
+
+  /** Minimal shape of a provider entry for the switcher — kept loose so this
+   *  component doesn't reach into byo store types from the shared Drawer. */
+  interface DrawerProviderMeta {
+    providerId: string;
+    displayName: string;
+    isPrimary?: boolean;
+    status?: 'connected' | 'syncing' | 'offline' | 'offline_os' | 'error' | 'unauthorized' | string;
+  }
+
 type NavId = 'files' | 'photos' | 'favorites' | 'settings';
 
   const navLinks: { id: NavId; label: string; icon: any }[] = [
@@ -76,6 +86,11 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     shareBytes?: number | null;
     /** Free bytes on the relay's share filesystem. `null` hides the headroom line. */
     relayHeadroomFreeBytes?: number | null;
+    /** All non-tombstoned providers for the open vault, manifest order.
+     *  Empty / single-element list hides the switcher entirely. */
+    providers?: DrawerProviderMeta[];
+    /** providerId currently driving the dashboard. */
+    activeProviderId?: string;
     onClose?: (() => void) | undefined;
     collapsed?: boolean;
     showLogout?: boolean;
@@ -84,6 +99,7 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
   onLogout?: (...args: any[]) => void;
   onLockVault?: (...args: any[]) => void;
   onSharesClick?: (...args: any[]) => void;
+  onSelectProvider?: (providerId: string) => void;
   }
 
   let {
@@ -96,6 +112,8 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     shareCount = null,
     shareBytes = null,
     relayHeadroomFreeBytes = null,
+    providers = [],
+    activeProviderId = '',
     onClose = undefined,
     collapsed = $bindable(false),
     showLogout = true,
@@ -103,7 +121,8 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     onAdmin,
     onLogout,
     onLockVault,
-    onSharesClick
+    onSharesClick,
+    onSelectProvider
   }: Props = $props();
 
   export function toggleCollapse() {
@@ -118,6 +137,29 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
       );
     }
   });
+
+  /** Map provider_id → "P" (primary) or sequential 1, 2, … (secondaries by manifest order).
+   *  Stable per render so collapsed labels match the per-provider tooltip. */
+  let providerLabels = $derived.by(() => {
+    const out = new Map<string, string>();
+    let n = 0;
+    for (const p of providers) {
+      if (p.isPrimary) out.set(p.providerId, 'P');
+      else out.set(p.providerId, String(++n));
+    }
+    return out;
+  });
+  function providerStatusColor(s?: string): string {
+    if (s === 'connected') return 'var(--accent, #2EB860)';
+    if (s === 'syncing') return 'var(--accent-warm, #E0A320)';
+    if (s === 'error' || s === 'unauthorized') return 'var(--danger, #D64545)';
+    return 'var(--text-disabled, #757575)';
+  }
+  function selectProvider(id: string) {
+    if (id === activeProviderId) return;
+    onSelectProvider?.(id);
+    close();
+  }
 
   let storagePercent = $derived(storageQuotaBytes > 0
     ? Math.min(100, (storageUsedBytes / storageQuotaBytes) * 100)
@@ -177,6 +219,42 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
           <Shield size={20} weight="regular" />
           {#if !collapsed}Admin Settings{/if}
         </button>
+      </div>
+    {/if}
+
+    <!-- Providers — switcher for the active vault's storage backends.
+         Shown above storage so the active backend is visually anchored
+         next to the usage figure. Hidden when ≤1 provider (nothing to
+         switch). -->
+    {#if providers.length > 1}
+      <div class="drawer-section drawer-providers">
+        {#if !collapsed}
+          <span class="drawer-section-title">Providers</span>
+        {/if}
+        <div class="providers-list" class:providers-collapsed={collapsed}>
+          {#each providers as p (p.providerId)}
+            <button
+              class="provider-row"
+              class:active={p.providerId === activeProviderId}
+              type="button"
+              title={collapsed ? p.displayName : ''}
+              aria-label="Switch to {p.displayName}"
+              aria-pressed={p.providerId === activeProviderId}
+              onclick={() => selectProvider(p.providerId)}
+            >
+              {#if collapsed}
+                <span class="provider-tag">{providerLabels.get(p.providerId) ?? '?'}</span>
+                {#if p.status && p.status !== 'connected'}
+                  <span class="provider-dot" style:background-color={providerStatusColor(p.status)} aria-hidden="true"></span>
+                {/if}
+              {:else}
+                <span class="provider-tag">{providerLabels.get(p.providerId) ?? '?'}</span>
+                <span class="provider-name">{p.displayName}</span>
+                <span class="provider-dot" style:background-color={providerStatusColor(p.status)} aria-hidden="true"></span>
+              {/if}
+            </button>
+          {/each}
+        </div>
       </div>
     {/if}
 
@@ -296,6 +374,29 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
         </div>
       {/if}
 
+      <!-- Providers (mobile overlay) — same layout as desktop expanded. -->
+      {#if providers.length > 1}
+        <div class="drawer-section drawer-providers">
+          <span class="drawer-section-title">Providers</span>
+          <div class="providers-list">
+            {#each providers as p (p.providerId)}
+              <button
+                class="provider-row"
+                class:active={p.providerId === activeProviderId}
+                type="button"
+                aria-label="Switch to {p.displayName}"
+                aria-pressed={p.providerId === activeProviderId}
+                onclick={() => selectProvider(p.providerId)}
+              >
+                <span class="provider-tag">{providerLabels.get(p.providerId) ?? '?'}</span>
+                <span class="provider-name">{p.displayName}</span>
+                <span class="provider-dot" style:background-color={providerStatusColor(p.status)} aria-hidden="true"></span>
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
       <!-- Storage consumption (mobile overlay) — always rendered so the
            section is present even on a fresh vault. -->
       <div class="drawer-section">
@@ -411,7 +512,8 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     justify-content: center;
   }
 
-  .drawer-storage-title {
+  .drawer-storage-title,
+  .drawer-section-title {
     font-size: var(--t-label-size, 0.75rem);
     font-weight: 500;
     text-transform: uppercase;
@@ -422,6 +524,84 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
   .drawer-storage-label {
     font-size: var(--t-body-sm-size);
     color: var(--text-primary);
+  }
+
+  /* ── Provider switcher inside drawer ───────────────────────────── */
+  .drawer-providers {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-xs, 4px);
+  }
+  .providers-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .providers-list.providers-collapsed {
+    align-items: center;
+  }
+  .provider-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm, 8px);
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid transparent;
+    border-radius: var(--r-input, 12px);
+    background: transparent;
+    color: var(--text-primary, #EDEDED);
+    font-size: var(--t-body-sm-size, 0.875rem);
+    cursor: pointer;
+    text-align: left;
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+  .provider-row:hover {
+    background: var(--hover-bg, rgba(255, 255, 255, 0.04));
+  }
+  .provider-row.active {
+    background: var(--accent-muted, #1B3627);
+    border-color: var(--accent, #2EB860);
+  }
+  .providers-list.providers-collapsed .provider-row {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    justify-content: center;
+    position: relative;
+  }
+  .provider-tag {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    background: var(--bg-surface, rgba(255,255,255,0.06));
+    color: var(--text-secondary, #999);
+    font-size: 0.6875rem;
+    font-weight: 700;
+  }
+  .provider-row.active .provider-tag {
+    background: var(--accent, #2EB860);
+    color: #0F0F0F;
+  }
+  .provider-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .provider-dot {
+    flex-shrink: 0;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+  }
+  .providers-list.providers-collapsed .provider-dot {
+    position: absolute;
+    top: 4px;
+    right: 4px;
   }
 
   .drawer-shares {
