@@ -442,9 +442,26 @@ export async function unlockVault(
   }
 
   const secondaryFetches = otherProviders.map(async (entry) => {
+    // Wrap the cache fallback in a helper so both "init returned null"
+    // and "live download failed" paths fall back consistently. Pre-fix,
+    // a null return from init silently dropped the secondary entirely —
+    // its body wasn't even loaded from the IDB cache, so its files
+    // disappeared on every reload where the secondary couldn't connect.
+    const fallbackToCache = async () => {
+      const cached = await loadCachedBody(vaultIdHex, entry.provider_id).catch(() => null);
+      if (cached) cachedProviderIds.push(entry.provider_id);
+    };
+    let secondaryProvider: StorageProvider | null = null;
     try {
-      const secondaryProvider = await initializeProviderFromConfig(entry);
-      if (!secondaryProvider) return;
+      secondaryProvider = await initializeProviderFromConfig(entry);
+    } catch {
+      /* init exceptions are already logged inside initializeProviderFromConfig */
+    }
+    if (!secondaryProvider) {
+      await fallbackToCache();
+      return;
+    }
+    try {
       const { data: secondaryManifestBytes, version: secManifestVersion } =
         await secondaryProvider.download(secondaryProvider.manifestRef());
       const secManifestBlob = secondaryManifestBytes.slice(VAULT_HEADER_SIZE);
@@ -462,12 +479,12 @@ export async function unlockVault(
         secManifestVersion,
         secManifest.manifest_version,
       ).catch(() => {});
-    } catch {
-      // Provider unreachable — check IDB cache.
-      const cached = await loadCachedBody(vaultIdHex, entry.provider_id).catch(() => null);
-      if (cached) {
-        cachedProviderIds.push(entry.provider_id);
-      }
+    } catch (err) {
+      console.warn(
+        `[VaultLifecycle] secondary manifest fetch failed for ${entry.provider_id}:`,
+        err,
+      );
+      await fallbackToCache();
     }
   });
   await Promise.allSettled(secondaryFetches);
@@ -1479,6 +1496,9 @@ function findPrimaryEntry(manifest: ManifestJson): ManifestProviderEntry | undef
  * an empty SftpProvider and init() throws "credHandle + credUsername must be
  * set before init()" — which is why pre-fix unlocks left every SFTP
  * secondary "offline" until the user manually re-entered creds).
+ *
+ * Errors are logged to the console so connection failures don't silently
+ * vanish — the unlock UI shows the provider as "offline" but no clue why.
  */
 async function initializeProviderFromConfig(
   entry: ManifestProviderEntry,
@@ -1487,7 +1507,11 @@ async function initializeProviderFromConfig(
     const config = JSON.parse(entry.config_json) as ProviderConfig;
     const { hydrateProvider } = await import('./ProviderHydrate');
     return await hydrateProvider({ ...config, providerId: entry.provider_id });
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[VaultLifecycle] initializeProviderFromConfig failed for ${entry.provider_id} (${entry.provider_type}):`,
+      err,
+    );
     return null;
   }
 }
