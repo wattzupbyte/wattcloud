@@ -1148,6 +1148,87 @@ export function getVaultSessionId(): number | null { return _vaultSessionId; }
 export function getVaultId(): string { return _vaultId; }
 
 /**
+ * Pull the primary provider's vault body fresh from the backend, decrypt
+ * it with the current vault session, and union its `vault_meta.enrolled_devices`
+ * with the local `_db`. Lets the Settings → Devices view pick up entries
+ * other devices added (e.g. after a remote enrollment) without a full
+ * lock+unlock cycle. Best-effort: on any failure (no live primary, decrypt
+ * fails, malformed JSON) we log and leave the local `_db` untouched.
+ *
+ * Returns true iff the local list changed (caller can trigger a re-render).
+ */
+export async function refreshEnrolledDevicesFromRemote(): Promise<boolean> {
+  if (!_db || _vaultSessionId === null || !_provider || !_primaryProviderId) return false;
+
+  let remoteDb: import('sql.js').Database | null = null;
+  try {
+    const bodyRef = _provider.bodyRef(_primaryProviderId);
+    const { data: bodyBytes } = await _provider.download(bodyRef);
+    const { data: sqliteB64 } = await byoWorker.Worker.byoVaultBodyDecrypt(
+      _vaultSessionId,
+      _primaryProviderId,
+      bytesToBase64(bodyBytes),
+    );
+    const sqliteBytes = base64ToBytes(sqliteB64);
+
+    const SQL = await loadSqlJs();
+    remoteDb = new SQL.Database(sqliteBytes);
+
+    const remoteRows = queryRows(remoteDb, "SELECT value FROM vault_meta WHERE key = 'enrolled_devices'");
+    if (remoteRows.length === 0) return false;
+
+    type Entry = { device_id: string; device_name: string; enrolled_at: string };
+    let remoteList: Entry[];
+    try {
+      remoteList = JSON.parse(remoteRows[0]['value'] as string) as Entry[];
+    } catch {
+      return false;
+    }
+
+    const localRows = queryRows(_db, "SELECT value FROM vault_meta WHERE key = 'enrolled_devices'");
+    let localList: Entry[] = [];
+    if (localRows.length > 0) {
+      try { localList = JSON.parse(localRows[0]['value'] as string) as Entry[]; }
+      catch { localList = []; }
+    }
+
+    // Union by device_id. Prefer the entry with the earlier `enrolled_at`
+    // when both sides have one — first enrollment wins and we don't churn
+    // the timestamp on every refresh.
+    const merged = new Map<string, Entry>();
+    for (const e of remoteList) merged.set(e.device_id, e);
+    for (const e of localList) {
+      const existing = merged.get(e.device_id);
+      if (!existing || e.enrolled_at < existing.enrolled_at) {
+        merged.set(e.device_id, e);
+      }
+    }
+    const mergedList = Array.from(merged.values());
+
+    const changed =
+      mergedList.length !== localList.length ||
+      JSON.stringify(mergedList) !== JSON.stringify(localList);
+    if (changed) {
+      _db.run(
+        "INSERT OR REPLACE INTO vault_meta (key, value) VALUES ('enrolled_devices', ?)",
+        [JSON.stringify(mergedList)],
+      );
+      // markDirty so the union propagates back to the backend on the next
+      // save; otherwise this device's local copy would diverge silently.
+      markDirty();
+    }
+    return changed;
+  } catch (e) {
+    console.warn('[VaultLifecycle] refreshEnrolledDevicesFromRemote failed', e);
+    return false;
+  } finally {
+    if (remoteDb) {
+      try { remoteDb.close(); } catch { /* best-effort */ }
+    }
+  }
+}
+
+/**
  * Re-decrypt this device's shard from the current primary manifest header so
  * the caller can forward it over an enrollment channel. The shard is NOT
  * cached across calls — we re-read the device's non-extractable CryptoKey and

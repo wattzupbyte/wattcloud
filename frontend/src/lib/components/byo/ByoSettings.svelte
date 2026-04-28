@@ -10,9 +10,11 @@
     getProvider,
     markDirty,
     addProvider,
+    refreshEnrolledDevicesFromRemote,
     bytesToBase64,
     base64ToBytes,
   } from '../../byo/VaultLifecycle';
+  import { enrollmentEpoch } from '../../byo/enrollmentSync';
   import { getDeviceRecord } from '../../byo/DeviceKeyStore';
   import {
     loadProvidersForVault,
@@ -169,11 +171,33 @@
     loadAbout(); // fire-and-forget; aboutLoading covers the spinner
   });
 
+  // Re-run loadDevices whenever an enrollment cycle bumps the epoch, so the
+  // Devices section picks up new entries without a page refresh. The first
+  // emission of enrollmentEpoch fires synchronously on subscribe — skip it
+  // (onMount above already loaded once) by gating on a prior tick.
+  let _enrollEpochSeen = $state(-1);
+  $effect(() => {
+    const tick = $enrollmentEpoch;
+    if (_enrollEpochSeen < 0) {
+      _enrollEpochSeen = tick;
+      return;
+    }
+    if (tick !== _enrollEpochSeen) {
+      _enrollEpochSeen = tick;
+      loadDevices();
+    }
+  });
+
   async function loadDevices() {
     devicesLoading = true;
     try {
       const db = getDb();
       if (!db) return;
+      // Pull fresh enrolled_devices from the primary backend FIRST so
+      // entries another device added (e.g. the receiver in a remote
+      // enrollment) get merged into the local _db before we render. Best
+      // effort — failure leaves the local list unchanged.
+      await refreshEnrolledDevicesFromRemote();
       const rows = queryRows(db, "SELECT value FROM vault_meta WHERE key = 'enrolled_devices'");
       if (rows.length > 0) {
         enrolledDevices = JSON.parse(rows[0]['value'] as string) as EnrolledDevice[];

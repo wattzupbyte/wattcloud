@@ -28,6 +28,7 @@
   import { hydrateProvider, providerNeedsReauth, type ProviderCredentials } from '../../byo/ProviderHydrate';
   import { saveProviderConfig } from '../../byo/ProviderConfigStore';
   import { queryRows } from '../../byo/ConflictResolver';
+  import { bumpEnrollmentEpoch } from '../../byo/enrollmentSync';
   import QrDisplay from './QrDisplay.svelte';
   import QrScanner from './QrScanner.svelte';
   import SasConfirmation from './SasConfirmation.svelte';
@@ -218,6 +219,10 @@ type EnrollStep =
           clearSenderStallTimer();
           step = 'done';
           cleanup();
+          // Tell the rest of the app an enrollment just completed so the
+          // Settings → Devices list and the Access Control panel can
+          // re-fetch without a full page refresh.
+          bumpEnrollmentEpoch();
           onComplete?.();
         }
       };
@@ -880,6 +885,11 @@ type EnrollStep =
       byoWorker.Worker.byoEnrollmentClose(enrollmentSessionId).catch(() => {/* best-effort */});
       enrollmentSessionId = null;
 
+      // Tell anyone watching enrollmentEpoch to re-fetch — covers the
+      // case where the receiver lands on the dashboard then immediately
+      // opens Settings.
+      bumpEnrollmentEpoch();
+
       onEnrolled?.({
         db,
         sessionId: vaultKeySessionId,
@@ -992,7 +1002,9 @@ type EnrollStep =
   {:else if step === 'passphrase'}
     <h2 class="title">Enter your passphrase</h2>
     <p class="subtitle">Verify your identity to complete enrollment.</p>
-    <ByoPassphraseInput mode="unlock" submitLabel="Complete enrollment" onSubmit={handlePassphrase} />
+    <div class="full-width">
+      <ByoPassphraseInput mode="unlock" submitLabel="Complete enrollment" onSubmit={handlePassphrase} />
+    </div>
 
   {:else if step === 'unlocking'}
     <h2 class="title">Unlocking vault…</h2>
@@ -1053,6 +1065,15 @@ type EnrollStep =
     font-size: var(--t-body-sm-size, 0.8125rem);
     color: var(--text-secondary, #999999);
     line-height: 1.5;
+  }
+
+  /* .enrollment is align-items:center so children narrow to their content
+     width — fine for centered icons/spinners but it makes inputs look
+     squished compared to the standard ByoUnlock screen, which stretches.
+     Wrap the passphrase block in .full-width so it spans the column. */
+  .full-width {
+    align-self: stretch;
+    width: 100%;
   }
 
   .loading {

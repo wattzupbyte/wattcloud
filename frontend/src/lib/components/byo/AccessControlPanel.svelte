@@ -22,6 +22,7 @@
    * authoritative. This panel reflects whatever the server says.
    */
   import { onMount } from 'svelte';
+  import { enrollmentEpoch } from '../../byo/enrollmentSync';
   import Plus from 'phosphor-svelte/lib/Plus';
   import Copy from 'phosphor-svelte/lib/Copy';
   import ArrowClockwise from 'phosphor-svelte/lib/ArrowClockwise';
@@ -95,6 +96,21 @@
 
   onMount(async () => {
     await reload();
+  });
+
+  // Re-fetch the relay-side device list whenever an enrollment cycle bumps
+  // the epoch, so the panel shows the new device without a page refresh.
+  let _enrollEpochSeen = $state(-1);
+  $effect(() => {
+    const tick = $enrollmentEpoch;
+    if (_enrollEpochSeen < 0) {
+      _enrollEpochSeen = tick;
+      return;
+    }
+    if (tick !== _enrollEpochSeen) {
+      _enrollEpochSeen = tick;
+      reload();
+    }
   });
 
   async function reload() {
