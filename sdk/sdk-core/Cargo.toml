@@ -33,7 +33,7 @@ rand = { workspace = true, optional = true }
 rand_chacha = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 # Used by WebDAVProvider for PROPFIND XML parsing (providers feature only).
-quick-xml = { version = "0.36", optional = true }
+quick-xml = { version = "0.39", optional = true }
 # Used by the provider URL guard for scheme + host parsing (providers feature).
 url = { version = "2.5", optional = true }
 

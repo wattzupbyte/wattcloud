@@ -1559,7 +1559,12 @@ fn parse_list_response(xml: &[u8], prefix: &str) -> Result<ListPage, ProviderErr
                 }
             }
             Ok(Event::Text(t)) => {
-                let s = t.unescape().unwrap_or_default();
+                let s = t
+                    .decode()
+                    .ok()
+                    .and_then(|d| quick_xml::escape::unescape(&d).ok().map(|u| u.into_owned()))
+                    .map(std::borrow::Cow::Owned)
+                    .unwrap_or(std::borrow::Cow::Borrowed(""));
                 match text_target {
                     TextTarget::Key => cur_key = s.to_string(),
                     TextTarget::Size => cur_size = s.trim().parse().unwrap_or(0),

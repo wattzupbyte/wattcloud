@@ -446,7 +446,12 @@ fn parse_quota_available(body: &[u8]) -> Option<u64> {
                 }
             }
             Ok(Event::Text(t)) if capture => {
-                return t.unescape().ok()?.trim().parse::<u64>().ok();
+                let decoded = t.decode().ok()?;
+                return quick_xml::escape::unescape(&decoded)
+                    .ok()?
+                    .trim()
+                    .parse::<u64>()
+                    .ok();
             }
             Ok(Event::End(_)) => {
                 capture = false;
@@ -694,7 +699,12 @@ fn parse_propfind(body: &[u8], base_url: &str) -> Result<Vec<StorageEntry>, Prov
                 }
             }
             Ok(Event::Text(e)) => {
-                let text = e.unescape().unwrap_or_default();
+                let text: std::borrow::Cow<str> = e
+                    .decode()
+                    .ok()
+                    .and_then(|d| quick_xml::escape::unescape(&d).ok().map(|u| u.into_owned()))
+                    .map(std::borrow::Cow::Owned)
+                    .unwrap_or(std::borrow::Cow::Borrowed(""));
                 match text_target {
                     TextTarget::Href => current_href = text.trim().to_string(),
                     TextTarget::ContentLength => {
