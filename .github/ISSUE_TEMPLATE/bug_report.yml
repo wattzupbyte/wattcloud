@@ -1,0 +1,94 @@
+name: Bug report
+description: Report a defect in Wattcloud (relay, frontend, SDK, install scripts).
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please do **not** report security vulnerabilities here — use GitHub's private vulnerability reporting (link in the issue chooser).
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go through private reporting).
+          required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      options:
+        - Frontend (Svelte SPA)
+        - byo-relay (server)
+        - sdk-core / sdk-wasm (crypto)
+        - Install / deploy scripts
+        - Packaging (systemd, Caddy)
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Storage provider (if applicable)
+      options:
+        - N/A
+        - Google Drive
+        - Dropbox
+        - OneDrive
+        - WebDAV
+        - SFTP
+        - Box
+        - pCloud
+        - S3
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Wattcloud version
+      description: Output of `wattcloud --version`, the release tag, or commit SHA. For frontend bugs, include the build hash from `/health` if you have it.
+      placeholder: e.g. v0.3.1 or 7a50fab
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: Browser + OS for frontend bugs; Linux distro + arch for relay bugs.
+      placeholder: e.g. Firefox 142 on macOS 15, or Debian 12 / aarch64
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / errors
+      description: Browser console errors, `journalctl -u wattcloud` output, or relevant network requests. **Redact any tokens, cookies, or paths that could identify you.**
+      render: shell

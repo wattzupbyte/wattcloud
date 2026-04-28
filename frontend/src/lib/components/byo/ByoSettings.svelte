@@ -922,19 +922,22 @@
           </div>
         {/if}
 
-        <!-- Browser-sync warning toggle -->
+        <!-- Save reminder toggle — shows a one-time-per-session "keep this
+             tab open while saving" warning before vault save. Stored as
+             `sc-byo-sync-warning-ack` in localStorage; toggle polarity is
+             inverted so ON = reminder visible (matches user mental model). -->
         <label class="settings-row settings-row-label">
           <span class="row-icon"><Icon name="warning" size={16} /></span>
           <span class="row-text">
-            <span class="row-label">Browser Sync Warning</span>
-            <span class="row-desc-inline">Shown before saving if acknowledgement expired</span>
+            <span class="row-label">Save reminder</span>
+            <span class="row-desc-inline">Warn me before vault save to keep this tab open until the save completes</span>
           </span>
           <button
             class="toggle-btn"
-            class:active={syncWarningAck}
+            class:active={!syncWarningAck}
             role="switch"
-            aria-checked={syncWarningAck}
-            aria-label="Browser sync warning"
+            aria-checked={!syncWarningAck}
+            aria-label="Save reminder"
             onclick={toggleSyncWarning}
           >
             <span class="toggle-knob"></span>

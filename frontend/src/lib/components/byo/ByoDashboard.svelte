@@ -1096,6 +1096,7 @@
         }
         succeeded++;
       } catch (e: any) {
+        console.error('[crossProviderMove]', { fileId, fileName, error: e, message: e?.message, code: e?.code });
         const isHmac = /hmac|integrity/i.test(e.message ?? '');
         const isOom = e?.code === 'UNSUPPORTED';
         errors.push({
@@ -1105,7 +1106,7 @@
             ? 'Integrity check failed — not copied'
             : isOom
               ? 'File too large (>512 MiB)'
-              : (e.message || 'Move failed'),
+              : (e?.message || (e?.name ? `${e.name}` : String(e)) || 'Move failed'),
         });
       }
       crossMoveProgress = { done: succeeded + errors.length, total };
@@ -1118,10 +1119,8 @@
     if (errors.length === 0) {
       clearByoSelection();
       await loadCurrentFolder();
-      setTimeout(() => {
-        showProviderMoveSheet = false;
-        crossMoveSucceeded = null;
-      }, 2500);
+      // Sheet stays open at 100% until the user dismisses via Done /
+      // backdrop click (handled by onClose). No auto-dismiss.
     }
   }
 
@@ -2212,8 +2211,16 @@
   /* :global so the padding reaches PullToRefresh's inner div (which owns
      its own component scope). Flex + overflow-y now live in PullToRefresh. */
   :global(.byo-main-content) {
+    /* Pull the scroll viewport up under the floating DashboardHeader so
+       content scrolls behind the (transparent) header rather than getting
+       clipped at its lower edge. The negative margin overrides the
+       parent's padding-top: var(--header-height) for this element only;
+       internal padding-top keeps the first row visible below the icons
+       at scrollTop=0. */
+    margin-top: calc(-1 * var(--header-height, 56px));
     /* Bottom: clear floating bottom nav (12dp inset + safe-area + 56dp nav + 16dp FAB gap + breathing room). */
-    padding: var(--sp-sm, 8px) var(--sp-md, 16px)
+    padding: calc(var(--header-height, 56px) + var(--sp-sm, 8px))
+             var(--sp-md, 16px)
              calc(12px + env(safe-area-inset-bottom, 0px) + var(--bottom-nav-height, 56px) + var(--sp-xl, 32px));
   }
 

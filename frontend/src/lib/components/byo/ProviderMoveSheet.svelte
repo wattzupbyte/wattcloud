@@ -98,19 +98,18 @@ let selectedProviderId: string | null = $state(null);
       </div>
 
     {:else if showResult && isSuccess}
-      <!-- Success state (§29.1 solid-with-check) -->
-      <div class="sheet-section success-section">
-        <div class="success-icon" aria-hidden="true">
-          <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-            <path d="M24 4 L40 14 L40 34 L24 44 L8 34 L8 14 Z"
-              fill="var(--accent-muted, rgba(46,184,96,0.15))"
-              stroke="var(--accent, #2EB860)" stroke-width="2" stroke-linejoin="round"/>
-            <polyline points="16,24 22,30 32,18"
-              stroke="var(--accent, #2EB860)" stroke-width="2.5"
-              stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
+      <!-- Success: same shape as the in-progress sheet, bar pinned at 100%.
+           Replaces the older hex-shield "solid-with-check" success card so
+           the dialog stays inside the cloud-motif design system. -->
+      <div class="sheet-section">
+        <h2 class="sheet-title">Move complete</h2>
+        <p class="sheet-subtitle">
+          {succeededCount} file{succeededCount !== 1 ? 's' : ''} moved · integrity verified
+        </p>
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill" style="width: 100%"></div>
         </div>
-        <p class="success-label">Integrity verified · {succeededCount} file{succeededCount !== 1 ? 's' : ''}</p>
+        <p class="progress-label">{succeededCount} of {succeededCount} files</p>
       </div>
       <div class="sheet-actions">
         <button class="btn btn-primary" onclick={() => onClose?.()}>Done</button>
@@ -256,22 +255,6 @@ let selectedProviderId: string | null = $state(null);
     color: var(--text-secondary, #999);
     margin: 0;
     line-height: 1.5;
-  }
-
-  /* Success state */
-  .success-section {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    padding: var(--sp-lg, 24px) 0 var(--sp-md, 16px);
-    gap: var(--sp-sm, 8px);
-  }
-
-  .success-label {
-    font-size: var(--t-body-sm-size, 0.8125rem);
-    color: var(--accent-text, #5FDB8A);
-    font-weight: 500;
-    margin: 0;
   }
 
   /* Error list */

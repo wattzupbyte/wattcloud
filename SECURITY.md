@@ -550,10 +550,7 @@ explains why, and is revisited at every release.
 
 | Package | CVE / summary | Why deferred |
 |---------|---------------|--------------|
-| `vite` 5.4 | CVE-2026-39365 — path traversal in the dev-server's `.map` handling | Affects `vite dev` only. Wattcloud is served in production as a pre-built static SPA shipped inside the release tarball (served by byo-relay's `ServeDir`); there is no running Vite dev server in production. Dev-time risk only, scoped to a developer who runs `npm run dev` AND visits a malicious site in the same browser. Bumping to 6.x/7.x/8.x requires either a major `@sveltejs/vite-plugin-svelte` upgrade or a full svelte 5 migration — disproportionate to a dev-only issue. |
-| `esbuild` 0.21 (transitive via vite) | enables any website to send requests to the dev server | Same argument as vite. No prod exposure. |
-| `svelte` 4.2 | 4 CVEs re: SSR XSS (spread attributes, contenteditable bindings, dynamic element tag validation, SSR prototype chain) | Wattcloud is an SPA — no SSR code path is compiled or reachable. Svelte's SSR module is tree-shaken out of the client build. The SSR-specific vulnerable code never runs. Svelte 5 migration (runes syntax) is a significant rewrite deferred until it's needed for other reasons. |
-| `rand` 0.8 | unsound with custom logger using `rand::rng()` | Wattcloud does not set a custom rand logger. The unsound path is unreachable. Fix is in `rand` 0.9, a major bump that would cascade through `argon2`, `ml-kem`, and other crypto crates pinned at 0.8 compat. Would need a coordinated major-version bump across the entire crypto stack. |
+| `rand` 0.8 (sdk-core, sdk-wasm) | unsound with custom logger using `rand::rng()` | Wattcloud does not set a custom rand logger. The unsound path is unreachable. Fix is in `rand` 0.9, a major bump that would cascade through `argon2` 0.5 and `ml-kem` 0.2.3, both of which still pin `rand_core` 0.6. Would need a coordinated major-version bump across the crypto stack. `byo-relay` is independent and already on `rand` 0.10. No outstanding Dependabot alert. |
 
 Production-relevant advisories (e.g. `jsonwebtoken` 9.3 → 10.3 for
 authorization-bypass type confusion) ARE applied immediately.

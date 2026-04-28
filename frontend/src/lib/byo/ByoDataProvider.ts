@@ -972,31 +972,37 @@ export class ByoDataProvider implements DataProvider {
       }
 
       // 1. Stream V7 ciphertext verbatim from source to destination.
-      //    ZK-6: blobName is an opaque UUID, never a plaintext filename.
+      //    ZK-6: blob name is an opaque UUID, never a plaintext filename.
       //    Phase 3c: if both providers are WASM-backed, pipe entirely inside WASM
       //    so no ciphertext bytes cross the JS boundary. Falls back to TS pipeTo
       //    for SFTP (RelayTransport, not WASM-backed).
       const encryptedSize = (row['encrypted_size'] as number) ?? 0;
-      const blobName = `data/${crypto.randomUUID()}`;
+      const blobUuid = crypto.randomUUID();
       let dstRef: string;
 
       const srcHandle = (srcProvider as { getConfigHandle?(): string | null }).getConfigHandle?.() ?? null;
       const dstHandle = (dstProvider as { getConfigHandle?(): string | null }).getConfigHandle?.() ?? null;
 
       if (srcHandle && dstHandle) {
-        // WASM pipe: no ciphertext in JS heap.
+        // WASM pipe: no ciphertext in JS heap. The WASM stream-copy entry
+        // takes a single dstName (no separate parentRef), so encode the
+        // vault data dir in the name itself.
         const uploadResult = await byoWorker.Worker.byoCrossProviderStreamCopy(
           srcProvider.type, srcHandle,
           dstProvider.type, dstHandle,
-          storageRef, blobName, encryptedSize,
+          storageRef, `data/${blobUuid}`, encryptedSize,
         );
         dstRef = uploadResult.ref;
       } else {
-        // TS fallback (e.g. src or dst is SFTP): pipeTo keeps only a transit buffer.
+        // TS fallback (e.g. src or dst is SFTP): pipeTo keeps only a transit
+        // buffer. Provider.uploadStream's `name` is the leaf filename;
+        // each provider owns its own parent-dir convention (SFTP's relay
+        // auto-prefixes /WattcloudVault/data/, so passing "data/<uuid>"
+        // here would produce /WattcloudVault/data/data/<uuid>).
         const dlStream = await this.withAuthRetry(
           () => srcProvider.downloadStream(storageRef), srcProvider);
         const { stream: writable, result: uploadResultP } = await this.withAuthRetry(
-          () => dstProvider.uploadStream(null, blobName, encryptedSize, {}), dstProvider);
+          () => dstProvider.uploadStream(null, blobUuid, encryptedSize, {}), dstProvider);
         try {
           await dlStream.pipeTo(writable);
         } catch (err) {
