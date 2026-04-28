@@ -21,6 +21,9 @@ updates:
     labels:
       - "deps"
       - "rust"
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
     ignore:
       # `kem` is pinned because the HKDF info strings and ML-KEM parameters
       # in sdk-core's crypto module are part of the V7 wire format. Upgrading
@@ -35,6 +38,9 @@ updates:
     labels:
       - "deps"
       - "rust"
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "npm"
     directory: "/byo"
@@ -43,6 +49,9 @@ updates:
     labels:
       - "deps"
       - "typescript"
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "npm"
     directory: "/frontend"
@@ -51,6 +60,9 @@ updates:
     labels:
       - "deps"
       - "typescript"
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "npm"
     directory: "/docs"
@@ -59,6 +71,9 @@ updates:
     labels:
       - "deps"
       - "docs"
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "docker"
     directory: "/"
