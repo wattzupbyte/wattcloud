@@ -172,9 +172,10 @@ worth knowing before you read it:
   filter. Every release tarball is keyless cosign-signed via Actions OIDC
   and verified before install — `install.sh` aborts on a swapped asset.
 
-VPS hardening (UFW, fail2ban, SSH lockdown, GDPR-bounded journald, swap,
-earlyoom, AIDE, msmtp) is opt-in via `sudo wattcloud harden`. The standard
-install makes no system-wide config changes.
+VPS hardening (UFW, fail2ban, sshd lockdown, R5 logging, swap, earlyoom,
+AIDE, msmtp) is opt-in via `sudo wattcloud harden` — full walkthrough at
+[**docs.wattcloud.de/operations/hardening/**](https://docs.wattcloud.de/operations/hardening/).
+The standard install makes no system-wide config changes.
 
 ## Architecture
 
@@ -289,8 +290,9 @@ backup.
 **Roadmap.** WebDAV and SFTP are shipping. S3-compatible is in active
 development. OAuth-based providers (Google Drive, Dropbox, OneDrive, Box,
 pCloud) are gated behind a feature flag and not currently exposed in the
-SPA. VPS hardening, recovery flows, sharing internals, and the security
-model will land in upcoming docs phases on
+SPA. The full operator handbook — install, access control, hardening,
+backups, troubleshooting, recovery, security model, sharing, multi-device,
+identity, FAQ — lives on
 [docs.wattcloud.de](https://docs.wattcloud.de).
 
 **Development style.** Wattcloud is developed with extensive AI
