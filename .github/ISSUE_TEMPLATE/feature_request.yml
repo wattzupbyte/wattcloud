@@ -1,0 +1,61 @@
+name: Feature request
+description: Propose a new feature or enhancement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Wattcloud is zero-knowledge by design. Proposals that would require the relay to see plaintext, key material, or user identity beyond per-device enrollment will be declined — see the invariants in CLAUDE.md / SECURITY.md before filing.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and Discussions for similar proposals.
+          required: true
+        - label: This proposal does not require the relay to see plaintext or key material.
+          required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Frontend / UX
+        - Storage provider (existing)
+        - Storage provider (new)
+        - byo-relay
+        - SDK / crypto protocol
+        - Install / deploy
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today, or what hurts? Avoid jumping to a solution here.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What did you rule out, and why?
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Use case, screenshots, related issues, prior art.

@@ -18,6 +18,7 @@ on:
       - 'NOTICE'
       - '.gitignore'
       - '.github/dependabot.yml'
+      - '.github/ISSUE_TEMPLATE/**'
   pull_request:
     branches: [main]
     paths-ignore:
@@ -26,6 +27,7 @@ on:
       - 'NOTICE'
       - '.gitignore'
       - '.github/dependabot.yml'
+      - '.github/ISSUE_TEMPLATE/**'
 
 permissions:
   contents: read
