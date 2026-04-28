@@ -5,7 +5,7 @@ use axum::{
     Json,
 };
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -331,7 +331,7 @@ pub async fn get_challenge(
     // Generate nonce_id (UUID) and 16-byte nonce.
     let nonce_id = Uuid::new_v4().to_string();
     let mut nonce_bytes = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce_hex = hex::encode(nonce_bytes);
 
     state

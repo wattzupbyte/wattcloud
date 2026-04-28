@@ -11,7 +11,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use sdk_core::byo::argon2id_derive_byo;
 use sdk_core::crypto::hashing::{blake2b_256, hmac_sha256};
 use sdk_core::crypto::kdf::argon2id_derive;
@@ -20,6 +20,7 @@ use sdk_core::crypto::pqc::{
 };
 use sdk_core::crypto::symmetric::{aes_gcm_encrypt, generate_aes_key};
 use sdk_core::crypto::wire_format::{decrypt_file_v7, encrypt_file_v7};
+use std::hint::black_box;
 
 fn bench_argon2id(c: &mut Criterion) {
     let mut group = c.benchmark_group("argon2id");

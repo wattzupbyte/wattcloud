@@ -35,7 +35,7 @@ use axum::{
     Json,
 };
 use hmac::{Hmac, Mac};
-use rand::{rngs::OsRng, RngCore};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::Sha256;
@@ -159,7 +159,7 @@ const INVITE_LEN: usize = 11;
 /// normalization strips them before hashing.
 pub fn generate_invite_code() -> String {
     let mut raw = [0u8; INVITE_LEN];
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     for slot in raw.iter_mut() {
         let mut b = [0u8; 1];
         rng.fill_bytes(&mut b);
@@ -198,7 +198,7 @@ pub fn hash_invite_code(signing_key: &[u8], normalized: &str) -> Vec<u8> {
 /// reveals the plaintext.
 pub fn generate_bootstrap_token() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 
@@ -424,7 +424,7 @@ async fn issue_admin_challenge(
     }
     let nonce_id = Uuid::new_v4().to_string();
     let mut nonce_bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce_hex = hex::encode(nonce_bytes);
     state.challenge_store.insert(
         nonce_id.clone(),
