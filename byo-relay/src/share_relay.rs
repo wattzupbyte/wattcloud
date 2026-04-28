@@ -36,7 +36,7 @@ use axum::{
     Json,
 };
 use futures_util::StreamExt;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use rand::Rng;
 use serde::Deserialize;
 use serde::Serialize;

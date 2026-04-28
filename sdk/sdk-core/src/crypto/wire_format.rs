@@ -11,7 +11,7 @@
 // HMAC:           HMAC-SHA256(hmac_key, concat(chunk_index_le32 || ciphertext) for each chunk)
 // HMAC key:       HKDF-SHA256(content_key, info=CHUNK_HMAC_V1, L=32)
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 use crate::crypto::constants::{
@@ -318,8 +318,8 @@ pub fn encrypt_manifest_v7(
     // through the recipient's decryptor in multiple frames.
     const CHUNK_SIZE: usize = 512 * 1024;
     let hmac_key = hkdf_sha256(content_key.as_bytes(), CHUNK_HMAC_V1, 32)?;
-    let mut hmac = <HmacSha256 as Mac>::new_from_slice(&hmac_key)
-        .map_err(|_| CryptoError::InvalidKeyMaterial)?;
+    let mut hmac =
+        HmacSha256::new_from_slice(&hmac_key).map_err(|_| CryptoError::InvalidKeyMaterial)?;
 
     let mut chunk_index: u32 = 0;
     let mut offset = 0usize;

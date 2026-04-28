@@ -1,8 +1,9 @@
 // Hashing utilities: SHA-256, SHAKE-256 (XOF), BLAKE2b-256, HMAC-SHA256.
 // Also: SIV nonce derivation and constant-time equality.
 
+use blake2::digest::Digest as Blake2Digest;
 use blake2::Blake2b;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use typenum::U32;
@@ -35,8 +36,8 @@ pub fn shake256(data: &[u8], output_len: usize) -> Vec<u8> {
 /// BLAKE2b-256 hash of `data`.
 pub fn blake2b_256(data: &[u8]) -> [u8; 32] {
     let mut hasher = Blake2b256::new();
-    Digest::update(&mut hasher, data);
-    Digest::finalize(hasher).into()
+    Blake2Digest::update(&mut hasher, data);
+    Blake2Digest::finalize(hasher).into()
 }
 
 /// HMAC-SHA256 of `data` using `key`.
