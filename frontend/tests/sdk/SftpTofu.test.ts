@@ -99,7 +99,7 @@ vi.mock('@wattcloud/wasm', () => ({
   // the wasm module. Vitest rejects implicit `undefined` lookups on mocked
   // modules, so stub it to a no-op.
   default: vi.fn().mockResolvedValue(undefined),
-  SftpSessionWasm: vi.fn((...args: any[]) => {
+  SftpSessionWasm: vi.fn(function (...args: any[]) {
     lastSession = new MockSftpSession(...(args as [any, any, any]));
     return lastSession;
   }),
@@ -172,7 +172,9 @@ describe('SftpProvider WebSocket transport layer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWs = new MockWebSocket();
-    globalAny.WebSocket = vi.fn(() => mockWs);
+    globalAny.WebSocket = function () {
+      return mockWs;
+    };
     globalAny.WebSocket.OPEN = WS_OPEN;
     globalAny.WebSocket.CLOSED = WS_CLOSED;
   });
