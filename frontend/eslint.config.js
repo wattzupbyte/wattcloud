@@ -12,6 +12,12 @@ const sharedRules = {
   'no-console': 'off',
   'no-useless-escape': 'off',
   'no-constant-condition': 'off',
+  // Two new rules promoted to `eslint:recommended` in v9/v10. Both fire on
+  // patterns that pre-date this codebase's lint pass; off until a focused
+  // sweep adopts them (re-throws should attach `cause`, dead assignments
+  // should be removed). Off in the deps-bump PR to keep that PR scoped.
+  'preserve-caught-error': 'off',
+  'no-useless-assignment': 'off',
   'prefer-const': 'warn',
   '@typescript-eslint/no-unused-vars': [
     'warn',
