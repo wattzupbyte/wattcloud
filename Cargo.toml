@@ -27,7 +27,7 @@ typenum = "1.17"
 rand = { version = "0.8", features = ["getrandom"] }
 rand_chacha = "0.3"
 getrandom = { version = "0.2", features = ["js"] }
-base64 = "0.21"
+base64 = "0.22"
 
 # Utilities
 zeroize = { version = "1.7", features = ["derive"] }
