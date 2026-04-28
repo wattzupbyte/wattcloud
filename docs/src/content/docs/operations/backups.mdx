@@ -1,0 +1,101 @@
+---
+title: Backups
+description: What's worth backing up on a Wattcloud host, what isn't, and how to restore.
+sidebar:
+  order: 2
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The relay is near-stateless by design, so the backup story is mostly about
+the storage backend (which is yours and lives outside Wattcloud) and a
+small amount of host-side state.
+
+## What to back up
+
+| Path | Why | Frequency |
+|---|---|---|
+| The vault on your storage backend (`WattcloudVault/` on WebDAV/SFTP, `<bucket>/<prefix>/WattcloudVault/` on S3) | This is the only durable copy of your encrypted files. **If you lose this, you lose the data.** | Whatever your storage provider's snapshot cadence is. |
+| `/etc/wattcloud/wattcloud.env` | Holds the JWT and HMAC signing keys for device cookies. Losing it forces every device to re-enrol via a fresh claim token. | Once after install + once after any env change. |
+| `/var/lib/wattcloud/state/enrollment.sqlite3` | The list of enrolled devices and invite hashes. Recoverable via `regenerate-claim-token` if lost, but you'll have to re-issue invites. | Daily for low-friction re-issue, or omit if you accept that re-enrolment is fine. |
+| `/var/lib/wattcloud/state/share_store.db` + on-disk `*.v7` blobs | Active shares. Sweeper-purges on expiry, so this is *never* long-term state. Skip unless you want active share links to survive a host restore. | Optional — most operators skip. |
+| `/etc/caddy/Caddyfile` | Caddy config for the site. Re-renderable from the tarball template + `wattcloud.env`. | Once after install, or skip. |
+
+Files on the storage backend (the actual encrypted vault) are by far the
+most important — everything else can be regenerated from the install
+tarball + a fresh claim token.
+
+<Aside type="caution" title="The vault on the backend is the only copy">
+  Wattcloud does **not** mirror your data anywhere. The relay never has
+  a copy of your files. If you delete the vault from the storage
+  backend, or the backend itself loses the data, there is no
+  Wattcloud-side recovery. Treat the storage backend like any other
+  primary store — snapshot it, replicate it, or accept the risk.
+</Aside>
+
+## What NOT to back up
+
+- **Logs** (`journalctl`, Caddy's filtered access log). These are
+  ephemeral by design and the R5 posture caps them at 30 days; restoring
+  them adds noise without value.
+- **The release tarballs in `/opt/wattcloud/releases/`**. Re-downloadable
+  from GitHub (and cosign-verified on each install). Backing up an old
+  tarball doesn't add safety — restoring it bypasses the verification
+  trust chain.
+- **The browser-side IndexedDB.** Per-device data (cached provider
+  credentials, the device's `CryptoKey`, the device's WebAuthn rows)
+  lives in the browser and is intentionally non-portable. Restoring
+  from another device is the recovery path; see
+  [Recovery](/operations/recovery/).
+
+## Backing up the env file
+
+```bash
+sudo install -m 0600 -o root -g root /etc/wattcloud/wattcloud.env \
+  /var/backups/wattcloud.env.$(date +%F)
+```
+
+Encrypt before it leaves the host. The file contains your JWT/HMAC
+signing keys; an attacker with the env file can mint cookies that the
+relay will accept.
+
+## Restoring on a fresh host
+
+Order matters — restore in this sequence:
+
+1. Run `install.sh` against the same domain. This is what provisions the
+   directory layout, systemd unit, and Caddy config.
+2. Stop the service: `sudo systemctl stop wattcloud`.
+3. Restore `/etc/wattcloud/wattcloud.env` from backup. (If you don't
+   have it, `deploy-vps.sh` already generated fresh keys during install
+   — you can keep those, but every device needs to re-enrol.)
+4. Restore `/var/lib/wattcloud/state/enrollment.sqlite3` if you backed
+   it up. Otherwise, you'll regenerate a claim token and re-issue
+   invites.
+5. Start: `sudo systemctl start wattcloud`. Watch
+   `journalctl -u wattcloud -f` until `/health` returns 200.
+6. On the SPA: each enrolled device's browser-side credentials still
+   work as long as the env file (signing keys) and enrollment SQLite
+   are restored. If those are fresh, every device sees the
+   *Session expired* screen and needs a new invite.
+
+If you restored the storage backend separately (independent snapshot),
+no Wattcloud-side action is required — the SPA will pick up the existing
+`WattcloudVault/` directory the next time a device unlocks.
+
+## Snapshot cadence suggestions
+
+- **Storage backend.** Match your storage provider's cadence. Snapshots
+  before-and-after large move/upload sessions are the common pattern.
+- **Env file + enrollment DB.** Once after install, then opportunistically
+  on env or device-list changes. Both files together fit in a few KiB.
+- **Whole-host snapshot.** Optional. Useful for "rebuild VPS from snapshot
+  in 10 minutes" workflows; not required for data safety because the
+  data lives on the storage backend.
+
+## Adjacent docs
+
+- [Recovery](/operations/recovery/) — what to do when a device,
+  the sole owner, or the whole instance is lost.
+- [Upgrade & rollback](/install/upgrades/) — past releases stay on
+  disk; rollback is a symlink flip, not a restore.

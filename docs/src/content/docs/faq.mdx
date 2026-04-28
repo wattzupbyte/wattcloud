@@ -1,0 +1,173 @@
+---
+title: FAQ
+description: Why post-quantum, why no mobile, why AGPL, why browser-only — common questions about Wattcloud's design choices.
+sidebar:
+  order: 100
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Common questions about why Wattcloud is shaped the way it is. Some of
+these are design choices; others are deliberate non-features.
+
+## Why post-quantum encryption now? Quantum computers don't exist yet.
+
+The relevant attacker is **harvest-now-decrypt-later**: record encrypted
+traffic today, store it, decrypt it when quantum hardware matures. This
+class of attack works *because* the attacker doesn't need to break the
+crypto today — they only need to capture the ciphertext today.
+
+Defending requires post-quantum primitives in the **current** handshake,
+not "we'll add them later". Wattcloud uses a **hybrid** of X25519 and
+ML-KEM-1024: an attacker has to break both to break the session, so
+even if one of them turns out to be flawed, the other still defends.
+There's no protocol-level downgrade to classical-only. See
+[Security model → Post-quantum strategy](/concepts/security-model/#post-quantum-strategy).
+
+## Why no native desktop or mobile app?
+
+The browser is the smallest trustable surface that already exists on
+every platform. Adding a native client would mean:
+
+- Maintaining native crypto pipelines per OS (or shipping the WASM
+  module in a wrapper, which is what the browser already does).
+- Adding an update path with its own signing infrastructure separate
+  from the relay's cosign chain.
+- Asking users to trust a binary you ship versus the same SPA served
+  from the relay they self-host.
+
+The Web Worker / WASM split inside the browser already gives a
+sandboxed crypto kernel; the browser's autoupdate channel handles the
+runtime patching. A native client would have to re-do all of that for
+marginal UX gains.
+
+## Why is the relay near-stateless instead of stateless?
+
+Honest answer: shares. Single-file shares park one V7 ciphertext blob
+on the relay; bundle shares park one blob per file plus an encrypted
+manifest. Both are sweeper-purged at expiry (≤ 30 days), but for the
+duration of the share they sit on the relay's disk.
+
+This is the **one** durable storage surface on the relay — every other
+relay state is in-memory or per-session. The trade-off is documented
+in [Sharing](/concepts/sharing/) and any feature that would
+widen the surface (server-side user state, plaintext metadata,
+unbounded retention) requires a threat-model update.
+
+## Can the relay operator (you) read my files?
+
+No. The relay never sees plaintext files, plaintext filenames, vault
+keys, recovery keys, or the user passphrase. ZK-1 through ZK-7 in
+[Security model](/concepts/security-model/) enumerate the
+specific guarantees. They are enforced by code, not by policy — the
+SPA simply doesn't have an API surface that could send plaintext to
+the relay.
+
+If you don't trust the SPA you served (e.g. you suspect the relay is
+serving a tampered SPA), you can verify the SPA hash against the
+release tarball, or build the frontend yourself and serve it from the
+same origin.
+
+## Why AGPL-3.0 instead of MIT / Apache?
+
+AGPL closes the SaaS loophole in plain GPL: if you run a modified
+version of Wattcloud as a network-accessible service, you must make
+your modifications available to the users of that service under the
+same license. This matters because Wattcloud's value is mostly in the
+relay-side network service, and a permissive license would make it
+trivial for someone to fork-and-host without contributing back.
+
+Running unmodified signed releases on your own infrastructure for
+your own use triggers no extra obligations.
+
+## Can I use Wattcloud commercially?
+
+Yes, under AGPL terms. If your use means running a modified network
+service, you publish your modifications. If you're running unmodified
+releases internally, that's standard self-hosting.
+
+The Wattcloud name and wordmark are reserved by the project — forks
+must rename. The code is free to fork; the brand is not.
+
+## Why isn't there a mobile app or desktop sync agent?
+
+See above (no native apps). For sync, the design point is "your files
+already live on your storage backend; the SPA gives you a browser UI on
+top of them, not a separate sync layer". If you want a sync client,
+your storage backend probably already has one (Synology Drive, Hetzner
+Storage Box clients, S3 sync tools) — Wattcloud doesn't compete with
+those.
+
+## What happens if the relay goes down?
+
+- **Existing devices' vault data is unaffected** — it lives on your
+  storage backend, which Wattcloud doesn't touch directly.
+- The SPA needs the relay for: device enrolment / cookie validation,
+  SFTP transport (the relay performs the SSH on the SPA's behalf),
+  share creation / redemption.
+- WebDAV and S3 backends connect directly from the browser to the
+  storage backend without going through the relay; those still work
+  for unlock + read / write as long as the SPA itself can be served
+  (which usually means the relay needs to be up to serve the static
+  SPA bundle).
+
+In practice: relay down → SPA can't be loaded → no access. Relay up
+but storage backend down → SPA loads, vault unlocks, file operations
+fail until the backend is back. Vault data itself is never trapped on
+the relay.
+
+## Can I migrate between providers?
+
+Yes. The on-disk encrypted format is shared across backends, so
+moving between WebDAV / SFTP / S3 is a straight file copy — no
+re-encrypt pass. Cross-provider move from inside the SPA decrypts in
+the browser and re-uploads to the new backend; the relay never sees
+plaintext during the move.
+
+## Does Wattcloud index my files server-side?
+
+No. The relay has no view into plaintext content or filenames.
+Filename search runs entirely client-side over decrypted-in-memory
+manifest entries — it's why search response is instant once a vault
+is unlocked but isn't available before unlock.
+
+## Why doesn't the install script open firewall ports / change SSH config?
+
+The principle: an install should add software, not reconfigure the
+host. `install.sh` and `deploy-vps.sh` are app-only. VPS hardening
+(UFW, fail2ban, SSH lockdown, R5 logging, swap, earlyoom, AIDE,
+msmtp) is opt-in via `sudo wattcloud harden` because those are
+operator decisions with their own opinions and constraints.
+
+If you're starting fresh, running `harden` right after install gives
+you the project's recommended VPS posture. If you have your own
+posture already, skip `harden` and Wattcloud sits in your existing
+config.
+
+## Has Wattcloud had a third-party security audit?
+
+Not yet. The codebase is developed with significant AI pair-programming
+("vibe coding"). Design-level decisions — protocol, cryptographic
+choices, threat model, license — are the maintainer's. Implementation
+diffs are reviewed for behavior and spot-checked but not line-by-line
+hand-audited.
+
+This is stated up-front in the README's *Status & licensing* section
+and is load-bearing — run on data you can afford to lose, or keep an
+independent backup. Security findings are welcome via GitHub security
+advisories.
+
+## What about OAuth providers (Google Drive, Dropbox, OneDrive, …)?
+
+The provider implementations exist in the codebase but are gated
+behind a feature flag and not currently exposed in the SPA. They
+require the operator to register OAuth client credentials per-provider
+with each vendor, which adds enough friction that non-OAuth backends
+(WebDAV, SFTP, S3) cover most self-hosting use cases more cleanly.
+They may be unflagged in a later release.
+
+## Adjacent docs
+
+- [Security model](/concepts/security-model/) — the
+  long-form companion to most of these answers.
+- [Quickstart](/quickstart/) — try it locally before committing.

@@ -1,0 +1,167 @@
+---
+title: Sharing
+description: How single-file and bundle shares work — V7 ciphertext on the relay, fragment keys in the URL, expiry, sweeper, revocation.
+sidebar:
+  order: 2
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Wattcloud shares let you hand a file or folder to someone outside your
+vault — without giving them access to your storage backend, and without
+the relay seeing the plaintext. The trade-off: the relay does park the
+encrypted blob during the share's lifetime, which makes it the **one
+durable storage surface on the relay**. Everything else there is
+ephemeral.
+
+## What a share is
+
+| Kind | Contents on the relay | Typical use |
+|---|---|---|
+| **Single-file share** | One V7 ciphertext blob. | Send one file to one or many recipients. |
+| **Bundle share** (folder / collection) | One V7 ciphertext blob per source file + an AES-256-GCM-sealed manifest. | Send a folder or hand-curated collection. |
+
+Both kinds are end-to-end encrypted. Recipients open the link in any
+browser, no account, no install, and the SPA decrypts in their browser
+using the key in the URL fragment.
+
+## Anatomy of a share URL
+
+```
+https://cloud.example.com/share/<share_id>#<fragment_key>
+```
+
+- The path before `#` is what the relay sees. It identifies the share
+  but contains no key material.
+- The **fragment** (`#…`) is the symmetric key used to decrypt the
+  share. Browsers never send fragments to servers — the key never
+  reaches the relay, even via `Referer`.
+- For password-protected shares, the URL still contains the fragment
+  key, and Argon2id-stretched password material is mixed in client-side
+  before decryption.
+
+If you expose a share URL anywhere indexable (Google docs, public
+forum, etc.), the fragment in the URL is the access token. Treat the
+URL the same way you'd treat the file itself.
+
+## Lifetime and the sweeper
+
+Every share has a hard server-side expiry chosen at creation:
+
+- 1 hour
+- 1 day
+- 7 days
+- 30 days (maximum)
+
+```
+created_at ──── lifetime ────▶ expires_at
+                                    │
+                                    ▼
+                         sweeper deletes blob + index row
+```
+
+A separate sweeper handles the **half-uploaded bundle** case: if a
+bundle share is created but never marked `sealed` (e.g. the SPA tab
+closed mid-upload), the sweeper deletes it after 4 hours. This is the
+`UNSEALED_MAX_LIFETIME_SECS` constant in `share_store.rs`.
+
+The relay reaps expired shares atomically — both the on-disk `.v7`
+blobs and the SQLite index row go in the same operation. If the
+filesystem delete fails, the row stays so the next sweep tick retries;
+silently orphaning blobs would be worse than trying again.
+
+## What the relay knows about a share
+
+The SQLite index (`share_store.db`) holds:
+
+| Column | What it is |
+|---|---|
+| `share_id` | Random 128-bit identifier in the URL. |
+| `kind` | `file` \| `folder` \| `collection`. |
+| `blob_count` | How many ciphertext blobs make up this share. |
+| `total_bytes` | Cumulative ciphertext size, for the per-IP byte budget. |
+| `expires_at` | Hard expiry timestamp. |
+| `revoked` | Authoritative revocation flag (1 = blocks all GETs). |
+| `sealed` | Bundle upload completed (vs. half-uploaded sweeper candidate). |
+| `token_nonce` + `bundle_token_hash` | Server-side challenge state for bundle redemption. |
+
+Notable absences: **no source IP**, **no device ID**, **no
+filenames**, **no MIME types**, **no plaintext sizes**. The relay's
+view is bounded to what it needs for lifecycle management; everything
+else is inside the V7 bodies and the AES-GCM-sealed manifest.
+
+## Optional password gate
+
+Adding a password to a share adds a second factor on top of the URL
+fragment:
+
+1. Recipient opens the URL → SPA prompts for the password.
+2. Password is stretched with Argon2id (same parameters as vault
+   passphrases — 64 MiB / 3 iter / 4-way) inside the recipient's
+   browser.
+3. The stretched output is mixed into the decryption key derivation
+   alongside the URL fragment.
+
+A leaked URL alone is not enough to decrypt; an attacker needs the URL
+**and** the password. Cracking the password requires running Argon2id
+per attempt, which is deliberately expensive.
+
+## Revocation
+
+The owner can revoke a share at any time from the SPA:
+
+```
+DELETE /relay/share/b2/:id
+```
+
+This sets `revoked=1` and purges blobs + index row atomically. Any
+GET against a revoked share returns 410, regardless of whether the
+recipient still has the URL or has cached the share metadata. The
+revocation is **authoritative server-side** — there is no recipient-
+side cache that can keep a revoked share alive.
+
+This is why the `revoked` column matters: even if a leaked URL is
+floating around, the moment you revoke, every subsequent recipient
+attempt fails.
+
+## Per-IP byte budget
+
+The relay caps the cumulative ciphertext one IP can park on the share
+filesystem in a rolling window. The headroom endpoint surfaces budget
+utilisation without revealing other users' share activity. If you hit
+the cap, the SPA shows a quota-exceeded error and the share fails to
+create.
+
+The cap exists to prevent a single attacker from filling the relay's
+share filesystem. Legitimate users hit it only with extreme bundle
+sizes or a misbehaving uploader.
+
+## Why this is the relay's one stateful surface
+
+Everything else on the relay is ephemeral or in-memory:
+
+- Enrolment cookies — long-lived, but the underlying device row is
+  small and the relay holds no plaintext-side data per device.
+- Rate-limiter counters — in-memory only, never on disk.
+- SFTP session credentials — held in process memory only for the
+  lifetime of the session.
+
+Share storage is the deliberate exception: ciphertext blobs sit on
+disk for up to 30 days. This is documented in
+[`SECURITY.md` §12 "Share relay storage surface"](https://github.com/wattzupbyte/wattcloud/blob/main/SECURITY.md#share-relay-storage-surface)
+and any new feature that would widen this surface (server-side user
+state, plaintext metadata, unbounded retention) requires a
+threat-model update before landing.
+
+<Aside type="caution" title="Treat the URL as the credential">
+  The fragment key in a share URL is the access token. Anywhere the
+  URL goes, decryption-capable access goes with it. Pair sensitive
+  shares with an Argon2id password and a short expiry.
+</Aside>
+
+## Adjacent docs
+
+- [Security model](/concepts/security-model/) — the trust
+  boundary the share relay sits inside.
+- [Multi-device](/concepts/multi-device/) — pairing flow that
+  reuses the same QR + fragment-key idea internally.

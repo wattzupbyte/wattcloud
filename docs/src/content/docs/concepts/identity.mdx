@@ -1,0 +1,191 @@
+---
+title: Identity & passkeys
+description: Passphrase, one-time recovery key, presence-mode passkey, PRF-mode passkey, and the opt-in passkey-replaces-passphrase mode.
+sidebar:
+  order: 4
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The vault has three independent unlock paths: the passphrase, the
+recovery key, and (optionally) a passkey. They derive different
+wrapping keys for the same vault key, so any one of them is sufficient
+to unlock — and losing one does not lock you out of the others.
+
+## The three paths
+
+```
+passphrase ──Argon2id──▶ wrap A ──┐
+                                   │
+recovery_key ──HKDF──▶ wrap B ─────┤──▶ unwraps the same vault_key
+                                   │
+passkey (opt-in) ──HKDF────▶ wrap C ┘
+```
+
+| Path | Set up at | Strength | Stored where |
+|---|---|---|---|
+| Passphrase | Vault creation | What you remember it as. | Nowhere — re-derived from input on every unlock. |
+| Recovery key | Vault creation (shown once) | 256-bit random. | Wherever you put it (paper, password manager, encrypted note). Never on Wattcloud. |
+| Passkey | Optional, post-vault | Authenticator-bound. | Per-device IndexedDB row + the authenticator. |
+
+A vault always has the first two. The third is opt-in and can be
+enabled per-device.
+
+## Passphrase + Argon2id
+
+The passphrase is stretched with **Argon2id** before it ever
+contributes to a key:
+
+- 64 MiB of memory
+- 3 iterations
+- 4-way parallel
+
+These parameters are deliberately heavy. A GPU farm has to spend real
+electricity per guess; an ASIC has to be designed around the memory-hard
+constraint. Argon2id is the modern recommendation for password hashing
+specifically because it resists this class of attack.
+
+The Argon2id output never leaves the Web Worker. The relay sees an
+auth-hash derived further down the chain (HKDF on the Argon2id output),
+not the password and not the Argon2id output itself.
+
+## Recovery key
+
+Generated once at vault creation, displayed once, never stored. It's a
+256-bit random key encoded as a human-readable string.
+
+The recovery key wraps the vault key independently of the passphrase
+(`rec_wrapped_vault_key` in the vault header). Two consequences:
+
+- If you forget the passphrase, the recovery key still unlocks.
+- If the passkey gate locks out the device, the recovery key still
+  unlocks.
+
+It is also the **only break-glass path**. If you lose the recovery key
+**and** the passphrase **and** every passkey-unlock device, the data on
+the storage backend stays encrypted forever. There is no Wattcloud-side
+"reset password" flow — by design (ZK-7).
+
+<Aside type="caution" title="Save the recovery key like a hardware wallet seed phrase">
+  Treat it as the most-important piece of paper in this system.
+  Print it, write it, put it in a password manager you trust, store
+  it offline — but save it. Without it, you've lost half of your
+  recovery options.
+</Aside>
+
+## Optional passkey gate
+
+A WebAuthn passkey (Touch ID, Face ID, Windows Hello, an Android
+fingerprint, a YubiKey) can be added per-device-per-vault from
+*Settings → Security → Credential Protection*. Default is off so
+first-run setup stays friction-free.
+
+The gate has three modes:
+
+| Mode | Stored | Required for | Gates against |
+|---|---|---|---|
+| `none` | Plain device `CryptoKey` row in IndexedDB. | Nothing. | (default) |
+| `presence` | Same plain CryptoKey + a `credential_id` list. | `navigator.credentials.get()` before `crypto.subtle.decrypt`. | Someone with an unlocked browser tab on the origin, but not a determined attacker with same-origin code execution — the gate can be patched out at runtime. |
+| `prf` | `credential_id`, `prf_salt`, `wrapped_device_key` per credential; **no** plain CryptoKey row for the vault. | A successful PRF extension output from the authenticator on every unlock. | `presence` scenarios *plus* same-origin DOM XSS: without a fresh PRF output, the wrapped device key stays opaque ciphertext. |
+
+PRF mode is the meaningful security gain. Presence mode is mostly a
+UX nudge (the OS prompt makes silent unlocks impossible without your
+attention).
+
+### How PRF derivation works
+
+When you enable PRF mode, the per-vault device key gets re-wrapped:
+
+```
+prf_output  (32 B from WebAuthn extensions.prf.results.first)
+   │
+   ▼
+HKDF-SHA256(salt = prf_salt, info = "Wattcloud device key v1", L = 32)
+   │
+   ▼
+wrapping_key (AES-256-GCM)
+   │
+   ▼
+wrapped_device_key  =  AES-GCM(wrapping_key, device_key)
+```
+
+`"Wattcloud device key v1"` is a frozen HKDF info string. Renaming it
+would invalidate every `wrapped_device_key` ever written.
+
+The plain `device_crypto_keys` row for that vault is **deleted** when
+PRF mode is enabled. The only at-rest artifact is the wrapped form;
+without a fresh PRF touch, even an attacker with full IndexedDB access
+cannot unwrap it.
+
+### Multi-credential support
+
+PRF mode supports multiple authenticators per vault. Pair a Touch ID
+passkey for daily unlock and a YubiKey as a backup; either can derive
+the wrapping key independently. Lose one, the other still works.
+
+### Passkey replaces passphrase (opt-in)
+
+A further opt-in mode wraps the vault key itself under a passkey-derived
+key, so you can unlock the vault on a trusted device without typing the
+passphrase:
+
+```
+prf_output
+   │
+   ▼
+HKDF-SHA256(salt = prf_salt, info = "Wattcloud vault_key wrap v1", L = 32)
+   │
+   ▼
+wrapping_key_vk
+   │
+   ▼
+wrapped_vault_key  =  AES-GCM(wrapping_key_vk, vault_key)
+```
+
+`"Wattcloud vault_key wrap v1"` is a separate frozen HKDF info, distinct
+from the device-key wrap (`"Wattcloud device key v1"`). The two
+wrapping keys are guaranteed independent even though both derive from
+the same PRF output. Domain-separation is enforced by code and tested
+in `sdk-core/src/crypto/webauthn.rs`.
+
+The passphrase still works as a fallback on this device, and the
+recovery key still works regardless. Enabling passkey-replaces-passphrase
+adds an unlock path; it doesn't remove the others.
+
+## Lockout boundaries
+
+| Lost | Recovery |
+|---|---|
+| Passphrase | Recovery key, or a device with passkey-unlock-vault enabled. |
+| Recovery key | Passphrase. |
+| Every passkey on a device | Passphrase or recovery key on that device, or re-enrol from another device via QR/SAS. |
+| Passphrase **and** recovery key (every device) | No recovery. Vault data stays encrypted on the storage backend. |
+| Passphrase + recovery key but a passkey-unlock-vault device exists | Unlock on that device, then change the passphrase. |
+
+Recovery scenarios are walked through step-by-step in
+[Recovery](/operations/recovery/).
+
+## Why three independent paths
+
+The trade-off Wattcloud makes:
+
+- The **passphrase** is convenient and works everywhere. It's also the
+  weakest credential class because humans pick rememberable passwords.
+- The **recovery key** is strong (256-bit random) but high-friction —
+  you can't remember it, you have to store it.
+- The **passkey** is strong and convenient but bound to the
+  authenticator hardware. Lose the device, lose the path on that
+  device.
+
+Any single one is enough. Together, the failure modes don't overlap:
+forgetting the passphrase doesn't take out the passkey, hardware
+failure doesn't take out the recovery key, etc.
+
+## Adjacent docs
+
+- [Security model](/concepts/security-model/) — where these
+  three paths fit in the full key hierarchy.
+- [Multi-device](/concepts/multi-device/) — per-device-per-vault
+  isolation; losing passkeys on one device doesn't affect others.
+- [Recovery](/operations/recovery/) — concrete recovery
+  procedures.

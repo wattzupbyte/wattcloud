@@ -1,0 +1,140 @@
+---
+title: Recovery
+description: Recovery flows for lost devices, sole-owner lockout, lost passphrase, lost passkeys, and emergency reset.
+sidebar:
+  order: 4
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Wattcloud's recovery story is split between two domains:
+
+- **Server-side enrolment** — getting a device's `wattcloud_device`
+  cookie back. This is fixable from the host (`sudo wattcloud …`).
+- **Client-side vault unlock** — getting back into the encrypted vault
+  itself (passphrase, recovery key, passkey). This is fixable only with
+  material you set aside at vault creation. The relay cannot help —
+  it doesn't have the keys.
+
+Pick the section that matches what you've lost.
+
+## Lost the sole owner's device
+
+Symptom: only one owner ever existed; that device is gone or its browser
+state is wiped.
+
+```bash
+sudo wattcloud regenerate-claim-token   # mint a fresh 24-h bootstrap token
+sudo wattcloud claim-token              # read + consume it
+```
+
+Open the bootstrap screen at `https://your-domain`, paste the token,
+name the device, and you're enrolled as an additional owner. Existing
+non-revoked enrolments are untouched. Revoke the stale device from
+*Settings → Access Control → Enrolled devices* afterwards.
+
+This is the same flow used after an expired bootstrap token — it's
+deliberately non-destructive. Run it whenever you need owner-level
+access back.
+
+## Lost a member device (owner still has access)
+
+From any owner's *Settings → Access Control → Enrolled devices*, click
+**Revoke** on the row. The cookie clears on that device's next request;
+a stolen cookie cannot be replayed. Mint a fresh invite if the user
+needs to rejoin from another browser.
+
+## Forgot the vault passphrase
+
+Two recovery paths, in this order:
+
+1. **Recovery key.** If you saved the one-time recovery key shown at
+   vault creation, paste it into the unlock screen's recovery flow.
+   The recovery key wraps the vault key independently of the
+   passphrase, so it works regardless of whether the passphrase is
+   remembered.
+2. **A passkey-unlocks-vault device.** If you previously enabled the
+   opt-in *passkey replaces passphrase* mode on another device, that
+   device can unlock the vault directly via passkey. Once unlocked,
+   change the passphrase from *Settings → Security*.
+
+If you have neither, the vault data on the storage backend stays
+encrypted and there is no Wattcloud-side recovery — by design (ZK-1,
+ZK-7). Treat the recovery key like the seed phrase to a hardware
+wallet: it is the only break-glass path, and it cannot be regenerated
+after vault creation.
+
+## Lost every passkey on a device
+
+The passkey gate (presence or PRF mode) protects the **on-device** key
+material. It does not gate the vault itself. Recovery options:
+
+- **Open the vault on another device** that still has a working
+  passkey or passphrase, then re-enrol the affected device through the
+  QR / SAS flow.
+- **Use the recovery key** to unlock once; re-enrol the device's
+  passkey from *Settings → Security → Credential Protection*.
+- **Disable the gate** for that device only, by re-enrolling with the
+  passkey requirement off (the gate is per-device-per-vault — turning
+  it off on one device doesn't affect the others).
+
+Lockout isolation: the recovery key always works regardless of
+passkey state, because it unlocks via the recovery slot in the vault
+header — independent of the passkey wrap.
+
+## Removed the wrong device by accident
+
+There is no undo on revoke. The revoked device's cookie is gone the
+moment the next request fails; the device row stays in the enrolment
+DB as `revoked` for audit. To bring the device back: mint a fresh
+invite from *Access Control → Invites* and have the device redeem it.
+The vault data is unaffected — revoke is a server-side cookie operation,
+not a key operation.
+
+## Provider credentials wiped on a device
+
+*Forget on this device* (or a manual browser-data clear) drops the
+provider credentials cached in IndexedDB without touching the remote
+vault. To get back in: open the SPA, unlock the vault, and re-enter
+the provider connection details. Other enrolled devices are unaffected
+— their IndexedDB rows still hold their own AES-GCM-wrapped copies.
+
+## Emergency reset of the entire instance
+
+Last resort. Wipes every enrolment but leaves the storage backend
+untouched.
+
+```bash
+sudo systemctl stop wattcloud
+sudo rm /var/lib/wattcloud/state/enrollment.sqlite3
+sudo systemctl start wattcloud
+sudo wattcloud claim-token   # auto-minted fresh bootstrap token
+```
+
+After reset, the relay is back in restricted-mode-with-zero-owners.
+Existing vaults on the storage backend are unaffected — the SPA will
+unlock them as before once a device re-enrols. Everyone needs a fresh
+invite.
+
+<Aside type="caution" title="Wipes all enrolments">
+  Emergency reset destroys the device list. If your goal is just to
+  recover sole-owner access, use `regenerate-claim-token` (above)
+  instead — it preserves existing enrolments.
+</Aside>
+
+## Lost the storage backend itself
+
+The vault on the backend is the only durable copy of your encrypted
+data. If the backend is gone (disk failure, accidental delete,
+provider account closed) and you don't have an independent snapshot,
+the data is gone — neither the relay nor Wattcloud has a copy.
+[Backups](/operations/backups/) covers what to snapshot to avoid this.
+
+## Adjacent docs
+
+- [Backups](/operations/backups/) — what to snapshot before you
+  ever need a recovery.
+- [Access control](/install/access-control/) — claim, invite,
+  revoke flows from the SPA side.
+- [Identity & passkeys](/concepts/identity/) — how the
+  passphrase / recovery key / passkey wraps fit together.

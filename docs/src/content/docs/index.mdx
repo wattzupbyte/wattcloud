@@ -40,9 +40,17 @@ import { Aside } from '@astrojs/starlight/components';
     <h3>Connect storage</h3>
     <p>WebDAV, SFTP, or any S3-compatible bucket. One vault, opaque V7 ciphertext on the backend, no plaintext ever leaves the browser.</p>
   </a>
-  <a class="wc-card" href="https://github.com/wattzupbyte/wattcloud/blob/main/SPEC.md">
-    <h3>Protocol &amp; threat model</h3>
-    <p><code>SPEC.md</code> for the BYO wire format and vault layout, <code>SECURITY.md</code> for the threat model and zero-knowledge invariants.</p>
+  <a class="wc-card" href="/concepts/security-model/">
+    <h3>Security model</h3>
+    <p>Trust boundary, ZK-1…ZK-7 invariants, post-quantum strategy, attacker capabilities, sandboxed runtime, release integrity.</p>
+  </a>
+  <a class="wc-card" href="/operations/hardening/">
+    <h3>Operating the host</h3>
+    <p>Opt-in VPS hardening, backups, troubleshooting common stumbles, and recovery flows for lockout / lost devices.</p>
+  </a>
+  <a class="wc-card" href="/faq/">
+    <h3>FAQ</h3>
+    <p>Why post-quantum now, why no native apps, why AGPL, why the relay is near-stateless — design rationale in plain prose.</p>
   </a>
 </div>
 

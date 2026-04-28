@@ -1,0 +1,157 @@
+---
+title: Troubleshooting
+description: Common operator stumbles — cosign verify failure, /health timeout, CORS, claim-token expired, port conflicts, ACME failures.
+sidebar:
+  order: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+What to look at when an install or upgrade goes sideways. Ordered roughly
+by where in the install lifecycle the symptom shows up.
+
+## `cosign verify-blob` fails
+
+```
+Error: invalid signature when validating ASN.1 encoded signature
+```
+
+or
+
+```
+Error: certificate identity ".../release.yml@..." doesn't match regex
+```
+
+This is **always** a stop condition. Three possible causes:
+
+1. **The release was tampered with.** Re-download the asset directly from
+   `https://github.com/wattzupbyte/wattcloud/releases/`. If the failure
+   reproduces with a fresh download, do not extract.
+2. **`TRUSTED_SIGNER_IDENTITY` is wrong for the source repo.** If you're
+   running a fork's release, set the env override:
+   ```bash
+   echo 'TRUSTED_SIGNER_IDENTITY=^https://github\.com/your-fork/wattcloud/' \
+     | sudo tee -a /etc/wattcloud/wattcloud.env
+   ```
+3. **System clock is far off.** Sigstore certs are short-lived; a host
+   that thinks it's 2031 will reject a 2026 cert. `timedatectl` to check.
+
+There is no "skip verification" flag and there will not be one.
+
+## `/health` doesn't come back during install
+
+`deploy-vps.sh` polls `https://your-domain/health` for up to 30 s after
+starting the unit. If it times out:
+
+```bash
+journalctl -u wattcloud --since "5 min ago" -n 200
+journalctl -u caddy --since "5 min ago" -n 200
+```
+
+Common causes, fastest to slowest:
+
+- **DNS hasn't propagated** to the host yet. Caddy's ACME challenge for
+  Let's Encrypt fails until the A/AAAA record resolves to this VPS.
+  Wait, then `sudo systemctl restart caddy`.
+- **Port 80 or 443 is bound by something else.** `sudo ss -ltnp | grep
+  -E ':80|:443'` — Apache, nginx, an old Caddy instance, Docker port
+  mappings. Stop the conflicting service.
+- **The relay is up but Caddy isn't reverse-proxying.** `curl -sv
+  http://127.0.0.1:8443/health` from the host. 200 means the relay is
+  fine and the issue is at the Caddy / TLS layer.
+- **Hostname mismatch.** The domain you passed to `install.sh` is what
+  Caddy expects; if you typed it differently you'll see ACME or
+  certificate-name errors in `journalctl -u caddy`.
+
+## CORS errors connecting to a storage backend
+
+The SPA surfaces a generic *"Unknown error"* on a CORS-blocked first
+request. The relay never sees the failure — it's between the browser
+and the backend.
+
+- **WebDAV.** Add the SPA origin (`https://cloud.example.com`) to the
+  WebDAV server's CORS config. Per-server hints are in
+  [Providers → WebDAV](/providers/webdav/#cors--the-most-common-failure).
+- **S3-compatible.** The bucket needs a CORS rule. The SPA shows a
+  *Copy CORS JSON* button on a failed connect; the minimal rule is in
+  [Providers → S3-compatible](/providers/s3/#cors--set-this-before-connecting).
+- **SFTP.** No CORS issue — the relay performs the SSH transport on
+  the SPA's behalf, so it's a same-origin WebSocket. If SFTP is
+  failing, check connectivity from the relay host directly.
+
+## "I don't have a claim token / token expired"
+
+Bootstrap tokens are 24-hour TTL, single-use. If you deferred the
+bootstrap and the token aged out:
+
+```bash
+sudo wattcloud regenerate-claim-token
+sudo wattcloud claim-token
+```
+
+`regenerate-claim-token` does **not** revoke existing owners. Use it
+freely; it exists specifically for the locked-out / expired-token
+case. Full recovery scenarios in [Recovery](/operations/recovery/).
+
+## "I'm the sole owner and locked out"
+
+Same fix as above — `regenerate-claim-token` mints a new bootstrap
+token without disturbing existing enrolments. The new device joins
+as an additional owner; revoke the stale one afterwards.
+
+## ACME / Let's Encrypt failures
+
+`journalctl -u caddy` is the source of truth. Patterns:
+
+- `no IP addresses found for X` — DNS not pointed at the VPS yet.
+- `connection refused` on port 80 — UFW or another firewall blocking
+  inbound 80. ACME's HTTP-01 challenge needs port 80 reachable.
+- `429 too many certificates already issued` — Let's Encrypt rate
+  limit. Usually triggered by repeated install attempts. Wait it out
+  (typically an hour or up to a week for the per-domain weekly cap).
+- Behind NAT / a CDN — Caddy's defaults assume direct reachability on
+  80 and 443. If you're behind something, you'll need to configure
+  Caddy's ACME settings explicitly; that's outside Wattcloud's
+  install scope.
+
+## Behind a corporate proxy / restrictive egress
+
+If the host can't reach `api.github.com`, `objects.githubusercontent.com`,
+`fulcio.sigstore.dev`, or `rekor.sigstore.dev`, neither `install.sh` nor
+`wattcloud-update` can complete. The trust chain depends on Sigstore +
+GitHub releases; there is no offline-install path.
+
+## "Service starts but /relay/admin/me returns 401"
+
+The device cookie isn't being honoured. Causes:
+
+- **Browser cookies for the domain are stale.** Clear cookies for
+  `cloud.example.com` and refresh.
+- **Env file was rotated** — `/etc/wattcloud/wattcloud.env` regenerated,
+  so old cookies signed with the old JWT key are invalid. Re-claim from
+  a fresh bootstrap token.
+- **Restricted mode + zero owners.** Confirm with
+  `sudo wattcloud status`. If there are zero owners, you're in the
+  bootstrap state; claim with `sudo wattcloud claim-token`.
+
+## Reading the relay's view of the world
+
+```bash
+sudo wattcloud status                  # service + install state
+sudo systemctl status wattcloud caddy  # systemd-level state
+sudo journalctl -u wattcloud -f        # live logs
+curl -s https://cloud.example.com/health    # 200 = healthy
+curl -s https://cloud.example.com/ready     # 200 = serving traffic
+```
+
+The relay deliberately doesn't expose anything beyond `/health` and
+`/ready` for unauthenticated callers — there is no public stats or
+build-info endpoint. Operator visibility is via journald.
+
+## Adjacent docs
+
+- [Recovery](/operations/recovery/) — recovery flows for lockout.
+- [VPS hardening](/operations/hardening/) — fail2ban, UFW, sshd
+  posture.
+- [Upgrade & rollback](/install/upgrades/) — auto-rollback fires
+  when `/health` doesn't come back during an update.

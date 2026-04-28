@@ -1,0 +1,159 @@
+---
+title: Multi-device
+description: How QR pairing, SAS verification, owner / member roles, invites, and revocation fit together.
+sidebar:
+  order: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A vault can be unlocked from many devices: your laptop at home, your
+work machine, a family member's browser, a backup tablet. Wattcloud's
+multi-device model holds the relay accountable for enrolment (who can
+talk to it) and holds the SPA accountable for vault access (who can
+decrypt). Those are two distinct authorisations.
+
+## Two layers of authorisation
+
+| Layer | What it controls | How it's checked |
+|---|---|---|
+| **Enrolment** (server-side) | Whether a device's `wattcloud_device` cookie is honoured by the relay. | `wattcloud_device` JWT cookie on every gated request. Owner / member roles live here. |
+| **Vault unlock** (client-side) | Whether the SPA can decrypt the vault on this device. | Passphrase, recovery key, or per-device passkey wrap. The relay never participates. |
+
+Revoking a device's enrolment kills the cookie and ends its access to
+the relay. It does **not** revoke any of the vault keys — those are
+math and live in the vault itself. The two layers serve different
+threats.
+
+## Owner vs member
+
+| Role | Can do | Can't do |
+|---|---|---|
+| **Owner** | Mint invites, revoke other devices, claim/redeem bootstrap tokens. | Read another member's encrypted files (zero-knowledge — not even an owner sees plaintext that isn't theirs). |
+| **Member** | Use the vault. | Mint invites, revoke devices, claim ownership. |
+
+The first device to claim a fresh bootstrap token becomes an owner.
+Subsequent invites can mint either role. Owners can promote / demote
+through the same access-control UI.
+
+The sole-owner-can't-revoke-themselves rule (`409 last_owner` from the
+admin path) is intentional — it prevents an owner from accidentally
+locking themselves out via the web UI. The CLI recovery flow
+([Recovery](/operations/recovery/)) is the only way for an owner to
+re-enrol after losing access.
+
+## Adding a device — the QR + SAS flow
+
+The full pairing sequence:
+
+```
+┌────────────┐                                ┌────────────┐
+│ Device A   │                                │ Device B   │
+│ (existing) │                                │ (new)      │
+└─────┬──────┘                                └─────┬──────┘
+      │                                              │
+      │ Generate invite (TTL 1h / 24h / 7d)          │
+      │ ──── HMAC of code stored on relay ────▶      │
+      │                                              │
+      │ Show QR / 11-char code (4-4-3 format)        │
+      │                                              │
+      │                                              │ Scan QR or paste code
+      │                                              │
+      │                       Redeem                 │
+      │ ◀──── relay enrols device, mints cookie ──── │
+      │                                              │
+      │ SAS code (6 digits) shown on both screens    │
+      │                                              │
+      │  ◀──────  Confirm match — both must  ──────▶ │
+      │                                              │
+      │ Vault key wrap created for B's device key    │
+      │ ──────────────────────────────────────────▶  │
+      │                                              │
+      │ B's vault session active; vault unlocked     │
+└─────┴──────────────────────────────────────────────┴──────┘
+```
+
+Two protections sit on top of the basic invite redemption:
+
+- **The SAS code** (Short Authentication String) is shown on both
+  screens during pairing. Both users confirm the same 6-digit number.
+  This catches a relay-in-the-middle: if an attacker had managed to
+  insert their own keys into the handshake, the SAS codes on the two
+  screens would not match.
+- **Single-use, TTL-bounded invite codes.** 11 characters in `4-4-3`
+  format (`A7KB-X9MQ-R4S`). Code shown once in the reveal modal; the
+  relay stores only its HMAC hash. After close, you can revoke but not
+  re-display.
+
+Brute-force is rate-limited at 5 attempts / 5 min + 10 / hour per IP
+(in-memory counters; never persisted). With 31¹¹ ≈ 3×10¹⁶ entropy in the
+code itself, the rate limit is a memory-bound guard against patient
+botnets, not the primary defence. There's also a Proof-of-Work
+challenge on the redeem path that shifts per-attempt cost to the
+attacker's CPU — see
+[`SECURITY.md` §15 "Brute-force ceilings"](https://github.com/wattzupbyte/wattcloud/blob/main/SECURITY.md#brute-force-ceilings).
+
+## Session lifecycle
+
+Once enrolled, a device's cookie behaves as follows:
+
+| Event | Server effect | User-visible effect |
+|---|---|---|
+| Successful claim or redeem | Cookie minted with `iat = now`, `exp = now + 90d`. | Device signed in. SPA writes a `wc_enrolled_once` localStorage hint. |
+| Any gated request with `exp - now < 7d` | Sliding refresh — fresh 90-day cookie replaces the old one in the response. | Active devices never re-enrol. |
+| 90 days of total silence | Cookie expires. | Next visit shows a *Session expired* screen with re-enrol guidance. Vault data on the storage backend is untouched. |
+| Explicit *Sign out on this device* | `revoked_at` set; cookie cleared with `Max-Age=0`; `wc_enrolled_once` cleared client-side. | Browser is back to the plain "invite-only" entry, not the expired-variant. |
+| Owner revokes another device | `revoked_at` set; next request from that device 401s + clears cookie. | That device sees the *Session expired* on next visit. |
+
+The 90-day window is generous on purpose: most multi-device users have
+at least one device that's active weekly, and that device's sliding
+refresh keeps it logged in indefinitely. The 90 days is for genuinely
+silent devices — they age out so a long-lost cookie can't be replayed.
+
+## Revoke + sign out
+
+The two operations look similar in the UI but are different in
+intent:
+
+- **Sign out on this device** (under *Settings → This session*)
+  revokes the **current** browser's cookie. The captured cookie can't
+  be replayed after sign-out. Use this on shared computers or when
+  you're done with a session.
+- **Revoke** (under *Access Control → Enrolled devices*) revokes
+  **another** device's cookie from the current device. Use this when
+  a device is lost / no longer trusted.
+
+Both are server-side authoritative — the relay's middleware fails the
+cookie lookup on the next request from the revoked device.
+
+<Aside type="note" title="Revoking does not destroy vault data">
+  Revoke is purely a server-side cookie operation. The vault on the
+  storage backend is unaffected, and the revoked device's IndexedDB
+  is unaffected. To get back in, the user redeems a fresh invite and
+  unlocks the vault again — same path as a new device.
+</Aside>
+
+## Per-device crypto material
+
+Each enrolled device has its own:
+
+- `wattcloud_device` JWT cookie (server-side row + value).
+- IndexedDB-resident **device key** (non-extractable `CryptoKey`).
+- Slot in the vault manifest with a per-device wrap of the vault key.
+- (If WebAuthn/PRF gate is on) a per-device-per-vault `device_webauthn`
+  row with `credential_id`, `prf_salt`, and `wrapped_device_key`.
+
+Per-device-per-vault, every layer is independent. Losing every passkey
+on Device A does not affect Device B. Provider credentials cached on
+Device A do not exist on Device B. This is the cost (every device
+sets up provider connections separately) and the benefit (no
+device-level credential leak crosses devices).
+
+## Adjacent docs
+
+- [Identity & passkeys](/concepts/identity/) — passphrase,
+  recovery key, presence vs PRF passkey wraps.
+- [Access control](/install/access-control/) — claim, invite,
+  revoke flows from the operator side.
+- [Recovery](/operations/recovery/) — what to do when a device
+  is lost or the sole owner is locked out.

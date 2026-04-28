@@ -1,0 +1,131 @@
+---
+title: VPS hardening
+description: What sudo wattcloud harden actually does — UFW, fail2ban, sshd lockdown, R5 logging posture, swap, earlyoom, AIDE, msmtp.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`install.sh` is deliberately app-only — it brings up Caddy and the relay
+without touching the firewall, SSH config, or the rest of the host. VPS
+hardening is opt-in and lives in a separate command:
+
+```bash
+sudo wattcloud harden            # interactive wizard
+sudo wattcloud harden --yes      # accept defaults non-interactively
+```
+
+The wizard prompts per layer; the non-interactive form takes the same
+choices via flags. Re-running is idempotent — components that already
+match your existing config are skipped.
+
+## What gets hardened
+
+| Layer | Default | Opt-out flag |
+|---|---|---|
+| **UFW** ingress allow-list (22/tcp, 80/tcp, 443/tcp by default) | on | `--no-ufw` |
+| **fail2ban** with `sshd` + `recidive` jails | on | `--no-fail2ban` |
+| **sshd**: pubkey-only auth, optional non-22 port, root login disabled | on | `--no-ssh-harden` |
+| **unattended-upgrades** for security updates | on | `--no-unattended-upgrades` |
+| **R5 journald posture** — privacy-minimized logging (see below) | on | `--no-r5-logging` |
+| **Swap** sized to 1× RAM (capped at 4 GiB) on hosts under 4 GiB | on | `--no-swap` |
+| **earlyoom** for low-RAM hosts | on if RAM < 4 GiB | `--no-earlyoom` |
+| **wattcloud-disk-watchdog** systemd timer | on | `--no-disk-watchdog` |
+| **AIDE** filesystem baseline | off | `--with-aide` |
+| **msmtp** outbound mail relay | off | `--with-msmtp <smtp-url>` |
+
+Selective examples:
+
+```bash
+# Skip the SSH layer (you already have your own posture there).
+sudo wattcloud harden --yes --no-ssh-harden
+
+# Add the AIDE baseline + an SMTP relay for fail2ban / disk-watchdog alerts.
+sudo wattcloud harden --yes \
+  --ssh-pubkey ~/.ssh/id_ed25519.pub \
+  --with-aide \
+  --with-msmtp smtps://user:pass@smtp.example.com:465
+```
+
+## SSH safety net
+
+The SSH layer never closes the door behind you. The sequence:
+
+1. New `sshd_config.d/wattcloud-harden.conf` drop-in with `PasswordAuthentication no`,
+   `PermitRootLogin no`, the new port (if changed), and your pubkey installed.
+2. UFW opens the **new** port (still allowing 22 if it differs).
+3. `sshd` reloaded.
+4. The wizard pauses and asks you to open a second terminal and confirm the
+   new config works (`ssh -p <new-port> user@host`). Until you confirm, port
+   22 stays open.
+5. On confirm, port 22 is closed in UFW. Your previous session stays alive
+   under the old binding (sshd doesn't drop existing connections on reload).
+
+If you skip the confirm step, you exit the wizard with both ports still
+open — recoverable by re-running it.
+
+## R5 privacy-minimized logging
+
+R5 is the project's GDPR-minimization posture for the host: avoid persisting
+client IP addresses anywhere they aren't load-bearing. What it does:
+
+- **Caddy access log filter** strips `request.remote_ip`, `request.remote_port`,
+  and credential headers before journald receives the line. Status, method,
+  path, and byte counts stay — operators can still answer "is the relay
+  serving traffic" without having a per-IP record on disk.
+- **journald retention** capped at 30 days (`MaxRetentionSec=30day`). The
+  `sshd` and `fail2ban` units keep IPs on purpose — fail2ban's whole job
+  is matching repeat offenders, and 30 days is enough headroom for the
+  recidive jail to work without becoming a long-term record.
+- **The relay** itself never writes client IPs anywhere. The in-memory
+  rate-limiter is the only per-IP state, and it never touches disk. This
+  is a code-level invariant, not a config knob — it does not change with
+  R5 on or off.
+
+Full discussion is in [`SECURITY.md` §13.2](https://github.com/wattzupbyte/wattcloud/blob/main/SECURITY.md#132-r5-privacy-minimized-logging).
+
+<Aside type="note" title="R5 is about persistence, not silence">
+  The hardening posture targets **stored** client IPs, not zero-logging.
+  fail2ban needs IPs to detect repeat offenders; sshd's `auth.log` IPs
+  are how it does that. Mitigation is rotation (the 30-day cap), not
+  suppression.
+</Aside>
+
+## Disk watchdog
+
+`wattcloud-disk-watchdog` is a tiny systemd timer that logs a
+`daemon.warning` to journald when root-fs utilisation crosses a threshold
+(default 85%). Tail it with:
+
+```bash
+journalctl -t wattcloud-disk-watchdog -f
+```
+
+Pair with `--with-msmtp` if you want a real e-mail when the watchdog fires
+or a fail2ban jail trips.
+
+## AIDE baseline
+
+`--with-aide` installs AIDE, runs the initial baseline against the live
+filesystem (so `/var/lib/wattcloud` is in the baseline if the relay has
+already started), and registers a daily check via systemd timer. AIDE is
+heavy and not on by default — turn it on if you want detection coverage
+for filesystem tampering and have the disk for the database (~50–200 MiB).
+
+## Idempotency
+
+Re-running `sudo wattcloud harden` after the initial pass is safe:
+
+- Configs that already match the desired state are left alone.
+- Layers you previously opted out of via `--no-*` stay off — you have to
+  re-run with the layer enabled to opt back in.
+- The SSH safety net runs again; if you've already confirmed the new
+  port, the wizard moves through that step quickly.
+
+## Adjacent docs
+
+- After the standard install: [Access control](/install/access-control/)
+  to lock the relay down and claim ownership.
+- Operating the running install: [Backups](/operations/backups/) and
+  [Troubleshooting](/operations/troubleshooting/).

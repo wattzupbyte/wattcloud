@@ -52,6 +52,25 @@ export default defineConfig({
             { label: 'S3-compatible', link: '/providers/s3/' },
           ],
         },
+        {
+          label: 'Operations',
+          items: [
+            { label: 'VPS hardening', link: '/operations/hardening/' },
+            { label: 'Backups', link: '/operations/backups/' },
+            { label: 'Troubleshooting', link: '/operations/troubleshooting/' },
+            { label: 'Recovery', link: '/operations/recovery/' },
+          ],
+        },
+        {
+          label: 'Concepts',
+          items: [
+            { label: 'Security model', link: '/concepts/security-model/' },
+            { label: 'Sharing', link: '/concepts/sharing/' },
+            { label: 'Multi-device', link: '/concepts/multi-device/' },
+            { label: 'Identity & passkeys', link: '/concepts/identity/' },
+          ],
+        },
+        { label: 'FAQ', link: '/faq/' },
       ],
     }),
   ],
