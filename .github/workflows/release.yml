@@ -166,7 +166,7 @@ jobs:
           tar -czf "dist/${PAYLOAD}.tar.gz" -C dist "${PAYLOAD}"
           sha256sum "dist/${PAYLOAD}.tar.gz" > "dist/${PAYLOAD}.tar.gz.sha256"
 
-      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da
+      - uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003
         with:
           cosign-release: 'v2.4.1'
 
@@ -219,7 +219,7 @@ jobs:
           sha256sum install.sh >> CHECKSUMS.txt
           cat CHECKSUMS.txt
 
-      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da
+      - uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003
         with:
           cosign-release: 'v2.4.1'
 
