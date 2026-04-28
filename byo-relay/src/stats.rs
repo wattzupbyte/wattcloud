@@ -8,7 +8,7 @@
 // - Rate-limit keyed on device_id_hash — preserves no-IP-logging invariant.
 
 use axum::{body::Bytes, extract::State, http::StatusCode, response::IntoResponse};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::Connection;
 use serde::Deserialize;
 use sha2::Sha256;

@@ -49,7 +49,7 @@ const MAX_PRESIGN_TTL: u32 = 86_400;
 // ─── SigV4 signing ────────────────────────────────────────────────────────────
 
 mod sigv4 {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::{Digest, Sha256};
 
     type HmacSha256 = Hmac<Sha256>;

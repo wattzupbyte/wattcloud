@@ -34,7 +34,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
