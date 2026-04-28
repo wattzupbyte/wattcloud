@@ -791,7 +791,6 @@ pub struct OwnerDevice {
     pub device_id: String,
 }
 
-#[axum::async_trait]
 impl<S: Send + Sync> axum::extract::FromRequestParts<S> for OwnerDevice {
     type Rejection = (StatusCode, &'static str);
 

@@ -216,11 +216,11 @@ async fn main() -> anyhow::Result<()> {
             post(init_bundle).layer(DefaultBodyLimit::max(bundle_init_body_cap)),
         )
         .route(
-            "/relay/share/bundle/:share_id/blob/:blob_id",
+            "/relay/share/bundle/{share_id}/blob/{blob_id}",
             post(upload_bundle_blob).layer(DefaultBodyLimit::disable()),
         )
         .route(
-            "/relay/share/bundle/:share_id/seal",
+            "/relay/share/bundle/{share_id}/seal",
             post(seal_bundle).layer(DefaultBodyLimit::disable()),
         )
         .route("/relay/stats", post(ingest_stats))
@@ -263,9 +263,9 @@ async fn main() -> anyhow::Result<()> {
             post(post_invite).layer(DefaultBodyLimit::max(auth_body_cap)),
         )
         .route("/relay/admin/invites", get(get_invites))
-        .route("/relay/admin/invites/:id", delete(delete_invite))
+        .route("/relay/admin/invites/{id}", delete(delete_invite))
         .route("/relay/admin/devices", get(get_devices))
-        .route("/relay/admin/devices/:id", delete(delete_device))
+        .route("/relay/admin/devices/{id}", delete(delete_device))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             require_owner_device,
@@ -284,11 +284,14 @@ async fn main() -> anyhow::Result<()> {
         // Share recipient read surface: public by design (recipients with
         // a share URL have no device account).
         .route(
-            "/relay/share/b2/:share_id",
+            "/relay/share/b2/{share_id}",
             get(get_b2_share).delete(revoke_b2_share),
         )
-        .route("/relay/share/:share_id/meta", get(get_share_meta))
-        .route("/relay/share/:share_id/blob/:blob_id", get(get_share_blob))
+        .route("/relay/share/{share_id}/meta", get(get_share_meta))
+        .route(
+            "/relay/share/{share_id}/blob/{blob_id}",
+            get(get_share_blob),
+        )
         .route("/relay/share/headroom", get(get_share_headroom));
 
     let app = public
@@ -303,7 +306,10 @@ async fn main() -> anyhow::Result<()> {
         // handlers return in milliseconds so the wider budget doesn't
         // relax the DoS posture — stalled connections are still rate- and
         // byte-budget gated.
-        .layer(TimeoutLayer::new(Duration::from_secs(4 * 3600)))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::GATEWAY_TIMEOUT,
+            Duration::from_secs(4 * 3600),
+        ))
         .layer(CookieManagerLayer::new())
         .layer(axum::Extension(Domain(domain)))
         .with_state(state);

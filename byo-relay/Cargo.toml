@@ -22,7 +22,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Web framework — same version as /backend
-axum = { version = "0.7", features = ["ws", "macros"] }
+axum = { version = "0.8", features = ["ws", "macros"] }
 axum-extra = { version = "0.12", features = ["typed-header"] }
 
 # Async runtime
@@ -39,18 +39,18 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Tower middleware
-tower = { version = "0.4", features = ["util", "timeout"] }
-tower-http = { version = "0.5", features = ["fs", "timeout"] }
+tower = { version = "0.5", features = ["util", "timeout"] }
+tower-http = { version = "0.6", features = ["fs", "timeout"] }
 
 # TLS — same stack as backend
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 rustls = { version = "0.23", features = ["ring"] }
 
 # JWT (relay auth cookie)
 jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto"] }
 
 # Cookies
-tower-cookies = "0.10"
+tower-cookies = "0.11"
 time = "0.3"
 
 # Random

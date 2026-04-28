@@ -148,7 +148,7 @@ async fn recv_text_or_close(
                 if now >= deadline {
                     return Err(SftpRelayError::Timeout);
                 }
-                if let Err(e) = sink.send(Message::Ping(Vec::new())).await {
+                if let Err(e) = sink.send(Message::Ping(Vec::new().into())).await {
                     // Ping send failure usually means the peer is already
                     // gone; don't bail here, let the next stream.next()
                     // surface the terminal error with full context.
@@ -238,7 +238,7 @@ impl client::Handler for CapturingKeyHandler {
 /// `pinned_ips` must already be validated by `dns::resolve_and_validate`.
 /// `client_ip` and `remote_host` are used for rate-limit tracking and logging.
 pub async fn handle_sftp_session(
-    ws: WebSocket,
+    mut ws: WebSocket,
     pinned_ips: Vec<IpAddr>,
     port: u16,
     client_ip: IpAddr,
@@ -380,7 +380,9 @@ async fn run_session(
         "relay_version": RELAY_PROTOCOL_VERSION,
     });
     sink.send(Message::Text(
-        serde_json::to_string(&host_key_frame).unwrap_or_default(),
+        serde_json::to_string(&host_key_frame)
+            .unwrap_or_default()
+            .into(),
     ))
     .await
     .map_err(|e| {
@@ -444,7 +446,9 @@ async fn run_session(
     if !ok {
         // Failure already counted pre-handshake — do not double-count.
         let _ = sink
-            .send(Message::Text(err_json(auth_id, "authentication failed")))
+            .send(Message::Text(
+                err_json(auth_id, "authentication failed").into(),
+            ))
             .await;
         return Err(SftpRelayError::SshAuth);
     }
@@ -471,7 +475,9 @@ async fn run_session(
     sftp.set_timeout(60).await;
 
     let _ = sink
-        .send(Message::Text(ok_json(auth_id, serde_json::json!({}))))
+        .send(Message::Text(
+            ok_json(auth_id, serde_json::json!({})).into(),
+        ))
         .await;
 
     // Step 5: command loop
@@ -582,14 +588,13 @@ async fn dispatch_loop(
                             | PendingBinary::Drain { req_id, .. } => *req_id,
                         };
                         let _ = sink
-                            .send(Message::Text(err_json(req_id, "payload too large")))
+                            .send(Message::Text(err_json(req_id, "payload too large").into()))
                             .await;
                     } else {
                         let _ = sink
-                            .send(Message::Text(err_json(
-                                0,
-                                "unexpected oversized binary frame",
-                            )))
+                            .send(Message::Text(
+                                err_json(0, "unexpected oversized binary frame").into(),
+                            ))
                             .await;
                     }
                     return Ok(SessionStats {
@@ -605,7 +610,9 @@ async fn dispatch_loop(
                         // SR2: drop the follow-up binary for a JSON command
                         // that already errored, so the client sees a clear
                         // response instead of waiting for a silent ack.
-                        let _ = sink.send(Message::Text(err_json(req_id, reason))).await;
+                        let _ = sink
+                            .send(Message::Text(err_json(req_id, reason).into()))
+                            .await;
                     }
                     Some(PendingBinary::Write { req_id, path }) => {
                         // Legacy single-shot: write full file in one SFTP call.
@@ -621,7 +628,7 @@ async fn dispatch_loop(
                                 err_json(req_id, format!("write to {path}: {e}"))
                             }
                         };
-                        let _ = sink.send(Message::Text(resp)).await;
+                        let _ = sink.send(Message::Text(resp.into())).await;
                     }
                     Some(PendingBinary::WriteChunk { req_id, handle }) => {
                         // Streaming chunk: append to the session buffer.
@@ -632,22 +639,25 @@ async fn dispatch_loop(
                             Some(session) => {
                                 if total_buffered.saturating_add(data.len()) > MAX_STREAM_BUFFER {
                                     let _ = sink
-                                        .send(Message::Text(err_json(
-                                            req_id,
-                                            "stream buffer limit exceeded",
-                                        )))
+                                        .send(Message::Text(
+                                            err_json(req_id, "stream buffer limit exceeded").into(),
+                                        ))
                                         .await;
                                 } else {
                                     session.buffer.extend_from_slice(&data);
                                     total_buffered = total_buffered.saturating_add(data.len());
                                     let _ = sink
-                                        .send(Message::Text(ok_json(req_id, serde_json::json!({}))))
+                                        .send(Message::Text(
+                                            ok_json(req_id, serde_json::json!({})).into(),
+                                        ))
                                         .await;
                                 }
                             }
                             None => {
                                 let _ = sink
-                                    .send(Message::Text(err_json(req_id, "unknown write handle")))
+                                    .send(Message::Text(
+                                        err_json(req_id, "unknown write handle").into(),
+                                    ))
                                     .await;
                             }
                         }
@@ -685,7 +695,9 @@ async fn handle_text_command(
             let path = match param_str(&req.params, "path") {
                 Some(p) => p.to_string(),
                 None => {
-                    let _ = sink.send(Message::Text(err_json(id, "missing path"))).await;
+                    let _ = sink
+                        .send(Message::Text(err_json(id, "missing path").into()))
+                        .await;
                     return;
                 }
             };
@@ -706,7 +718,7 @@ async fn handle_text_command(
                     err_json(id, e)
                 }
             };
-            let _ = sink.send(Message::Text(resp)).await;
+            let _ = sink.send(Message::Text(resp.into())).await;
         }
 
         "fs_info" => {
@@ -741,14 +753,16 @@ async fn handle_text_command(
                     )
                 }
             };
-            let _ = sink.send(Message::Text(resp)).await;
+            let _ = sink.send(Message::Text(resp.into())).await;
         }
 
         "list" => {
             let path = match param_str(&req.params, "path") {
                 Some(p) => p.to_string(),
                 None => {
-                    let _ = sink.send(Message::Text(err_json(id, "missing path"))).await;
+                    let _ = sink
+                        .send(Message::Text(err_json(id, "missing path").into()))
+                        .await;
                     return;
                 }
             };
@@ -769,7 +783,7 @@ async fn handle_text_command(
                     }
                     Err(e) => err_json(id, e),
                 };
-            let _ = sink.send(Message::Text(resp)).await;
+            let _ = sink.send(Message::Text(resp.into())).await;
         }
 
         "read" => {
@@ -777,7 +791,9 @@ async fn handle_text_command(
             let path = match param_str(&req.params, "path") {
                 Some(p) => p.to_string(),
                 None => {
-                    let _ = sink.send(Message::Text(err_json(id, "missing path"))).await;
+                    let _ = sink
+                        .send(Message::Text(err_json(id, "missing path").into()))
+                        .await;
                     return;
                 }
             };
@@ -786,7 +802,7 @@ async fn handle_text_command(
                     // Frame 1: JSON header
                     let header = ok_json(id, serde_json::json!({ "size": data.len() }));
                     let header_len = header.len();
-                    if sink.send(Message::Text(header)).await.is_err() {
+                    if sink.send(Message::Text(header.into())).await.is_err() {
                         return;
                     }
                     // D5: track the download bandwidth for stats. Previously the
@@ -795,11 +811,11 @@ async fn handle_text_command(
                     *bytes_down = bytes_down.saturating_add(header_len);
                     let data_len = data.len();
                     // Frame 2: binary data
-                    let _ = sink.send(Message::Binary(data)).await;
+                    let _ = sink.send(Message::Binary(data.into())).await;
                     *bytes_down = bytes_down.saturating_add(data_len);
                 }
                 Err(e) => {
-                    let _ = sink.send(Message::Text(err_json(id, e))).await;
+                    let _ = sink.send(Message::Text(err_json(id, e).into())).await;
                 }
             }
         }
@@ -827,7 +843,9 @@ async fn handle_text_command(
             let path = match param_str(&req.params, "path") {
                 Some(p) => p.to_string(),
                 None => {
-                    let _ = sink.send(Message::Text(err_json(id, "missing path"))).await;
+                    let _ = sink
+                        .send(Message::Text(err_json(id, "missing path").into()))
+                        .await;
                     return;
                 }
             };
@@ -854,10 +872,9 @@ async fn handle_text_command(
                 },
             );
             let _ = sink
-                .send(Message::Text(ok_json(
-                    id,
-                    serde_json::json!({ "handle": handle }),
-                )))
+                .send(Message::Text(
+                    ok_json(id, serde_json::json!({ "handle": handle })).into(),
+                ))
                 .await;
         }
 
@@ -893,7 +910,7 @@ async fn handle_text_command(
                 Some(h) => h.to_string(),
                 None => {
                     let _ = sink
-                        .send(Message::Text(err_json(id, "missing handle")))
+                        .send(Message::Text(err_json(id, "missing handle").into()))
                         .await;
                     return;
                 }
@@ -902,7 +919,7 @@ async fn handle_text_command(
                 Some(s) => s,
                 None => {
                     let _ = sink
-                        .send(Message::Text(err_json(id, "unknown write handle")))
+                        .send(Message::Text(err_json(id, "unknown write handle").into()))
                         .await;
                     return;
                 }
@@ -924,7 +941,7 @@ async fn handle_text_command(
                     err_json(id, format!("write to {write_path}: {e}"))
                 }
             };
-            let _ = sink.send(Message::Text(resp)).await;
+            let _ = sink.send(Message::Text(resp.into())).await;
         }
 
         "write_abort" => {
@@ -933,7 +950,7 @@ async fn handle_text_command(
                 Some(h) => h.to_string(),
                 None => {
                     let _ = sink
-                        .send(Message::Text(err_json(id, "missing handle")))
+                        .send(Message::Text(err_json(id, "missing handle").into()))
                         .await;
                     return;
                 }
@@ -942,7 +959,7 @@ async fn handle_text_command(
                 *total_buffered = total_buffered.saturating_sub(session.buffer.len());
             }
             let _ = sink
-                .send(Message::Text(ok_json(id, serde_json::json!({}))))
+                .send(Message::Text(ok_json(id, serde_json::json!({})).into()))
                 .await;
         }
 
@@ -952,13 +969,17 @@ async fn handle_text_command(
             let path = match param_str(&req.params, "path") {
                 Some(p) => p.to_string(),
                 None => {
-                    let _ = sink.send(Message::Text(err_json(id, "missing path"))).await;
+                    let _ = sink
+                        .send(Message::Text(err_json(id, "missing path").into()))
+                        .await;
                     return;
                 }
             };
             if read_sessions.len() >= MAX_READ_SESSIONS {
                 let _ = sink
-                    .send(Message::Text(err_json(id, "too many open read sessions")))
+                    .send(Message::Text(
+                        err_json(id, "too many open read sessions").into(),
+                    ))
                     .await;
                 return;
             }
@@ -970,7 +991,7 @@ async fn handle_text_command(
                     // adds the "read_open {path}: " prefix once. Pre-existing
                     // double prefix here is what produced the duplicated
                     // "read_open /x: read_open /x: …" the user reported.
-                    let _ = sink.send(Message::Text(err_json(id, e))).await;
+                    let _ = sink.send(Message::Text(err_json(id, e).into())).await;
                     return;
                 }
             };
@@ -987,10 +1008,9 @@ async fn handle_text_command(
             );
             read_sessions.insert(handle.clone(), ReadSession { file, path });
             let _ = sink
-                .send(Message::Text(ok_json(
-                    id,
-                    serde_json::json!({ "handle": handle }),
-                )))
+                .send(Message::Text(
+                    ok_json(id, serde_json::json!({ "handle": handle })).into(),
+                ))
                 .await;
         }
 
@@ -1001,7 +1021,7 @@ async fn handle_text_command(
                 Some(h) => h.to_string(),
                 None => {
                     let _ = sink
-                        .send(Message::Text(err_json(id, "missing handle")))
+                        .send(Message::Text(err_json(id, "missing handle").into()))
                         .await;
                     return;
                 }
@@ -1010,7 +1030,7 @@ async fn handle_text_command(
                 Some(s) => s,
                 None => {
                     let _ = sink
-                        .send(Message::Text(err_json(id, "unknown read handle")))
+                        .send(Message::Text(err_json(id, "unknown read handle").into()))
                         .await;
                     return;
                 }
@@ -1028,7 +1048,7 @@ async fn handle_text_command(
                     // sdk-core's read_chunk wrapper adds the verb+handle
                     // prefix; emit the plain russh-sftp error here so we
                     // don't double-prefix.
-                    let _ = sink.send(Message::Text(err_json(id, e))).await;
+                    let _ = sink.send(Message::Text(err_json(id, e).into())).await;
                     // Drop the session on read error — caller should reopen.
                     read_sessions.remove(&handle);
                     return;
@@ -1037,7 +1057,7 @@ async fn handle_text_command(
             buf.truncate(n);
             let header = ok_json(id, serde_json::json!({ "size": n }));
             let header_len = header.len();
-            if sink.send(Message::Text(header)).await.is_err() {
+            if sink.send(Message::Text(header.into())).await.is_err() {
                 return;
             }
             *bytes_down = bytes_down.saturating_add(header_len);
@@ -1045,7 +1065,7 @@ async fn handle_text_command(
             // Always send the binary frame, even on EOF (empty body). The
             // client uses body length == 0 to detect EOF, so the two-frame
             // shape stays consistent.
-            let _ = sink.send(Message::Binary(buf)).await;
+            let _ = sink.send(Message::Binary(buf.into())).await;
             *bytes_down = bytes_down.saturating_add(body_len);
         }
 
@@ -1056,14 +1076,14 @@ async fn handle_text_command(
                 Some(h) => h.to_string(),
                 None => {
                     let _ = sink
-                        .send(Message::Text(err_json(id, "missing handle")))
+                        .send(Message::Text(err_json(id, "missing handle").into()))
                         .await;
                     return;
                 }
             };
             read_sessions.remove(&handle);
             let _ = sink
-                .send(Message::Text(ok_json(id, serde_json::json!({}))))
+                .send(Message::Text(ok_json(id, serde_json::json!({})).into()))
                 .await;
         }
 
@@ -1071,7 +1091,9 @@ async fn handle_text_command(
             let path = match param_str(&req.params, "path") {
                 Some(p) => p.to_string(),
                 None => {
-                    let _ = sink.send(Message::Text(err_json(id, "missing path"))).await;
+                    let _ = sink
+                        .send(Message::Text(err_json(id, "missing path").into()))
+                        .await;
                     return;
                 }
             };
@@ -1085,14 +1107,16 @@ async fn handle_text_command(
                     err_json(id, e)
                 }
             };
-            let _ = sink.send(Message::Text(resp)).await;
+            let _ = sink.send(Message::Text(resp.into())).await;
         }
 
         "delete" => {
             let path = match param_str(&req.params, "path") {
                 Some(p) => p.to_string(),
                 None => {
-                    let _ = sink.send(Message::Text(err_json(id, "missing path"))).await;
+                    let _ = sink
+                        .send(Message::Text(err_json(id, "missing path").into()))
+                        .await;
                     return;
                 }
             };
@@ -1104,7 +1128,7 @@ async fn handle_text_command(
                     Err(e) => err_json(id, e),
                 },
             };
-            let _ = sink.send(Message::Text(resp)).await;
+            let _ = sink.send(Message::Text(resp.into())).await;
         }
 
         "rename" => {
@@ -1117,7 +1141,9 @@ async fn handle_text_command(
             {
                 Some(p) => p.to_string(),
                 None => {
-                    let _ = sink.send(Message::Text(err_json(id, "missing from"))).await;
+                    let _ = sink
+                        .send(Message::Text(err_json(id, "missing from").into()))
+                        .await;
                     return;
                 }
             };
@@ -1125,7 +1151,9 @@ async fn handle_text_command(
                 match param_str(&req.params, "to").or_else(|| param_str(&req.params, "newPath")) {
                     Some(p) => p.to_string(),
                     None => {
-                        let _ = sink.send(Message::Text(err_json(id, "missing to"))).await;
+                        let _ = sink
+                            .send(Message::Text(err_json(id, "missing to").into()))
+                            .await;
                         return;
                     }
                 };
@@ -1141,12 +1169,12 @@ async fn handle_text_command(
                 Ok(_) => ok_json(id, serde_json::json!({})),
                 Err(e) => err_json(id, e),
             };
-            let _ = sink.send(Message::Text(resp)).await;
+            let _ = sink.send(Message::Text(resp.into())).await;
         }
 
         _ => {
             let _ = sink
-                .send(Message::Text(err_json(id, "unknown method")))
+                .send(Message::Text(err_json(id, "unknown method").into()))
                 .await;
         }
     }
@@ -1256,7 +1284,7 @@ mod tests {
     use axum::extract::ws::Message;
 
     fn text_msg(s: &str) -> Message {
-        Message::Text(s.to_owned())
+        Message::Text(s.to_owned().into())
     }
 
     #[test]
@@ -1317,7 +1345,7 @@ mod tests {
 
     #[test]
     fn parse_auth_non_text_message_is_error() {
-        let msg = Message::Binary(b"not text".to_vec());
+        let msg = Message::Binary(b"not text".to_vec().into());
         assert!(matches!(
             parse_auth(msg),
             Err(SftpRelayError::UnexpectedMessage)

@@ -171,7 +171,7 @@ impl ChannelRegistry {
 /// - Messages from the peer arrive via `rx` and are forwarded to this WebSocket.
 /// - Channel auto-expires on idle, byte cap, or when both clients disconnect.
 pub async fn handle_enrollment_ws(
-    ws: WebSocket,
+    mut ws: WebSocket,
     registry: Arc<ChannelRegistry>,
     channel_id: ChannelId,
     client_ip: std::net::IpAddr,
