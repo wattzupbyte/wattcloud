@@ -13,8 +13,7 @@ irreplaceable data.
 ## What Wattcloud is
 
 Point Wattcloud at something you already run — a Synology / QNAP /
-TrueNAS / Unraid box over WebDAV or SFTP, a Hetzner Storage Box, or an
-S3-compatible bucket (Cloudflare R2, Wasabi, MinIO, Backblaze B2) — and
+TrueNAS / Unraid box over WebDAV or SFTP, or a Hetzner Storage Box — and
 you get a browser-accessible vault with end-to-end encryption, multi-device access, and share links. You host the coordinating server yourself, you own the storage, and the server never holds plaintext, key
 material, or anything that identifies you beyond a per-device enrollment cookie.
 
@@ -36,10 +35,10 @@ already live, only now they're encrypted end-to-end and reachable from
 any browser.
 
 **Cloud-storage users who want their provider kept dumb.** You have a
-Hetzner Storage Box, a Scaleway object store, or a Backblaze bucket.
-You want a real browser UI on top of it without trusting a vendor — or
-a second vendor layered on the first — with either the storage or the
-access layer.
+Hetzner Storage Box, or any host that exposes WebDAV or SFTP. You want
+a real browser UI on top of it without trusting a vendor — or a second
+vendor layered on the first — with either the storage or the access
+layer. (S3-compatible buckets are coming next.)
 
 **Small teams and families.** One host, many invited devices, per-device
 revocation. The host cannot decrypt a member's files — the
@@ -71,11 +70,72 @@ back on a failed health check.
   any spec-compliant WebDAV server.
 - **SFTP** — any SSH-reachable host, including NASes that only expose
   SSH, Hetzner Storage Boxes, ...
-- **S3-compatible object stores** — AWS S3, Cloudflare R2, Wasabi,
-  MinIO, Backblaze B2, Storj, ...
 
-All backends store the same encrypted on-disk format, so replicating or
-migrating between providers is a straight file copy — no re-encrypt pass.
+**Coming soon:** S3-compatible object stores (AWS S3, Cloudflare R2,
+Wasabi, MinIO, Backblaze B2, Storj). The on-disk encrypted format is
+already shared across backends, so replicating or migrating between
+providers will be a straight file copy — no re-encrypt pass.
+
+## Features
+
+What you can do once a vault is open. End-user surface first, then the
+technical capabilities behind it.
+
+**Files**
+- Multi-file and folder upload via drag-and-drop or the floating action
+  button. Uploads queue, resume on reconnect, and survive tab navigation.
+- Streaming, range-based downloads — large files start saving without
+  buffering the whole thing in memory.
+- Move, rename, copy, trash with restore. Cross-provider move that
+  decrypts in the browser and re-uploads to a different backend without
+  the relay ever seeing plaintext.
+- Search by filename with type filters: documents, images, videos,
+  audio, archives, code.
+
+**Photos**
+- Photo timeline grouped chronologically from EXIF metadata.
+- Per-folder gallery view.
+- Collections — encrypted albums you build by hand, reorder, rename,
+  share as a bundle.
+
+**Favorites**
+- Star any file. Dedicated Favorites view in the bottom navigation.
+
+**Encrypted sharing**
+- Single-file shares and folder/collection bundle shares. Both
+  end-to-end encrypted; the relay only ever holds opaque V7 ciphertext
+  blobs that sweeper-purge on expiry.
+- Time-bound links: 1 hour, 1 day, 7 days, 30 days. Optional
+  Argon2id-protected password adds a second factor on top of the URL
+  key.
+- Recipients open the link in any browser. No account, no install
+  required.
+
+**Multi-device**
+- QR-based device pairing with a short SAS verification code shown on
+  both screens — confirms there's no relay-in-the-middle.
+- Owner / member roles. Owner mints time-bound invite codes and revokes
+  individual devices.
+- Per-device sign-out revokes the cookie server-side; a captured cookie
+  is unusable after sign-out.
+
+**Identity & recovery**
+- Passphrase + Argon2id (64 MB / 3 iter / 4-way parallel), stretched in
+  the browser before contributing to a key.
+- One-time recovery key, displayed once at vault creation. Last-resort
+  path; the relay never sees it.
+- Optional passkey unlock with two modes: *presence* (passkey as a
+  possession factor on top of the passphrase) and *PRF* (Face ID /
+  Touch ID / Windows Hello derives the per-vault device-key wrapping
+  secret). A further opt-in lets the passkey replace the passphrase
+  entirely on a trusted device.
+
+**Local privacy**
+- "Forget on this device" drops cached provider credentials without
+  touching the remote vault. Other enrolled devices keep working.
+- Save reminder before vault save, so closing the tab mid-save can't
+  surprise you with a partial vault file on the storage backend.
+- Optional vault sound cues (seal thunk on save, soft click on unlock).
 
 ---
 

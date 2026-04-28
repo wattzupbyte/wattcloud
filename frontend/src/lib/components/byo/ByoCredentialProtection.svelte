@@ -270,13 +270,18 @@
       await clearWebAuthnRecord(vaultId);
       evictSessionCache(vaultId);
 
-      await refresh();
       byoToast.show('Credential protection disabled.', { icon: 'seal' });
     } catch (e: any) {
-      byoToast.show(e?.message ?? 'Failed to disable credential protection.', {
+      console.error('[ByoCredentialProtection] disable failed:', e, e?.message);
+      const detail = e?.message || e?.name || String(e);
+      byoToast.show(`Failed to disable credential protection: ${detail}`, {
         icon: 'danger',
       });
     } finally {
+      // Refresh from ground truth so the toggle reflects the actual record
+      // state — on iOS, an interrupted PRF assertion or aborted IDB
+      // transaction can leave the in-memory model inconsistent.
+      await refresh().catch((err) => console.warn('[ByoCredentialProtection] refresh after disable failed:', err));
       busy = false;
     }
   }

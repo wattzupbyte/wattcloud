@@ -53,13 +53,6 @@ const fileTypes = [
     { value: 'code', label: 'Code', icon: 'code' },
   ];
 
-  const viewTitles: Record<string, string> = {
-    files: 'Files',
-    photos: 'Photos',
-    favorites: 'Favorites',
-    settings: 'Settings',
-  };
-
   function handleSearchToggle() {
     onToggleSearch?.();
   }
@@ -130,9 +123,7 @@ const fileTypes = [
     <button class="btn-icon" onclick={handleOpenDrawer} aria-label="Open menu">
       <List size={24} weight="regular" />
     </button>
-    <div class="mobile-logo">
-      <span class="mobile-app-name">{viewTitles[currentView] ?? 'Secure Cloud'}</span>
-    </div>
+    <div class="top-nav-spacer"></div>
     {#if $vaultStore.status === 'saving'}
       <span class="vault-status-dot saving" title="Saving vault" aria-label="Saving"><CloudArrowUp size={18} weight="regular" /></span>
     {:else if $isVaultDirty}
@@ -237,18 +228,6 @@ const fileTypes = [
   }
   .mobile-top-bar > * {
     pointer-events: auto;
-  }
-  .mobile-logo {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--sp-sm);
-  }
-  .mobile-app-name {
-    font-size: var(--t-body-size);
-    font-weight: 600;
-    color: var(--text-primary);
   }
   @media (min-width: 600px) {
     .mobile-top-bar { display: none; }
