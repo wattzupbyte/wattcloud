@@ -2,11 +2,11 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
-// When the site moves to docs.wattcloud.de, set `site` to that URL and drop
-// `base`. Until then we publish under wattzupbyte.github.io/wattcloud.
+// Custom domain — see docs/public/CNAME. Pages serves from the custom
+// domain at the root, so no `base` is needed. If the domain ever moves,
+// update both this file and public/CNAME.
 export default defineConfig({
-  site: 'https://wattzupbyte.github.io',
-  base: '/wattcloud',
+  site: 'https://docs.wattcloud.de',
   integrations: [
     starlight({
       title: 'Wattcloud',

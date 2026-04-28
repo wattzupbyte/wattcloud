@@ -9,7 +9,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 This page gets you from "fresh Ubuntu VPS" to "vault unlocked in a browser" in
 about five minutes. If something feels under-explained, the
-[install reference](/wattcloud/install/one-command-install/) is the long form.
+[install reference](/install/one-command-install/) is the long form.
 
 ## Prerequisites
 
@@ -71,9 +71,9 @@ about five minutes. If something feels under-explained, the
 5. **Connect a storage backend** from *Add storage*. Pick the one that
    matches what you already run:
 
-   - WebDAV → [`Connect WebDAV`](/wattcloud/providers/webdav/)
-   - SFTP → [`Connect SFTP`](/wattcloud/providers/sftp/)
-   - S3-compatible → [`Connect S3`](/wattcloud/providers/s3/)
+   - WebDAV → [`Connect WebDAV`](/providers/webdav/)
+   - SFTP → [`Connect SFTP`](/providers/sftp/)
+   - S3-compatible → [`Connect S3`](/providers/s3/)
 
 6. **Set a passphrase** when the SPA prompts. Argon2id will stretch it in the
    browser (this is deliberately heavy — about 1&nbsp;s on a laptop). The SPA
@@ -100,9 +100,9 @@ curl -s https://cloud.example.com/health
 ## Next steps
 
 - Lock the instance down so only your invited devices can use it →
-  [Access control](/wattcloud/install/access-control/).
+  [Access control](/install/access-control/).
 - Stay current and learn the rollback flow →
-  [Upgrade & rollback](/wattcloud/install/upgrades/).
+  [Upgrade & rollback](/install/upgrades/).
 - Optional: harden the host (UFW, fail2ban, SSH lockdown, AIDE) with
   `sudo wattcloud harden`. Documented in the
   [README's "VPS hardening"](https://github.com/wattzupbyte/wattcloud#vps-hardening-optional)
