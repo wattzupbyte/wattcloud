@@ -38,7 +38,7 @@ import type {
   TrashEntry,
   ShareEntry,
 } from './DataProvider';
-import { markDirty, getProvider, getJournal, getWalKey, getWalKeyForProvider, getVaultId, getOrInitProvider } from './VaultLifecycle';
+import { markDirty, getProvider, getJournalForProvider, getWalKeyForProvider, getVaultId, getOrInitProvider } from './VaultLifecycle';
 import { extractExif, serializeExif } from './ExifExtractor';
 import { bytesToBase64 as _bytesToBase64, base64ToBytes as _base64ToBytes } from './base64';
 import { parseShareLimitError } from './shareLimitCopy';
@@ -72,6 +72,10 @@ export class ByoDataProvider implements DataProvider {
   activeProviderId: string;
   readonly searchIndex: SearchIndex;
   readonly trash: TrashManager;
+  /** Set on first searchFiles() call so existing rows are seeded into the
+   *  filename index — the constructor can't await the per-row decrypt and
+   *  on-mount upserts only cover newly-uploaded/renamed files. */
+  private searchIndexBuilt = false;
 
   constructor(
     db: import('sql.js').Database,
@@ -85,6 +89,19 @@ export class ByoDataProvider implements DataProvider {
     this.sessionId = sessionId;
     this.searchIndex = new SearchIndex();
     this.trash = new TrashManager(db, provider, this.onMutate.bind(this));
+  }
+
+  /** Decrypt every file row once and seed the in-memory filename index.
+   *  Idempotent — guarded by `searchIndexBuilt`, so repeat search calls
+   *  hit the already-populated map. Lazy on purpose: the search UI only
+   *  exists on Files/Favorites and most users never invoke it, so we
+   *  avoid the upfront decrypt cost on unlock. */
+  private async ensureSearchIndex(): Promise<void> {
+    if (this.searchIndexBuilt) return;
+    const rows = queryRows(this.db, 'SELECT * FROM files');
+    const files = await this.decryptFileRows(rows);
+    this.searchIndex.build(files);
+    this.searchIndexBuilt = true;
   }
 
   /** Switch the active provider (called when user selects a different tab). */
@@ -198,7 +215,7 @@ export class ByoDataProvider implements DataProvider {
     };
 
     this.searchIndex.upsert(lastId, file.name);
-    markDirty();
+    markDirty(this.activeProviderId);
     return entry;
   }
 
@@ -354,7 +371,7 @@ export class ByoDataProvider implements DataProvider {
     this.db.run(deleteSql, [fileId]);
 
     this.searchIndex.remove(fileId);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async moveFile(fileId: number, targetFolderId: number | null): Promise<void> {
@@ -378,7 +395,7 @@ export class ByoDataProvider implements DataProvider {
     const params = [targetFolderId ?? null, now, fileId];
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async renameFile(fileId: number, newName: string): Promise<void> {
@@ -395,7 +412,7 @@ export class ByoDataProvider implements DataProvider {
     this.db.run(sql, params as import('sql.js').BindParams);
 
     this.searchIndex.upsert(fileId, newName);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async updateFileMetadata(fileId: number, metadataJson: string): Promise<void> {
@@ -406,7 +423,7 @@ export class ByoDataProvider implements DataProvider {
     const params = [metadataJson, now, fileId];
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   // ── Folder operations ──────────────────────────────────────────────────
@@ -451,7 +468,7 @@ export class ByoDataProvider implements DataProvider {
       updated_at: now,
     };
 
-    markDirty();
+    markDirty(this.activeProviderId);
     return entry;
   }
 
@@ -478,7 +495,7 @@ export class ByoDataProvider implements DataProvider {
     await this.onMutate(deleteSql, [folderId]);
     this.db.run(deleteSql, [folderId]);
 
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async renameFolder(folderId: number, newName: string): Promise<void> {
@@ -494,7 +511,7 @@ export class ByoDataProvider implements DataProvider {
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
 
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async moveFolder(folderId: number, targetParentId: number | null): Promise<void> {
@@ -519,19 +536,28 @@ export class ByoDataProvider implements DataProvider {
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
 
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   // ── Favorites ──────────────────────────────────────────────────────────
 
   async getFavorites(): Promise<{ files: FileEntry[]; folders: FolderEntry[] }> {
+    // Scoped to the active provider so navigating into a starred folder
+    // can't dead-end on "empty" because the folder lives in another
+    // provider's vault. Cross-provider browsing is intentionally absent
+    // from the rest of the multi-provider UI; Favorites follows the same
+    // rule for consistency. Switching providers from the drawer reloads
+    // the favorites list (ByoDashboard $effect on activeProviderId).
+    const pid = this.activeProviderId;
     const fileRows = queryRows(
       this.db,
-      "SELECT f.* FROM files f JOIN favorites fav ON fav.item_id = f.id WHERE fav.item_type = 'file'",
+      "SELECT f.* FROM files f JOIN favorites fav ON fav.item_id = f.id WHERE fav.item_type = 'file' AND f.provider_id = ?",
+      [pid],
     );
     const folderRows = queryRows(
       this.db,
-      "SELECT f.* FROM folders f JOIN favorites fav ON fav.item_id = f.id WHERE fav.item_type = 'folder'",
+      "SELECT f.* FROM folders f JOIN favorites fav ON fav.item_id = f.id WHERE fav.item_type = 'folder' AND f.provider_id = ?",
+      [pid],
     );
     const files = await this.decryptFileRows(fileRows);
     const folders = await this.decryptFolderRows(folderRows);
@@ -552,7 +578,7 @@ export class ByoDataProvider implements DataProvider {
       const params = [type, id];
       await this.onMutate(sql, params);
       this.db.run(sql, params as import('sql.js').BindParams);
-      markDirty();
+      markDirty(this.activeProviderId);
       return false;
     } else {
       // Resolve the row's provider_id from the target table so the favorite
@@ -567,7 +593,7 @@ export class ByoDataProvider implements DataProvider {
       const params = [type, id, providerId, now];
       await this.onMutate(sql, params);
       this.db.run(sql, params as import('sql.js').BindParams);
-      markDirty();
+      markDirty(this.activeProviderId);
       return true;
     }
   }
@@ -575,6 +601,7 @@ export class ByoDataProvider implements DataProvider {
   // ── Search ─────────────────────────────────────────────────────────────
 
   async searchFiles(query: string): Promise<FileEntry[]> {
+    await this.ensureSearchIndex();
     const matchingIds = this.searchIndex.search(query);
     if (matchingIds.length === 0) return [];
 
@@ -587,33 +614,63 @@ export class ByoDataProvider implements DataProvider {
     return this.decryptFileRows(rows);
   }
 
+  /** Substring search over folder names within the active provider.
+   *  No per-folder index — folder counts stay small (low hundreds even
+   *  for power users), so a one-shot decrypt + JS filter is fast enough
+   *  and avoids the bookkeeping a separate index would need. */
+  async searchFolders(query: string): Promise<FolderEntry[]> {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    const folders = await this.listAllFolders();
+    return folders.filter((f) => f.decrypted_name.toLowerCase().includes(q));
+  }
+
+  /** Every file belonging to the active provider, any folder. Used by
+   *  search when only a type filter is set (no free-text query) so the
+   *  Documents / Videos / Audio / … chips can return matches across the
+   *  whole vault. listImageFiles is image-only and would silently empty
+   *  the result set for non-image filters. */
+  async listAllFiles(): Promise<FileEntry[]> {
+    const rows = queryRows(
+      this.db,
+      `SELECT * FROM files WHERE provider_id = ? ORDER BY created_at DESC`,
+      [this.activeProviderId],
+    );
+    return this.decryptFileRows(rows);
+  }
+
   async listImageFiles(folderId?: number | null): Promise<FileEntry[]> {
     // folderId:
-    //   undefined → all images (any provider, any folder).
-    //   null      → images at the vault root (no folder).
+    //   undefined → all images for the active provider, any folder.
+    //   null      → images at the vault root (no folder) for the active provider.
     //   number    → images inside that folder and all its descendants.
-    // No provider_id filter on the "all" path — matches the original
-    // behavior; the photos timeline has always been cross-provider.
+    //
+    // Scoped to the active provider so the timeline tracks the drawer's
+    // provider switcher, matching how listFiles / listAllFolders behave.
+    // Cross-provider photo browsing is a future affordance; today the
+    // user's mental model is "this is the SFTP-Hetzner-2 vault" and the
+    // timeline should reflect that.
+    const pid = this.activeProviderId;
     let rows: Array<Record<string, unknown>>;
     if (folderId === undefined) {
       rows = queryRows(
         this.db,
-        `SELECT * FROM files WHERE file_type = 'image' ORDER BY created_at DESC`,
-        [],
+        `SELECT * FROM files WHERE file_type = 'image' AND provider_id = ? ORDER BY created_at DESC`,
+        [pid],
       );
     } else if (folderId === null) {
       rows = queryRows(
         this.db,
-        `SELECT * FROM files WHERE file_type = 'image' AND folder_id IS NULL ORDER BY created_at DESC`,
-        [],
+        `SELECT * FROM files WHERE file_type = 'image' AND folder_id IS NULL AND provider_id = ? ORDER BY created_at DESC`,
+        [pid],
       );
     } else {
       // Recursive descent — pull all descendant folder ids then filter files.
       const ids = new Set<number>([folderId]);
       const stack: number[] = [folderId];
       while (stack.length > 0) {
-        const pid = stack.pop()!;
-        const children = queryRows(this.db, 'SELECT id FROM folders WHERE parent_id = ?', [pid]);
+        const parentId = stack.pop()!;
+        const children = queryRows(this.db, 'SELECT id FROM folders WHERE parent_id = ?', [parentId]);
         for (const c of children) {
           const cid = c['id'] as number;
           if (!ids.has(cid)) { ids.add(cid); stack.push(cid); }
@@ -622,8 +679,8 @@ export class ByoDataProvider implements DataProvider {
       const placeholders = Array.from(ids).map(() => '?').join(', ');
       rows = queryRows(
         this.db,
-        `SELECT * FROM files WHERE file_type = 'image' AND folder_id IN (${placeholders}) ORDER BY created_at DESC`,
-        Array.from(ids) as import('sql.js').BindParams,
+        `SELECT * FROM files WHERE file_type = 'image' AND folder_id IN (${placeholders}) AND provider_id = ? ORDER BY created_at DESC`,
+        [...Array.from(ids), pid] as import('sql.js').BindParams,
       );
     }
     return this.decryptFileRows(rows);
@@ -690,7 +747,7 @@ export class ByoDataProvider implements DataProvider {
     this.db.run(sql, params as import('sql.js').BindParams);
 
     const lastId = queryRows(this.db, 'SELECT last_insert_rowid() AS id')[0]['id'] as number;
-    markDirty();
+    markDirty(this.activeProviderId);
 
     return {
       id: lastId,
@@ -717,7 +774,7 @@ export class ByoDataProvider implements DataProvider {
     const params = [encName, nameKey, now, collectionId];
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async deleteCollection(collectionId: number): Promise<void> {
@@ -733,7 +790,7 @@ export class ByoDataProvider implements DataProvider {
     const sql = 'DELETE FROM collections WHERE id = ?';
     await this.onMutate(sql, [collectionId]);
     this.db.run(sql, [collectionId]);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async listCollectionFiles(collectionId: number): Promise<FileEntry[]> {
@@ -770,7 +827,7 @@ export class ByoDataProvider implements DataProvider {
       this.db.run(coverSql, coverParams as import('sql.js').BindParams);
     }
 
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async setCollectionCover(collectionId: number, fileId: number | null): Promise<void> {
@@ -780,7 +837,7 @@ export class ByoDataProvider implements DataProvider {
     const params = [fileId, now, collectionId];
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   async removeFilesFromCollection(collectionId: number, fileIds: number[]): Promise<void> {
@@ -811,7 +868,7 @@ export class ByoDataProvider implements DataProvider {
       this.db.run(coverSql, coverParams as import('sql.js').BindParams);
     }
 
-    markDirty();
+    markDirty(this.activeProviderId);
   }
 
   // ── Storage usage ──────────────────────────────────────────────────────
@@ -1054,7 +1111,7 @@ export class ByoDataProvider implements DataProvider {
    */
   async createShareLink(
     fileId: number,
-    options?: { password?: string; ttlSeconds?: number; filename?: string },
+    options?: { password?: string; ttlSeconds?: number; filename?: string; label?: string },
   ): Promise<{ entry: ShareEntry; fragment: string }> {
     // 1. Fetch file row from SQLite.
     const rows = queryRows(this.db, 'SELECT * FROM files WHERE id = ?', [fileId]);
@@ -1114,8 +1171,12 @@ export class ByoDataProvider implements DataProvider {
         text = await resp.text();
         size = tapped.bytes();
       } else {
-        // Fallback: drain first, then POST as a Uint8Array.
-        console.warn('[share] browser lacks streaming request bodies — buffering ciphertext');
+        // Fallback: drain first, then POST as a Uint8Array. Firefox gates
+        // fetch upload streams behind `network.fetch.upload_streams` —
+        // ShareLinkSheet surfaces a one-time hint to the user.
+        console.warn(
+          '[share] browser lacks streaming request bodies — buffering ciphertext (peak heap ≈ ciphertext size)',
+        );
         const buf = await drainToBuffer(fullBody);
         const resp = await fetch('/relay/share/b2', {
           method: 'POST',
@@ -1150,12 +1211,16 @@ export class ByoDataProvider implements DataProvider {
       fragmentVariant,
       options?.password,
     );
-    // Append the original filename so the recipient can save as the real
-    // name. Plain percent-encoded — the fragment never reaches a server;
-    // anyone who has the link can already decrypt the content, so the
-    // filename being readable alongside the key adds no privacy surface.
-    const fragment = options?.filename
-      ? `${fragmentKey}&n=${encodeURIComponent(options.filename)}`
+    // Append the recipient-facing display name so the recipient lands on
+    // a page titled with something meaningful and saves the download
+    // under that name. Prefer the user-supplied label over the original
+    // filename so the two ends of the share agree on the title. Plain
+    // percent-encoded — the fragment never reaches a server; anyone who
+    // has the link can already decrypt the content, so the name being
+    // readable alongside the key adds no privacy surface.
+    const recipientName = options?.label?.trim() || options?.filename;
+    const fragment = recipientName
+      ? `${fragmentKey}&n=${encodeURIComponent(recipientName)}`
       : fragmentKey;
 
     addShareRelayBandwidth(ciphertextSize + respText.length);
@@ -1178,6 +1243,9 @@ export class ByoDataProvider implements DataProvider {
       totalBytes: ciphertextSize,
       blobCount: 1,
       plaintextSize,
+      fragment,
+      bundleKind: 'file',
+      label: options?.label?.trim() || null,
     });
 
     recordEvent('share_create', { share_variant: 'B2' });
@@ -1187,7 +1255,7 @@ export class ByoDataProvider implements DataProvider {
 
   async createFolderShare(
     folderId: number,
-    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void },
+    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void; label?: string },
   ): Promise<{ entry: ShareEntry; fragment: string }> {
     // Collect folder + descendants; build rel_path for each file relative
     // to the folder root so the recipient reconstructs the tree.
@@ -1215,6 +1283,7 @@ export class ByoDataProvider implements DataProvider {
 
     const { entry, fragment } = await this.createBundleShare({
       kind: 'folder',
+      bundleKind: 'folder',
       folderId,
       collectionId: null,
       files: files.map((f) => ({ file: f, relPath: `${rootName}/${relPathForFile(f)}` })),
@@ -1226,7 +1295,7 @@ export class ByoDataProvider implements DataProvider {
 
   async createCollectionShare(
     collectionId: number,
-    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void },
+    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void; label?: string },
   ): Promise<{ entry: ShareEntry; fragment: string }> {
     const files = await this.listCollectionFiles(collectionId);
     if (files.length === 0) throw new Error('This collection is empty; nothing to share.');
@@ -1234,6 +1303,7 @@ export class ByoDataProvider implements DataProvider {
 
     const { entry, fragment } = await this.createBundleShare({
       kind: 'collection',
+      bundleKind: 'collection',
       folderId: null,
       collectionId,
       files: files.map((f) => ({ file: f, relPath: f.decrypted_name })),
@@ -1245,7 +1315,7 @@ export class ByoDataProvider implements DataProvider {
 
   async createFilesShare(
     fileIds: number[],
-    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void },
+    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void; label?: string },
   ): Promise<{ entry: ShareEntry; fragment: string }> {
     if (fileIds.length === 0) throw new Error('No files selected for share.');
 
@@ -1279,6 +1349,7 @@ export class ByoDataProvider implements DataProvider {
     const bundleName = `${files.length} files`;
     const { entry, fragment } = await this.createBundleShare({
       kind: 'folder',
+      bundleKind: 'multi-files',
       folderId: null,
       collectionId: null,
       files: files.map((f) => ({ file: f, relPath: uniq(f.decrypted_name) })),
@@ -1286,6 +1357,112 @@ export class ByoDataProvider implements DataProvider {
       options,
     });
     return { entry, fragment };
+  }
+
+  /**
+   * Mixed-source share — one link covering any combination of folders +
+   * loose files. Folder descendants are walked the same way as a single-
+   * folder share (rel_path = `<folder>/<nested>/<file>`); loose files
+   * land at the bundle root with their decrypted name. Filename
+   * collisions across the merged tree are de-duplicated with " (n)" so
+   * the recipient's zip extraction doesn't silently overwrite anything.
+   *
+   * Rides the same 'folder' kind on the relay (relay schema is closed at
+   * file/folder/collection — multi-source bundles already share the
+   * 'folder' lane with folder_id=null, see createFilesShare).
+   */
+  async createMixedShare(
+    args: { folderIds: number[]; fileIds: number[] },
+    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void; label?: string },
+  ): Promise<{ entry: ShareEntry; fragment: string }> {
+    const folderIds = [...new Set(args.folderIds)];
+    const fileIds = [...new Set(args.fileIds)];
+    if (folderIds.length === 0 && fileIds.length === 0) {
+      throw new Error('Nothing selected to share.');
+    }
+
+    type Item = { file: FileEntry; relPath: string };
+    const items: Item[] = [];
+
+    // 1. Walk every selected folder, prefix entries with the folder's name.
+    for (const folderId of folderIds) {
+      const folderRows = queryRows(this.db, 'SELECT * FROM folders WHERE id = ?', [folderId]);
+      if (folderRows.length === 0) continue;
+      const descendants = await this.collectFolderDescendants(folderId);
+      const folderFiles = await this.collectFilesInFolders(descendants.folderIds);
+      if (folderFiles.length === 0) continue;
+      const rootName = await this.decryptFilename(
+        folderRows[0]['name'] as string | Uint8Array,
+        folderRows[0]['name_key'] as string | Uint8Array,
+      );
+      const relPathForFile = (f: FileEntry): string => {
+        const parts: string[] = [f.decrypted_name];
+        let parent = f.folder_id;
+        while (parent !== null && parent !== folderId) {
+          const d = descendants.folderPaths.get(parent);
+          if (!d) break;
+          parts.unshift(d.name);
+          parent = d.parent_id;
+        }
+        return parts.join('/');
+      };
+      for (const f of folderFiles) {
+        items.push({ file: f, relPath: `${rootName}/${relPathForFile(f)}` });
+      }
+    }
+
+    // 2. Append loose files at the bundle root.
+    if (fileIds.length > 0) {
+      const placeholders = fileIds.map(() => '?').join(',');
+      const rows = queryRows(
+        this.db,
+        `SELECT * FROM files WHERE id IN (${placeholders})`,
+        fileIds as import('sql.js').BindParams,
+      );
+      const looseFiles = await this.decryptFileRows(rows);
+      for (const f of looseFiles) {
+        items.push({ file: f, relPath: f.decrypted_name });
+      }
+    }
+
+    if (items.length === 0) {
+      throw new Error('Selection is empty (folders had no files, or loose files were unavailable).');
+    }
+
+    // 3. Deduplicate colliding rel_paths so the recipient's zip extraction
+    //    doesn't drop or overwrite. Mirrors the createFilesShare uniq() but
+    //    keys on the full rel_path so a name collision deep inside a folder
+    //    + same name at root doesn't surface.
+    const seenPath = new Map<string, number>();
+    const dedupe = (rel: string): string => {
+      const n = seenPath.get(rel) ?? 0;
+      seenPath.set(rel, n + 1);
+      if (n === 0) return rel;
+      const slash = rel.lastIndexOf('/');
+      const dir = slash >= 0 ? rel.slice(0, slash + 1) : '';
+      const tail = slash >= 0 ? rel.slice(slash + 1) : rel;
+      const dot = tail.lastIndexOf('.');
+      const dedupedTail = dot === -1
+        ? `${tail} (${n})`
+        : `${tail.slice(0, dot)} (${n})${tail.slice(dot)}`;
+      return `${dir}${dedupedTail}`;
+    };
+    for (const it of items) it.relPath = dedupe(it.relPath);
+
+    const total = folderIds.length + fileIds.length;
+    const bundleName = total === 1
+      ? (items[0]?.relPath.split('/')[0] ?? `${total} items`)
+      : `${total} items`;
+
+    return await this.createBundleShare({
+      kind: 'folder',
+      bundleKind: 'mixed',
+      folderId: null,
+      collectionId: null,
+      files: items,
+      bundleName,
+      options,
+    });
   }
 
   // ── Private: bundle share builder ───────────────────────────────────────
@@ -1301,15 +1478,20 @@ export class ByoDataProvider implements DataProvider {
    */
   private async createBundleShare(args: {
     kind: 'folder' | 'collection';
+    /** Finer-grained UI classification — what kind of bundle this row is
+     *  in the creator's Settings view (Folder / Collection / Files / Mixed). */
+    bundleKind: 'folder' | 'collection' | 'multi-files' | 'mixed';
     folderId: number | null;
     collectionId: number | null;
     files: Array<{ file: FileEntry; relPath: string }>;
     /** Display name for the recipient landing page (folder or collection
      *  name). Rides in the URL fragment as &n=<percent-encoded>; the
      *  fragment never reaches the server, so exposing the name there is
-     *  no weaker than the decryption key that already sits alongside it. */
+     *  no weaker than the decryption key that already sits alongside it.
+     *  When `options.label` is set, that wins — otherwise this default
+     *  carries through. */
     bundleName?: string;
-    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void };
+    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void; label?: string };
   }): Promise<{ entry: ShareEntry; fragment: string }> {
     const HEADER_SIZE = 1709;
     const ttl = args.options?.ttlSeconds ?? 86400;
@@ -1327,6 +1509,9 @@ export class ByoDataProvider implements DataProvider {
     //    "Folder" placeholder. The fragment is client-only — never sent
     //    to the relay — so exposing the name there is no weaker than
     //    the key that already rides alongside it.
+    // User-supplied label wins over the inferred bundleName. Both ends
+    // of the share will then read the same string from the fragment.
+    const recipientName = args.options?.label?.trim() || args.bundleName;
     let fragment: string;
     try {
       if (args.options?.password) {
@@ -1335,8 +1520,8 @@ export class ByoDataProvider implements DataProvider {
       } else {
         fragment = await byoWorker.Worker.byoShareEncodeVariantA(bundleKeyB64);
       }
-      if (args.bundleName) {
-        fragment = `${fragment}&n=${encodeURIComponent(args.bundleName)}`;
+      if (recipientName) {
+        fragment = `${fragment}&n=${encodeURIComponent(recipientName)}`;
       }
     } finally {
       bundleKey.fill(0);
@@ -1423,7 +1608,10 @@ export class ByoDataProvider implements DataProvider {
             }
             size = tapped.bytes();
           } else {
-            console.warn('[share] browser lacks streaming request bodies — buffering ciphertext');
+            // See ByoDataProvider line ~1118 — Firefox-default fallback.
+            console.warn(
+              '[share] browser lacks streaming request bodies — buffering ciphertext (peak heap ≈ ciphertext size)',
+            );
             const buf = await drainToBuffer(fullBody);
             const resp = await fetch(blobUrl, {
               method: 'POST',
@@ -1529,6 +1717,9 @@ export class ByoDataProvider implements DataProvider {
       totalBytes: totalCiphertextBytes,
       blobCount: entries.length + 1, // +1 for _manifest
       plaintextSize: 0,
+      fragment,
+      bundleKind: args.bundleKind,
+      label: args.options?.label?.trim() || null,
     });
     recordEvent('share_create', { share_variant: 'B2' });
     refreshShareStats(this);
@@ -1550,12 +1741,21 @@ export class ByoDataProvider implements DataProvider {
     totalBytes: number;
     blobCount: number;
     plaintextSize: number;
+    /** URL fragment carrying the decryption key + bundle name. Stored so
+     *  the user can copy the share link again from Settings later. Never
+     *  reaches the relay. */
+    fragment: string;
+    /** Finer-grained classification than `kind` for UI badges. */
+    bundleKind: 'file' | 'folder' | 'collection' | 'multi-files' | 'mixed';
+    /** Optional user-supplied display name. NULL → UI infers from kind. */
+    label: string | null;
   }): Promise<ShareEntry> {
     const sql = `INSERT INTO share_tokens
          (share_id, kind, file_id, folder_id, collection_id, provider_id,
           provider_ref, public_link, presigned_expires_at,
-          owner_token, total_bytes, blob_count, created_at, revoked)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 0)`;
+          owner_token, total_bytes, blob_count, created_at, revoked,
+          fragment, bundle_kind, label)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, ?)`;
     const params = [
       row.shareId,
       row.kind,
@@ -1569,10 +1769,13 @@ export class ByoDataProvider implements DataProvider {
       row.totalBytes,
       row.blobCount,
       row.createdAt,
+      row.fragment,
+      row.bundleKind,
+      row.label,
     ];
     await this.onMutate(sql, params);
     this.db.run(sql, params as import('sql.js').BindParams);
-    markDirty();
+    markDirty(this.activeProviderId);
     return {
       share_id: row.shareId,
       kind: row.kind,
@@ -1587,6 +1790,9 @@ export class ByoDataProvider implements DataProvider {
       blob_count: row.blobCount,
       created_at: row.createdAt,
       revoked: false,
+      fragment: row.fragment,
+      bundle_kind: row.bundleKind,
+      label: row.label,
     };
   }
 
@@ -1662,7 +1868,7 @@ export class ByoDataProvider implements DataProvider {
     const revokeShareSql = 'UPDATE share_tokens SET revoked = 1 WHERE share_id = ?';
     await this.onMutate(revokeShareSql, [shareId]);
     this.db.run(revokeShareSql, [shareId]);
-    markDirty();
+    markDirty(this.activeProviderId);
     recordEvent('share_revoke', { share_variant: 'B2' });
     refreshShareStats(this);
   }
@@ -1699,10 +1905,22 @@ export class ByoDataProvider implements DataProvider {
   }
 
   listShares(): ShareEntry[] {
+    // Filter out shares whose expires_at has passed — the relay sweeper
+    // already purged the blob, so the local row is dead weight. Hiding
+    // them here also avoids the UX cliff the user reported: an expired
+    // row offering a "Revoke" button with the same confirmation copy as
+    // an active share. Extending isn't possible without re-uploading the
+    // ciphertext (the relay's blob is gone), so cleanup is the right
+    // default here. Rows are kept in the DB so a future history view
+    // could surface them; only the live-shares list filters.
+    const now = Date.now();
     const rows = queryRows(
       this.db,
-      'SELECT * FROM share_tokens WHERE revoked = 0 ORDER BY created_at DESC',
-      [],
+      `SELECT * FROM share_tokens
+       WHERE revoked = 0
+         AND (presigned_expires_at IS NULL OR presigned_expires_at > ?)
+       ORDER BY created_at DESC`,
+      [now],
     );
     return rows.map((r) => {
       const row = r as Record<string, unknown>;
@@ -1721,6 +1939,9 @@ export class ByoDataProvider implements DataProvider {
         blob_count: (row['blob_count'] as number | null) ?? null,
         created_at: row['created_at'] as number,
         revoked: false,
+        fragment: (row['fragment'] as string | null) ?? null,
+        bundle_kind: (row['bundle_kind'] as string | null) ?? null,
+        label: (row['label'] as string | null) ?? null,
       };
     });
   }
@@ -1731,14 +1952,26 @@ export class ByoDataProvider implements DataProvider {
    * Called before every SQL mutation:
    *   1. Appends WAL entry for crash recovery
    *   2. Appends journal entry for cloud-side journal
+   *
+   * Both the WAL and the journal are per-provider — pre-fix this used
+   * the primary's key/journal regardless of which provider's slice was
+   * being mutated, so writes via a secondary never made it into that
+   * secondary's WAL/journal and were silently lost on reload when the
+   * secondary was offline (saveVault skips body uploads for offline
+   * dirty providers, and WAL replay was the safety net that would have
+   * caught it). Scope to `activeProviderId` so the WAL key matches the
+   * walId saveVault clears (`vaultId + ':' + pid`) and the journal
+   * matches the one saveVault commits.
    */
   private async onMutate(sql: string, params: unknown[]): Promise<void> {
     const vaultId = getVaultId();
-    const walKey = getWalKey();
-    const journal = getJournal();
+    const pid = this.activeProviderId;
+    if (!pid) return;
+    const walKey = getWalKeyForProvider(pid);
+    const journal = getJournalForProvider(pid);
 
     if (walKey) {
-      await appendWal(vaultId, walKey, sql, params);
+      await appendWal(`${vaultId}:${pid}`, walKey, sql, params);
     }
 
     if (journal) {

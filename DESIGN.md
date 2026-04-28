@@ -699,7 +699,7 @@ Where the cloud motif appears (as itself, alone):
 - **App shell chrome** (header app-name, drawer logo): Small outline cloud paired with the wordmark.
 
 Where a plain Phosphor icon replaces the cloud (was previously a composite):
-- ByoUnlock / VaultsListScreen / SftpReauthSheet / RecoveryKeyDisplay hero → `Lock`.
+- ByoUnlock / VaultsListScreen / ProviderReauthSheet / RecoveryKeyDisplay hero → `Lock`.
 - AddProviderSheet trust-banner inline → `Lock`.
 - ByoSetup "Vault created" completion / DeviceEnrollment "Device enrolled" / ByoToastHost `seal` accent → `CheckCircle`.
 - ByoToastHost `warn` accent → `Warning`. `danger` accent → `WarningCircle`.

@@ -131,9 +131,10 @@
       </div>
       <!-- Column cells — hidden on mobile, shown at ≥600px to align with
            the file list grid. Folders have no size, so the Size column
-           shows an em dash. -->
+           is intentionally left empty (an em dash here was visually
+           noisy without conveying anything). -->
       <span class="list-item-col list-item-col-date">{formatDateShort(folder.created_at)}</span>
-      <span class="list-item-col list-item-col-size">&mdash;</span>
+      <span class="list-item-col list-item-col-size"></span>
     {/if}
 
     {#if !isRenaming}

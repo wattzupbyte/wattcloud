@@ -81,9 +81,28 @@ self.addEventListener('message', (event) => {
       stream,
       filename: typeof data.filename === 'string' ? data.filename : 'download.bin',
       mime: typeof data.mime === 'string' ? data.mime : 'application/octet-stream',
+      // Exact total byte length when the page knows it up-front (e.g. zip
+      // predictLength for bundle downloads). Drives Content-Length on the
+      // response — without it Firefox's download manager fails the
+      // .part → final rename for larger SW-streamed bundles even though
+      // the bytes drained cleanly on the page side. undefined → omit
+      // header entirely (chunked transfer; works for size-known streams
+      // in Chrome/Safari but is the failure mode in Firefox).
+      contentLength:
+        typeof data.contentLength === 'number' && data.contentLength >= 0
+          ? data.contentLength
+          : undefined,
       registeredAt: Date.now(),
       bytes: 0,
       chunks: 0,
+      // Orphan-only flag: true until the corresponding /dl/<id> fetch
+      // is intercepted. The 30s safety timer below errors the entry
+      // ONLY when this is still false at fire time, so legitimate
+      // downloads slower than 30s aren't killed mid-stream. Without
+      // this distinction, a 10 MB bundle on residential uplink (the
+      // user's reproducer) trips the timer at byte ~8 MB and Firefox's
+      // download manager reports the .part as unreadable.
+      fetchAttached: false,
       enqueue(chunk) {
         if (controllerRef) controllerRef.enqueue(chunk);
         else if (pending) pending.push(chunk);
@@ -104,15 +123,19 @@ self.addEventListener('message', (event) => {
     const port = Array.isArray(event.ports) ? event.ports[0] : undefined;
     if (port) port.postMessage({ type: 'ready', id });
 
-    // Safety: release the SW lifetime after REGISTRATION_TTL_MS even if the
-    // client never consumed the stream. Auto-errors any orphaned entry.
+    // Orphan reaper: if the page never triggered the /dl/<id> fetch
+    // within 30s of register (page navigated away, click swallowed,
+    // etc.), error the entry so its lifetime promise resolves and the
+    // SW can be evicted. Active downloads are not affected — once
+    // fetchAttached flips to true, the reaper is a no-op regardless of
+    // how long the actual byte transfer takes.
     setTimeout(() => {
       const entry = STREAMS.get(id);
-      if (entry && Date.now() - entry.registeredAt >= REGISTRATION_TTL_MS) {
-        try { entry.error('registration timed out'); } catch (_) { /* drop */ }
-        try { entry.releaseLifetime(); } catch (_) { /* drop */ }
-        STREAMS.delete(id);
-      }
+      if (!entry) return;
+      if (entry.fetchAttached) return;
+      try { entry.error('registration timed out'); } catch (_) { /* drop */ }
+      try { entry.releaseLifetime(); } catch (_) { /* drop */ }
+      STREAMS.delete(id);
     }, REGISTRATION_TTL_MS);
     return;
   }
@@ -171,8 +194,11 @@ self.addEventListener('fetch', (event) => {
     // Fall through to the network, which will 404.
     return;
   }
+  // The orphan reaper must NOT fire on this entry now that the fetch
+  // has arrived — see `fetchAttached` comment in the register handler.
+  entry.fetchAttached = true;
 
-  const { stream, filename, mime } = entry;
+  const { stream, filename, mime, contentLength } = entry;
 
   const dispositionFilename = buildContentDisposition(filename);
   const headers = new Headers({
@@ -187,7 +213,14 @@ self.addEventListener('fetch', (event) => {
     // Response body to disk.
     'Content-Security-Policy': "default-src 'none'",
   });
-
+  // Set Content-Length when the page told us the exact total. Skipping
+  // this for unknown sizes is fine — the response is just chunked. But
+  // setting it when known materially helps Firefox finalize the download
+  // (otherwise the .part → final rename fails with "source file could
+  // not be read").
+  if (typeof contentLength === 'number' && contentLength >= 0) {
+    headers.set('Content-Length', String(contentLength));
+  }
   event.respondWith(new Response(stream, { status: 200, headers }));
 });
 

@@ -27,6 +27,7 @@
   import type { DataProvider, FileEntry, FolderEntry, CollectionEntry, ShareEntry } from '../../byo/DataProvider';
   import { SHARE_EXPLAINER_ITEMS, SHARE_EXPLAINER_HEADER } from '../../byo/copy/share-explainer';
   import { isShareLimitError } from '../../byo/shareLimitCopy';
+  import { supportsRequestStreams } from '../../byo/shareUploadStreaming';
   import ShieldCheck from 'phosphor-svelte/lib/ShieldCheck';
   import PasswordInput from '../common/PasswordInput.svelte';
   import Copy from 'phosphor-svelte/lib/Copy';
@@ -34,13 +35,15 @@
   import CaretDown from 'phosphor-svelte/lib/CaretDown';
   import CaretUp from 'phosphor-svelte/lib/CaretUp';
   import QrCode from 'phosphor-svelte/lib/QrCode';
+  import Warning from 'phosphor-svelte/lib/Warning';
   import QrDisplay from './QrDisplay.svelte';
 /**
-   * One of four mutually exclusive sources:
+   * One of five mutually exclusive sources:
    *   - { kind: 'file', file }              — single-blob share
    *   - { kind: 'folder', folder }          — folder bundle (all descendant files)
    *   - { kind: 'collection', collection }  — photo-collection bundle
    *   - { kind: 'files', files }            — multi-file selection bundle (flat)
+   *   - { kind: 'mixed', folders, files }   — folders + loose files in one link
    *
    * Svelte disallows `export type` in component script blocks, so consumers
    * use a structural literal type matching this shape.
@@ -49,7 +52,8 @@
     | { kind: 'file'; file: FileEntry }
     | { kind: 'folder'; folder: FolderEntry }
     | { kind: 'collection'; collection: CollectionEntry }
-    | { kind: 'files'; files: FileEntry[] };
+    | { kind: 'files'; files: FileEntry[] }
+    | { kind: 'mixed'; folders: FolderEntry[]; files: FileEntry[] };
 
   interface Props {
     source: ShareSource;
@@ -74,6 +78,11 @@
   let password = $state('');
   let confirmPassword = $state('');
   let ttlChoice: Ttl = $state(86400);
+  /** User-supplied display name. Surfaces both in Settings → Active
+   *  shares (creator side) and on the recipient's landing page (carried
+   *  in the fragment as &n=). When blank, both ends fall back to the
+   *  inferred default (filename, folder name, "N items", etc.). */
+  let shareLabel = $state('');
 
   let generating = $state(false);
   let generatedFragment = $state('');
@@ -85,6 +94,51 @@
   let showExplainer = $state(false);
   let showQr = $state(false);
 
+  // ── Buffer-fallback hint (Firefox-default browsers) ──────────────────────────
+  // The share upload path uses fetch() with a ReadableStream body to avoid
+  // materialising multi-GB ciphertext in JS heap. Firefox gates that feature
+  // behind `network.fetch.upload_streams`, so by default it falls back to
+  // buffer-and-forward. Surface a one-time hint before the first share so the
+  // user knows about the heap cost and can flip the pref if they want.
+  // Regular file uploads (StorageProvider.upload_stream) chunk through WASM
+  // with bounded per-POST bodies, so this prompt does NOT apply there.
+  const STREAMING_HINT_KEY = 'sc-byo-streaming-upload-hint-dismissed';
+  let streamingHintOpen = $state(false);
+  let streamingHintDontShowAgain = $state(false);
+  let streamingHintFlagCopied = $state(false);
+  let streamingHintAboutCopied = $state(false);
+  // Cache the capability check so the hint decision is consistent within
+  // this sheet's lifetime even though `supportsRequestStreams` is itself
+  // memoised.
+  const browserStreams = supportsRequestStreams();
+  function streamingHintDismissed(): boolean {
+    if (typeof localStorage === 'undefined') return false;
+    return localStorage.getItem(STREAMING_HINT_KEY) === '1';
+  }
+  async function copyToClipboard(text: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+
+  async function handleStreamingHintConfirm() {
+    if (streamingHintDontShowAgain && typeof localStorage !== 'undefined') {
+      localStorage.setItem(STREAMING_HINT_KEY, '1');
+    }
+    streamingHintOpen = false;
+    await runGenerate();
+  }
+
+  function handleStreamingHintCancel() {
+    if (streamingHintDontShowAgain && typeof localStorage !== 'undefined') {
+      localStorage.setItem(STREAMING_HINT_KEY, '1');
+    }
+    streamingHintOpen = false;
+  }
 
   function passwordStrength(p: string): 0 | 1 | 2 | 3 | 4 {
     if (!p) return 0;
@@ -117,13 +171,30 @@
         return;
       }
     }
+    // Buffer-fallback hint: pause before the actual upload so the user can
+    // see the memory tradeoff and flip the Firefox pref if they want. The
+    // hint only fires when (a) the browser doesn't support fetch upload
+    // streams, AND (b) the user hasn't dismissed it permanently.
+    if (!browserStreams && !streamingHintDismissed()) {
+      streamingHintDontShowAgain = false;
+      streamingHintFlagCopied = false;
+      streamingHintAboutCopied = false;
+      streamingHintOpen = true;
+      return;
+    }
+    await runGenerate();
+  }
+
+  async function runGenerate() {
     generating = true;
     progressDone = 0;
     progressTotal = 0;
     try {
+      const trimmedLabel = shareLabel.trim();
       const commonOpts = {
         password: passwordOn ? password : undefined,
         ttlSeconds: ttlChoice,
+        label: trimmedLabel || undefined,
       };
       let result: { entry: ShareEntry; fragment: string };
       if (source.kind === 'file') {
@@ -147,6 +218,20 @@
             progressTotal = total;
           },
         });
+      } else if (source.kind === 'mixed') {
+        result = await dataProvider.createMixedShare(
+          {
+            folderIds: source.folders.map((f) => f.id),
+            fileIds: source.files.map((f) => f.id),
+          },
+          {
+            ...commonOpts,
+            onProgress: (done, total) => {
+              progressDone = done;
+              progressTotal = total;
+            },
+          },
+        );
       } else {
         result = await dataProvider.createFilesShare(
           source.files.map((f) => f.id),
@@ -210,27 +295,37 @@
   function close() {
     onClose?.();
   }
-  let sourceName = $derived(source.kind === 'file'
-    ? source.file.decrypted_name
-    : source.kind === 'folder'
-      ? source.folder.decrypted_name
-      : source.kind === 'collection'
-        ? source.collection.decrypted_name
-        : `${source.files.length} files`);
-  let sourceLabelTitle = $derived(source.kind === 'file'
-    ? `Share '${sourceName}'`
-    : source.kind === 'folder'
-      ? `Share folder '${sourceName}'`
-      : source.kind === 'collection'
-        ? `Share collection '${sourceName}'`
-        : `Share ${sourceName}`);
-  let bundleHint = $derived(source.kind === 'file'
-    ? ''
-    : source.kind === 'folder'
-      ? 'Every file in this folder (and its subfolders) will be uploaded to the relay.'
-      : source.kind === 'collection'
-        ? 'Every photo in this collection will be uploaded to the relay.'
-        : 'The selected files will be uploaded to the relay and delivered as one zip archive.');
+  let sourceName = $derived(
+    source.kind === 'file'
+      ? source.file.decrypted_name
+      : source.kind === 'folder'
+        ? source.folder.decrypted_name
+        : source.kind === 'collection'
+          ? source.collection.decrypted_name
+          : source.kind === 'mixed'
+            ? `${source.folders.length + source.files.length} items`
+            : `${source.files.length} files`,
+  );
+  let sourceLabelTitle = $derived(
+    source.kind === 'file'
+      ? `Share '${sourceName}'`
+      : source.kind === 'folder'
+        ? `Share folder '${sourceName}'`
+        : source.kind === 'collection'
+          ? `Share collection '${sourceName}'`
+          : `Share ${sourceName}`,
+  );
+  let bundleHint = $derived(
+    source.kind === 'file'
+      ? ''
+      : source.kind === 'folder'
+        ? 'Every file in this folder (and its subfolders) will be uploaded to the relay.'
+        : source.kind === 'collection'
+          ? 'Every photo in this collection will be uploaded to the relay.'
+          : source.kind === 'mixed'
+            ? 'Every selected folder (with its subfolders) and loose file will be uploaded to the relay and delivered as one zip archive.'
+            : 'The selected files will be uploaded to the relay and delivered as one zip archive.',
+  );
   // Password strength meter (only shown when password toggle is on).
   let strength = $derived(passwordStrength(password));
   let strengthLabel = $derived(['', 'Weak', 'Fair', 'Good', 'Strong'][strength]);
@@ -281,6 +376,24 @@
 
     {#if !generatedEntry}
       <div class="form">
+        <div class="field">
+          <label for="share-label-input" class="field-label">Share name <span class="field-label-optional">(optional)</span></label>
+          <input
+            id="share-label-input"
+            class="field-input"
+            type="text"
+            bind:value={shareLabel}
+            placeholder={sourceName}
+            maxlength="120"
+            autocomplete="off"
+          />
+          <p class="field-hint">
+            Surfaces in Settings → Active shares and on the recipient's
+            landing page. Leave blank to use the default
+            (<span class="mono-text">{sourceName}</span>).
+          </p>
+        </div>
+
         <div class="field">
           <p class="field-label">Link expires after</p>
           <div class="ttl-chips" role="group" aria-label="Link expiry">
@@ -466,6 +579,116 @@
   </div>
 </div>
 
+{#if streamingHintOpen}
+  <!-- Sits on top of ShareLinkSheet's z-index:500 overlay. Hard-coded
+       z-index because the design-system tokens (z-overlay/z-sheet) cap
+       at 60 — ConfirmModal/BottomSheet would render behind. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="streaming-hint-overlay"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="streaming-hint-title"
+    onclick={(e) => { if (e.target === e.currentTarget) handleStreamingHintCancel(); }}
+    onkeydown={(e) => { if (e.key === 'Escape') handleStreamingHintCancel(); }}
+    tabindex="-1"
+    transition:fade={{ duration: 150 }}
+  >
+    <div
+      class="streaming-hint-sheet"
+      transition:fly={{ y: 40, duration: 220, easing: quintOut }}
+    >
+      <h3 class="streaming-hint-title" id="streaming-hint-title">
+        Streaming uploads are off in this browser
+      </h3>
+
+      <div class="streaming-hint-callout" role="note">
+        <span class="streaming-hint-icon" aria-hidden="true">
+          <Warning size={18} weight="regular" />
+        </span>
+        <p>
+          The share will work, but the encrypted ciphertext sits in this tab's
+          memory while it uploads. For shares of a few hundred MB or less, you
+          won't notice. Larger shares may use significant RAM until the
+          upload finishes.
+        </p>
+      </div>
+
+      <details class="streaming-hint-details">
+        <summary>
+          <CaretDown size={14} weight="bold" class="streaming-hint-summary-caret" />
+          <span>Make Firefox stream uploads instead</span>
+        </summary>
+        <p class="streaming-hint-explainer">
+          Firefox supports streaming uploads but ships with the feature off
+          by default. Browsers can't open <code>about:</code> pages from a
+          regular tab — copy the values below and paste them in:
+        </p>
+        <ol class="streaming-hint-steps">
+          <li>
+            Open a new tab and paste:
+            <button
+              type="button"
+              class="streaming-hint-copy"
+              onclick={async () => {
+                streamingHintAboutCopied = await copyToClipboard('about:config');
+                if (streamingHintAboutCopied) {
+                  setTimeout(() => { streamingHintAboutCopied = false; }, 2000);
+                }
+              }}
+            >
+              <code>about:config</code>
+              <Copy size={14} weight="regular" />
+              {#if streamingHintAboutCopied}
+                <span class="streaming-hint-copied">Copied</span>
+              {/if}
+            </button>
+          </li>
+          <li>
+            Accept the warning, then search for:
+            <button
+              type="button"
+              class="streaming-hint-copy"
+              onclick={async () => {
+                streamingHintFlagCopied = await copyToClipboard('network.fetch.upload_streams');
+                if (streamingHintFlagCopied) {
+                  setTimeout(() => { streamingHintFlagCopied = false; }, 2000);
+                }
+              }}
+            >
+              <code>network.fetch.upload_streams</code>
+              <Copy size={14} weight="regular" />
+              {#if streamingHintFlagCopied}
+                <span class="streaming-hint-copied">Copied</span>
+              {/if}
+            </button>
+          </li>
+          <li>Toggle the value to <strong>true</strong>.</li>
+          <li>Reload this page and create your share.</li>
+        </ol>
+        <p class="streaming-hint-note">
+          Other browsers (Chrome, Edge, Safari 17.4+) ship streaming on by
+          default — no flag needed.
+        </p>
+      </details>
+
+      <label class="streaming-hint-dontshow">
+        <input type="checkbox" bind:checked={streamingHintDontShowAgain} />
+        <span>Don't show this again on this device</span>
+      </label>
+
+      <div class="streaming-hint-actions">
+        <button type="button" class="btn btn-ghost" onclick={handleStreamingHintCancel}>
+          Cancel
+        </button>
+        <button type="button" class="btn btn-primary" onclick={handleStreamingHintConfirm}>
+          Continue anyway
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .overlay {
     position: fixed;
@@ -526,6 +749,29 @@
   .form { display: flex; flex-direction: column; gap: var(--sp-sm, 8px); }
   .field { display: flex; flex-direction: column; gap: 6px; }
   .field-label { font-size: var(--t-body-sm-size, 0.8125rem); color: var(--text-secondary, #999); margin: 0; }
+  .field-label-optional { color: var(--text-disabled, #616161); font-weight: 400; }
+  .field-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 12px;
+    background: var(--bg-surface, #1C1C1C);
+    border: 1px solid var(--border, #2E2E2E);
+    border-radius: var(--r-input, 12px);
+    color: var(--text-primary, #ededed);
+    font-size: var(--t-body-size, 0.9375rem);
+  }
+  .field-input::placeholder { color: var(--text-disabled, #616161); }
+  .field-input:focus {
+    outline: none;
+    border-color: var(--accent, #2EB860);
+  }
+  .field-hint {
+    margin: 0;
+    font-size: 0.6875rem;
+    color: var(--text-disabled, #616161);
+    line-height: 1.4;
+  }
+  .field-hint .mono-text { font-family: var(--font-mono, ui-monospace, monospace); color: var(--text-secondary, #999); }
 
   .toggle-row {
     display: flex;
@@ -709,4 +955,150 @@
     flex-shrink: 0;
     margin-top: 2px;
   }
+
+  /* ── Streaming-fallback hint modal ─────────────────────────────────── */
+  .streaming-hint-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* Must clear ShareLinkSheet's z-index:500 — the hint is launched
+       *from inside* that sheet so it has to render above it. */
+    z-index: 600;
+    padding: var(--sp-md, 16px);
+  }
+  .streaming-hint-sheet {
+    background: var(--bg-surface-raised, #262626);
+    border: 1px solid var(--border, #2E2E2E);
+    border-radius: var(--r-card, 16px);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+    width: 100%;
+    max-width: 520px;
+    max-height: calc(100vh - var(--sp-xl, 32px));
+    overflow-y: auto;
+    padding: var(--sp-lg, 24px);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-md, 16px);
+    color: var(--text-primary, #EDEDED);
+    line-height: 1.5;
+    font-size: var(--t-body-sm-size, 0.8125rem);
+  }
+  .streaming-hint-title {
+    margin: 0;
+    font-size: var(--t-title-size, 1.0625rem);
+    font-weight: 600;
+    color: var(--text-primary, #EDEDED);
+  }
+  .streaming-hint-sheet p { margin: 0; }
+  .streaming-hint-callout {
+    display: flex;
+    gap: var(--sp-sm, 8px);
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px);
+    background: var(--accent-warm-muted, #3D2F10);
+    border: 1px solid color-mix(in srgb, var(--accent-warm, #E0A320) 35%, transparent);
+    border-radius: var(--r-input, 12px);
+    color: var(--accent-warm, #E0A320);
+  }
+  .streaming-hint-callout p {
+    color: var(--text-primary, #EDEDED);
+    flex: 1;
+  }
+  .streaming-hint-icon {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .streaming-hint-details > summary {
+    cursor: pointer;
+    color: var(--text-primary, #ededed);
+    font-weight: 500;
+    list-style: none;
+    user-select: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 1px solid var(--border, #2E2E2E);
+    border-radius: var(--r-input, 12px);
+    background: var(--bg-surface, #1C1C1C);
+    transition: background 150ms;
+  }
+  .streaming-hint-details > summary:hover {
+    background: var(--bg-surface-raised, #1E1E1E);
+  }
+  .streaming-hint-details > summary::-webkit-details-marker { display: none; }
+  .streaming-hint-details > summary :global(.streaming-hint-summary-caret) {
+    transition: transform 200ms ease;
+    color: var(--text-secondary, #999);
+  }
+  .streaming-hint-details[open] > summary :global(.streaming-hint-summary-caret) {
+    transform: rotate(180deg);
+  }
+  .streaming-hint-explainer {
+    margin: var(--sp-sm, 8px) 0 var(--sp-sm, 8px) !important;
+    color: var(--text-secondary, #999);
+  }
+  .streaming-hint-steps {
+    margin: 0;
+    padding-left: var(--sp-md, 16px);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-sm, 8px);
+    color: var(--text-primary, #EDEDED);
+  }
+  .streaming-hint-steps li { line-height: 1.6; }
+  .streaming-hint-steps code {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.8125rem;
+    background: var(--bg-surface, #1C1C1C);
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+  .streaming-hint-copy {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    margin-left: 4px;
+    background: var(--bg-surface, #1C1C1C);
+    border: 1px solid var(--border, #2E2E2E);
+    border-radius: 6px;
+    color: var(--text-primary, #EDEDED);
+    cursor: pointer;
+    font-size: inherit;
+    line-height: 1;
+    vertical-align: baseline;
+  }
+  .streaming-hint-copy:hover { background: var(--bg-surface-hover, #2E2E2E); }
+  .streaming-hint-copy code { background: transparent; padding: 0; }
+  .streaming-hint-copied {
+    color: var(--accent-text, #5FDB8A);
+    font-size: 0.6875rem;
+    margin-left: 4px;
+  }
+  .streaming-hint-note {
+    margin: var(--sp-sm, 8px) 0 0 !important;
+    color: var(--text-disabled, #616161);
+    font-size: 0.75rem;
+  }
+  .streaming-hint-dontshow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-secondary, #999);
+    font-size: 0.8125rem;
+    cursor: pointer;
+  }
+  .streaming-hint-dontshow input { cursor: pointer; }
+  .streaming-hint-actions {
+    display: flex;
+    gap: var(--sp-sm, 8px);
+    justify-content: flex-end;
+    margin-top: var(--sp-sm, 8px);
+  }
+  .streaming-hint-actions .btn { min-width: 110px; }
 </style>

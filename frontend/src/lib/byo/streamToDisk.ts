@@ -41,6 +41,16 @@ export function isIOSDevice(): boolean {
 export interface StreamToDiskOptions {
   /** Declared plaintext length if known (drives progress UI; informational). */
   sizeHint?: number;
+  /**
+   * Exact byte length of `stream` if known — sets the SW response's
+   * Content-Length header. Critical for Firefox's download manager:
+   * without it, larger SW-streamed downloads can finish on the page side
+   * but fail to atomic-rename `.part` to the final filename ("source
+   * file could not be read"). Set this only when you really know the
+   * total — for zip bundles use client-zip's `predictLength`. Leaving
+   * unset is safe; the response just won't carry Content-Length.
+   */
+  contentLength?: number;
   /** Progress callback invoked with bytes-so-far; may be called 0..N times. */
   onProgress?: (bytesWritten: number) => void;
   /** AbortSignal to cancel mid-stream. */
@@ -312,7 +322,19 @@ async function saveViaServiceWorker(
     );
     setTimeout(() => reject(new Error('Service Worker register timeout')), 5_000);
   });
-  sw.postMessage({ type: 'register', id, filename, mime }, [channel.port2]);
+  sw.postMessage(
+    {
+      type: 'register',
+      id,
+      filename,
+      mime,
+      contentLength:
+        typeof options.contentLength === 'number' && options.contentLength >= 0
+          ? options.contentLength
+          : undefined,
+    },
+    [channel.port2],
+  );
   await ready;
 
   // Trigger the download via an <a download> click. The SW intercepts

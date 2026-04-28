@@ -140,6 +140,27 @@ if [ -f "$ENV_FILE" ] && ! grep -q '^WATTCLOUD_ENROLLMENT_MODE=' "$ENV_FILE"; th
   umask 022
 fi
 
+# --- Detect BYO_DOMAIN / WC_DOMAIN mismatch --------------------------------
+# $ENV_FILE pins BYO_DOMAIN at first-run bootstrap. If WC_DOMAIN is now set
+# to something different in the current shell, the relay's Origin check
+# (byo-relay/src/relay_ws.rs) will reject every browser request from the
+# hostname the SPA is actually served from — producing a non-obvious
+# "ws upgrade denied: Origin header missing or mismatched" in the relay
+# log. Fail fast with a fix command rather than starting a broken stack.
+if [ -n "${WC_DOMAIN:-}" ] && [ -f "$ENV_FILE" ]; then
+  pinned_domain="$(grep -E '^BYO_DOMAIN=' "$ENV_FILE" | tail -n1 | cut -d= -f2- || true)"
+  if [ -n "$pinned_domain" ] && [ "$pinned_domain" != "$WC_DOMAIN" ]; then
+    echo -e "${RED}[dev] BYO_DOMAIN / WC_DOMAIN mismatch:${NC}" >&2
+    echo -e "${RED}[dev]${NC}   $ENV_FILE pins BYO_DOMAIN=$pinned_domain" >&2
+    echo -e "${RED}[dev]${NC}   current shell has WC_DOMAIN=$WC_DOMAIN" >&2
+    echo -e "${RED}[dev]${NC}   Browser Origin from https://$WC_DOMAIN would be rejected" >&2
+    echo -e "${RED}[dev]${NC}   by byo-relay's Origin check. Fix with:" >&2
+    echo -e "${RED}[dev]${NC}     sed -i 's|^BYO_DOMAIN=.*|BYO_DOMAIN=$WC_DOMAIN|' '$ENV_FILE'" >&2
+    echo -e "${RED}[dev]${NC}   (or rm '$ENV_FILE' to regenerate from the current WC_DOMAIN)." >&2
+    fail "aborting — fix the mismatch or unset WC_DOMAIN."
+  fi
+fi
+
 # Stub SPA dir — Vite serves the real SPA on :5173; the relay's ServeDir is a
 # fallback we don't hit in dev.
 mkdir -p "$STATE_DIR/web-stub"
@@ -176,15 +197,26 @@ trap cleanup EXIT INT TERM
 mkdir -p "$STATE_DIR"
 echo $$ > "$PID_FILE"
 
+# --- Log files -------------------------------------------------------------
+# Tee relay + Vite output to files under $STATE_DIR so diagnostics (e.g.
+# "what did the relay log when I clicked Connect?") don't require access to
+# the live foreground terminal. Truncated each dev.sh run — each session has
+# its own log.
+RELAY_LOG="$STATE_DIR/relay.log"
+VITE_LOG="$STATE_DIR/vite.log"
+: > "$RELAY_LOG"
+: > "$VITE_LOG"
+
 # --- Start byo-relay -------------------------------------------------------
 info "Starting byo-relay on $RELAY_HOST:$RELAY_PORT (cargo run, first build may be slow)..."
+info "  → logs: $RELAY_LOG"
 (
   set -a
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
   exec cargo run --manifest-path "$APP_DIR/byo-relay/Cargo.toml" --bin byo-relay
-) &
+) > >(tee -a "$RELAY_LOG") 2> >(tee -a "$RELAY_LOG" >&2) &
 RELAY_PID=$!
 
 info "Waiting for relay /health (max ${MAX_WAIT}s)..."
@@ -210,7 +242,9 @@ fi
 
 # --- Start Vite ------------------------------------------------------------
 info "Starting Vite dev server on :5173 (proxies /relay + /health + /ready to the relay)..."
-(cd "$APP_DIR/frontend" && DEV_RELAY_URL="http://$RELAY_HOST:$RELAY_PORT" npm run dev) &
+info "  → logs: $VITE_LOG"
+(cd "$APP_DIR/frontend" && DEV_RELAY_URL="http://$RELAY_HOST:$RELAY_PORT" npm run dev) \
+  > >(tee -a "$VITE_LOG") 2> >(tee -a "$VITE_LOG" >&2) &
 VITE_PID=$!
 
 ok "Full stack up. Open http://localhost:5173/  —  Ctrl-C to stop both (or 'make dev-stop' from another shell)."

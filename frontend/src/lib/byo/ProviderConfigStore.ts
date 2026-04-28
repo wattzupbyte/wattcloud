@@ -260,6 +260,53 @@ export async function clearAllProviderConfigs(): Promise<void> {
   });
 }
 
+/** Rename a single provider's display_name on this device.
+ *
+ * The wrapped config is left untouched — we only rewrite the meta so the
+ * vault-list landing screen (which reads IDB before any unlock) reflects
+ * the rename. Without this, `renameProvider` would only mutate the cloud
+ * manifest and the vault card would keep showing the original name on
+ * every reload until the user unlocked, hydrated, and re-saved.
+ *
+ * For primary providers we also update vault_label so the
+ * VaultsListScreen fallback (`primary.display_name || vault_label`)
+ * lines up with the rename — otherwise a vault originally created
+ * with the default label would keep showing the type name (e.g.
+ * "SFTP") if anything later cleared display_name. */
+export async function updateProviderDisplayNameLocal(
+  provider_id: string,
+  new_name: string,
+): Promise<void> {
+  const trimmed = new_name.trim();
+  if (!trimmed) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_PROVIDER_CONFIGS, 'readwrite');
+    const store = tx.objectStore(STORE_PROVIDER_CONFIGS);
+    const getReq = store.get(provider_id);
+    getReq.onsuccess = () => {
+      const row = getReq.result as StoredProviderConfig | undefined;
+      if (!row) {
+        console.warn('[ProviderConfigStore] updateProviderDisplayNameLocal: no row for', provider_id);
+        return;
+      }
+      row.display_name = trimmed;
+      if (row.is_primary) row.vault_label = trimmed;
+      row.saved_at = new Date().toISOString();
+      const putReq = store.put(row);
+      putReq.onerror = () => {
+        console.error('[ProviderConfigStore] updateProviderDisplayNameLocal put failed:', putReq.error);
+      };
+    };
+    getReq.onerror = () => {
+      console.error('[ProviderConfigStore] updateProviderDisplayNameLocal get failed:', getReq.error);
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new Error('transaction aborted'));
+  });
+}
+
 /** Rename a vault locally — touches every row sharing its vault_id. */
 export async function renameVaultLabel(vault_id: string, new_label: string): Promise<void> {
   const db = await openDB();

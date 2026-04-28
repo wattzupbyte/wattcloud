@@ -83,11 +83,10 @@ const ICONS: Record<ProviderType, ComponentType> = {
             <SvelteComponent size={20} weight="regular" />
           </span>
           <span class="vault-body">
-            <span class="vault-label">{v.vault_label || 'Untitled vault'}</span>
+            <span class="vault-label">{v.primary.display_name || v.vault_label || 'Untitled vault'}</span>
             <span class="vault-meta">
-              {v.primary.type.toUpperCase()} · {v.primary.display_name}
-              {#if v.providers.length > 1}
-                · +{v.providers.length - 1} provider{v.providers.length - 1 === 1 ? '' : 's'}
+              {v.primary.type.toUpperCase()}{#if v.providers.length > 1}
+                {' '}+ {v.providers.length - 1} {v.providers.length - 1 === 1 ? 'Provider' : 'Providers'}
               {/if}
             </span>
             <span class="vault-time">Last opened {relativeTime(v.last_saved_at)}</span>
@@ -110,7 +109,7 @@ const ICONS: Record<ProviderType, ComponentType> = {
     <span class="add-icon" aria-hidden="true"><Plus size={18} weight="bold" /></span>
     <span class="add-text">
       <span class="add-title">Connect a new vault</span>
-      <span class="add-sub">Google Drive, Dropbox, OneDrive, Box, pCloud, WebDAV, SFTP, S3</span>
+      <span class="add-sub">Choose from a range of providers.</span>
     </span>
   </button>
 
@@ -118,7 +117,7 @@ const ICONS: Record<ProviderType, ComponentType> = {
     <span class="link-icon" aria-hidden="true"><DeviceMobile size={18} weight="bold" /></span>
     <span class="link-text">
       <span class="link-title">Link from another device</span>
-      <span class="link-sub">Scan a QR on a device that already has the vault — no credentials needed here.</span>
+      <span class="link-sub">Scan a QR on a device that already has the vault.</span>
     </span>
   </button>
 </div>
@@ -273,7 +272,7 @@ const ICONS: Record<ProviderType, ComponentType> = {
     align-items: center;
     padding: var(--sp-md, 14px);
     background: var(--bg-surface, #1C1C1C);
-    border: 1px dashed var(--border, #2E2E2E);
+    border: 1px solid var(--border, #2E2E2E);
     border-radius: var(--r-card, 16px);
     color: var(--text-primary, #EDEDED);
     cursor: pointer;
@@ -291,9 +290,9 @@ const ICONS: Record<ProviderType, ComponentType> = {
     justify-content: center;
     width: 40px;
     height: 40px;
-    border-radius: var(--r-pill, 9999px);
-    background: var(--accent, #2EB860);
-    color: var(--text-inverse, #121212);
+    border-radius: var(--r-input, 12px);
+    background: var(--accent-muted, #1B3627);
+    color: var(--accent-text, #5FDB8A);
   }
 
   .add-text {

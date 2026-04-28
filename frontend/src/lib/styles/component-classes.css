@@ -90,6 +90,16 @@
 
 /* Icon-only */
 .btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* SVG glyphs default to baseline-aligned inline content; without a
+     line-height of 0 the surrounding line-box pads the bottom of the
+     button by the difference between font line-height and the icon's
+     intrinsic height, which visually shifts the glyph upward inside
+     the circle. Zeroing it lets align-items: center actually center
+     the SVG against the button box. */
+  line-height: 0;
   background-color: transparent;
   color: var(--text-secondary);
   width: var(--touch-target);
@@ -487,13 +497,13 @@
   .file-list .list-item-col-size {
     font-variant-numeric: tabular-nums;
   }
+  /* The outer .file-list-header is now a 1-col grid; row-groups own the
+     5-column header-cell layout so the 2-col-viewport rule below can
+     trivially flip the outer to two columns and reveal the second row. */
   .file-list-header {
     display: grid;
-    grid-template-columns: 40px minmax(0, 1fr) 120px 80px 32px;
-    column-gap: var(--sp-sm);
+    grid-template-columns: 1fr;
     align-items: center;
-    height: 28px;
-    padding: 0 var(--sp-sm);
     margin-bottom: var(--sp-xs);
     border-bottom: 1px solid var(--border);
     font-size: var(--t-label-size);
@@ -502,8 +512,47 @@
     text-transform: uppercase;
     color: var(--text-secondary);
   }
+  .file-list-header-row {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr) 120px 80px 32px;
+    column-gap: var(--sp-sm);
+    align-items: center;
+    height: 28px;
+    padding: 0 var(--sp-sm);
+  }
+  .file-list-header-row.file-list-header-row-extra {
+    display: none;
+  }
   .file-list-header-cell-right {
     text-align: right;
+  }
+}
+
+/* Wide-viewport enhancement: render the file list as a 2-column grid so
+   long flat lists don't waste the right half of a desktop window. Each
+   row keeps its own internal grid (icon · name · modified · size · action),
+   so the row layout doesn't change — we just lay them out in pairs.
+
+   1280px is past the drawer-expanded width (280px) + two minimum-viable
+   list rows (~360px each + gap). Below that we stay single-column so rows
+   keep room for the Modified/Size columns.
+
+   The header above is also flipped to two columns; the .file-list-header-
+   row-extra duplicate inside the markup becomes visible so each list
+   column gets its own Name/Modified/Size labels. */
+@media (min-width: 1280px) {
+  .file-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: var(--sp-md);
+    row-gap: var(--sp-xs);
+  }
+  .file-list-header {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: var(--sp-md);
+  }
+  .file-list-header-row.file-list-header-row-extra {
+    display: grid;
   }
 }
 
@@ -512,13 +561,19 @@
    ============================================ */
 .file-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  /* Match the folder section's .tiles-grid sizing (ByoDashboard.svelte
+     §tiles-grid) so files don't render at 4× the folder tile area on
+     desktop. auto-fill keeps the row dense while capping each tile at
+     140px wide; mobile falls back to 2 columns to avoid under-tapped
+     micro-tiles on a narrow viewport. */
+  grid-template-columns: repeat(auto-fill, minmax(110px, 140px));
   gap: var(--sp-sm);
+  justify-content: start;
 }
 
-@media (min-width: 600px) {
+@media (max-width: 480px) {
   .file-grid {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 

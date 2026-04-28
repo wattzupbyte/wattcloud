@@ -9,11 +9,20 @@
     getVaultId,
     getProvider,
     markDirty,
+    addProvider,
+    refreshEnrolledDevicesFromRemote,
     bytesToBase64,
     base64ToBytes,
   } from '../../byo/VaultLifecycle';
+  import { enrollmentEpoch } from '../../byo/enrollmentSync';
   import { getDeviceRecord } from '../../byo/DeviceKeyStore';
-  import { vaultStore } from '../../byo/stores/vaultStore';
+  import {
+    loadProvidersForVault,
+    deleteProviderConfig,
+    type HydratedProviderConfig,
+  } from '../../byo/ProviderConfigStore';
+  import { hydrateProvider } from '../../byo/ProviderHydrate';
+  import { vaultStore, sortedProviders } from '../../byo/stores/vaultStore';
   import type { ProviderMeta } from '../../byo/stores/vaultStore';
   import { queryRows } from '../../byo/ConflictResolver';
   import ByoPassphraseInput from './ByoPassphraseInput.svelte';
@@ -23,6 +32,7 @@
   import ActiveSharesList from './ActiveSharesList.svelte';
   import ProviderContextSheet from './ProviderContextSheet.svelte';
   import AddProviderSheet from './AddProviderSheet.svelte';
+  import EditProviderForm from './EditProviderForm.svelte';
   import ByoCredentialProtection from './ByoCredentialProtection.svelte';
   import AccessControlPanel from './AccessControlPanel.svelte';
   import DashboardHeader from '../DashboardHeader.svelte';
@@ -113,6 +123,18 @@
   let contextProvider: ProviderMeta | null = $state(null);
   let showAddProvider = $state(false);
 
+  // Orphan providers — `provider_configs` IDB rows for this vault whose
+  // provider_id isn't in the live manifest. Typically left behind when a
+  // post-addProvider save crashed before the manifest reached the primary;
+  // also useful when a remote was wiped and the local row points nowhere.
+  // Includes rows whose decrypt failed — those still take up space and
+  // need a removal path even though Retry/Edit can't operate on them.
+  type OrphanRow = HydratedProviderConfig | (import('../../byo/ProviderConfigStore').ProviderConfigMeta & { config: null });
+  let orphanProviders: OrphanRow[] = $state([]);
+  let retryingOrphanId: string | null = $state(null);
+  let editingOrphanId: string | null = $state(null);
+  let savingOrphanEdit = $state(false);
+
   // About
   let storageUsage: StorageUsage | null = $state(null);
   let fileCount = $state(0);
@@ -149,11 +171,33 @@
     loadAbout(); // fire-and-forget; aboutLoading covers the spinner
   });
 
+  // Re-run loadDevices whenever an enrollment cycle bumps the epoch, so the
+  // Devices section picks up new entries without a page refresh. The first
+  // emission of enrollmentEpoch fires synchronously on subscribe — skip it
+  // (onMount above already loaded once) by gating on a prior tick.
+  let _enrollEpochSeen = $state(-1);
+  $effect(() => {
+    const tick = $enrollmentEpoch;
+    if (_enrollEpochSeen < 0) {
+      _enrollEpochSeen = tick;
+      return;
+    }
+    if (tick !== _enrollEpochSeen) {
+      _enrollEpochSeen = tick;
+      loadDevices();
+    }
+  });
+
   async function loadDevices() {
     devicesLoading = true;
     try {
       const db = getDb();
       if (!db) return;
+      // Pull fresh enrolled_devices from the primary backend FIRST so
+      // entries another device added (e.g. the receiver in a remote
+      // enrollment) get merged into the local _db before we render. Best
+      // effort — failure leaves the local list unchanged.
+      await refreshEnrolledDevicesFromRemote();
       const rows = queryRows(db, "SELECT value FROM vault_meta WHERE key = 'enrolled_devices'");
       if (rows.length > 0) {
         enrolledDevices = JSON.parse(rows[0]['value'] as string) as EnrolledDevice[];
@@ -161,10 +205,63 @@
       const vaultHexId = getVaultId();
       const record = await getDeviceRecord(vaultHexId);
       currentDeviceId = record?.device_id ?? '';
+
+      // Auto-heal: if this device's device_id (from IDB) isn't in
+      // enrolled_devices but it does occupy a slot in the manifest header,
+      // it's a survivor from a path that wrote IDB but skipped the
+      // vault_meta append (ByoRecovery is the canonical case — it mints a
+      // new device_id and rewrites the slot table without touching
+      // enrolled_devices, so the "This device" badge can never match for
+      // anyone who's used recovery). Append + markDirty so the next save
+      // propagates the entry to every other device.
+      if (currentDeviceId && record) {
+        const inList = enrolledDevices.some((d) => d.device_id === currentDeviceId);
+        const inHeader = await deviceIdIsInManifestHeader(currentDeviceId);
+        if (!inList && inHeader) {
+          const updated = [
+            ...enrolledDevices,
+            {
+              device_id: currentDeviceId,
+              device_name: record.device_name,
+              enrolled_at: new Date().toISOString(),
+            },
+          ];
+          db.run(
+            "INSERT OR REPLACE INTO vault_meta (key, value) VALUES ('enrolled_devices', ?)",
+            [JSON.stringify(updated)],
+          );
+          markDirty();
+          enrolledDevices = updated;
+        }
+      }
     } catch (e: any) {
       showGlobalError(e.message ?? 'Failed to load devices');
     } finally {
       devicesLoading = false;
+    }
+  }
+
+  /** True iff `deviceIdHex` matches an active slot in the primary
+   * manifest header. Pulled from the live primary so we catch slot table
+   * changes another device made since this one unlocked. */
+  async function deviceIdIsInManifestHeader(deviceIdHex: string): Promise<boolean> {
+    const provider = getProvider();
+    if (!provider) return false;
+    try {
+      const { data } = await provider.download(provider.manifestRef());
+      const header = new Uint8Array(data.slice(0, HEADER_SIZE));
+      for (let i = 0; i < SLOT_COUNT; i++) {
+        const offset = DEVICE_SLOTS_OFFSET + i * SLOT_SIZE;
+        if (header[offset] !== 0x01) continue;
+        const slotDeviceId = Array.from(header.slice(offset + 1, offset + 17))
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+        if (slotDeviceId === deviceIdHex) return true;
+      }
+      return false;
+    } catch {
+      // Don't add an entry we can't verify against the header.
+      return false;
     }
   }
 
@@ -210,7 +307,14 @@
     if (!provider || vaultSessionId === null) { showGlobalError('Vault not unlocked'); return; }
 
     try {
-      const { data: vaultBytes } = await provider.download('WattcloudVault/vault_manifest.sc');
+      // Use the provider's own ref so we get the right path under
+      // sftpBasePath / s3BasePath and the canonical /data/ segment.
+      // The hardcoded 'WattcloudVault/vault_manifest.sc' from earlier missed
+      // both, so the download 404'd on every real provider and surfaced as
+      // the generic "Revoke failed" toast.
+      const manifestRef = provider.manifestRef();
+      const { data: vaultBytes, version: currentVersion } =
+        await provider.download(manifestRef);
       const header = new Uint8Array(vaultBytes.slice(0, HEADER_SIZE));
 
       for (let i = 0; i < SLOT_COUNT; i++) {
@@ -234,7 +338,10 @@
       const assembled = new Uint8Array(header.length + body.length);
       assembled.set(header, 0);
       assembled.set(body, header.length);
-      await provider.upload('WattcloudVault/vault_manifest.sc', 'vault_manifest.sc', assembled);
+      await provider.upload(manifestRef, 'vault_manifest.sc', assembled, {
+        mimeType: 'application/octet-stream',
+        expectedVersion: currentVersion,
+      });
 
       const db = getDb();
       if (db) {
@@ -247,14 +354,14 @@
         enrolledDevices = updated;
       }
     } catch (e: any) {
-      showGlobalError(e.message ?? 'Revoke failed');
+      console.error('[ByoSettings] revoke failed', e);
+      showGlobalError(e?.message ?? 'Revoke failed');
     }
   }
 
   // ── Passphrase change ──────────────────────────────────────────────────
 
-  async function handlePassphraseSubmit(event: CustomEvent<string>) {
-    const newPassphrase = event.detail;
+  async function handlePassphraseSubmit(newPassphrase: string) {
     const provider = getProvider();
     const vaultSessionId = getVaultSessionId();
     if (!provider || vaultSessionId === null) { passphraseError = 'Vault not unlocked'; return; }
@@ -369,6 +476,135 @@
     return 'var(--text-disabled, #616161)';
   }
 
+  async function loadOrphans() {
+    const vid = getVaultId();
+    if (!vid) { orphanProviders = []; return; }
+    try {
+      const { hydrated, failed } = await loadProvidersForVault(vid);
+      const live = new Set($vaultStore.providers.map((p) => p.providerId));
+      const orphans: OrphanRow[] = [];
+      for (const o of hydrated) {
+        if (!live.has(o.provider_id)) orphans.push(o);
+      }
+      // Rows we couldn't decrypt are still IDB rows the user can see in the
+      // Your Vaults provider count. They can't be Retried / Edited (we have
+      // no plaintext config) but we still surface them so Remove is reachable.
+      for (const f of failed) {
+        if (!live.has(f.provider_id)) orphans.push({ ...f, config: null });
+      }
+      orphanProviders = orphans;
+    } catch {
+      orphanProviders = [];
+    }
+  }
+
+  function removeOrphan(o: { provider_id: string; display_name: string }) {
+    showConfirm(
+      'Remove saved provider',
+      `Remove the saved credentials for "${o.display_name}" on this device? ` +
+        "This doesn't touch any files on the remote storage.",
+      async () => {
+        await deleteProviderConfig(o.provider_id);
+        await loadOrphans();
+      },
+      true,
+    );
+  }
+
+  async function retryOrphan(o: HydratedProviderConfig) {
+    retryingOrphanId = o.provider_id;
+    try {
+      // Pin providerId to the orphan row's id so addProvider re-adds the
+      // manifest entry under the SAME id the IDB row carries. Without this
+      // pin, configs persisted by older code paths (no providerId in the
+      // encrypted blob) cause addProvider to mint a fresh UUID — manifest
+      // gets the new id, IDB keeps the old id, and the row stays orphaned
+      // forever despite the toast saying "reconnected". Also reuses the
+      // existing vault_<id>.sc body on the remote instead of leaving a
+      // second copy behind.
+      const cfgWithId = { ...o.config, providerId: o.provider_id };
+      const instance = await hydrateProvider(cfgWithId);
+      // addProvider force-saves inline so the new manifest entry survives
+      // an immediate reload — no need to await saveVault separately here.
+      await addProvider(instance, cfgWithId, o.display_name);
+      // Re-persist the IDB row with the (now guaranteed) providerId in the
+      // encrypted config too, so future reloads / device-enrollments don't
+      // hit the same legacy gap.
+      const vid = getVaultId();
+      if (vid) {
+        const { saveProviderConfig } = await import('../../byo/ProviderConfigStore');
+        await saveProviderConfig(
+          {
+            provider_id: o.provider_id,
+            vault_id: vid,
+            vault_label: o.vault_label,
+            type: o.type,
+            display_name: o.display_name,
+            is_primary: o.is_primary,
+            saved_at: new Date().toISOString(),
+          },
+          cfgWithId,
+        );
+      }
+      byoToast.show(`${o.display_name} reconnected.`, { icon: 'seal' });
+      await loadOrphans();
+    } catch (e: any) {
+      showGlobalError(
+        `Couldn't reconnect ${o.display_name}: ${e?.message ?? e}. ` +
+          'Use Edit to fix the credentials, or Remove and add the provider fresh.',
+      );
+    } finally {
+      retryingOrphanId = null;
+    }
+  }
+
+  /** Persist edits made via the EditProviderForm against an orphan row, then
+   *  re-attempt the connect+addProvider with the fresh config. The new
+   *  config carries the same providerId so the orphaned vault body on the
+   *  remote (if any) gets reused. */
+  async function saveOrphanEdit(o: HydratedProviderConfig, newConfig: import('@wattcloud/sdk').ProviderConfig) {
+    savingOrphanEdit = true;
+    try {
+      const vid = getVaultId();
+      if (!vid) throw new Error('Vault not unlocked');
+      const cfgWithId = { ...newConfig, providerId: o.provider_id };
+      // Test-connect first so a typo doesn't overwrite a working IDB row with
+      // garbage that the next reload will fail to hydrate.
+      const instance = await hydrateProvider(cfgWithId);
+      // Persist the corrected config to IDB (upsert by provider_id).
+      const { saveProviderConfig } = await import('../../byo/ProviderConfigStore');
+      await saveProviderConfig(
+        {
+          provider_id: o.provider_id,
+          vault_id: vid,
+          vault_label: o.vault_label,
+          type: o.type,
+          display_name: o.display_name,
+          is_primary: o.is_primary,
+          saved_at: new Date().toISOString(),
+        },
+        cfgWithId,
+      );
+      // Re-attach into the live manifest. addProvider force-saves inline
+      // so the new entry persists across reload.
+      await addProvider(instance, cfgWithId, o.display_name);
+      byoToast.show(`${o.display_name} reconnected with updated settings.`, { icon: 'seal' });
+      editingOrphanId = null;
+      await loadOrphans();
+    } catch (e: any) {
+      showGlobalError(`Couldn't apply: ${e?.message ?? e}`);
+    } finally {
+      savingOrphanEdit = false;
+    }
+  }
+
+  $effect(() => {
+    // Re-derive orphans whenever the live provider list changes (e.g.
+    // after an orphan retry succeeds and shifts a row into the live list).
+    void $vaultStore.providers;
+    loadOrphans();
+  });
+
   function statusTooltip(p: ProviderMeta): string {
     if (p.status === 'connected' || p.status === 'syncing') return '';
     if (p.status === 'offline_os') return 'Reconnect when your network is back.';
@@ -478,7 +714,7 @@
     <div class="settings-group">
       <h3 class="group-title">Providers</h3>
       <div class="group-body">
-        {#each $vaultStore.providers as p (p.providerId)}
+        {#each $sortedProviders as p (p.providerId)}
           <button
             class="settings-row"
             onclick={() => contextProvider = p}
@@ -490,7 +726,12 @@
               {p.displayName}
               {#if p.isPrimary}<span class="primary-badge">Primary</span>{/if}
             </span>
-            {#if p.status !== 'offline_os'}
+            {#if p.status !== 'offline_os' && p.status !== 'offline'}
+              <!-- 'offline' is suppressed here: the per-provider OfflineBanner
+                   on the dashboard already calls the user's attention to the
+                   condition; surfacing the same status as a row badge is
+                   redundant and visually noisy. Other states (connected,
+                   syncing, error, unauthorized) still show. -->
               <span class="status-dot" style:background-color={statusDotColor(p.status)} aria-hidden="true"></span>
               <span class="status-label" style:color={statusDotColor(p.status)}>{statusLabel(p.status)}</span>
             {/if}
@@ -504,6 +745,59 @@
         {/if}
         {#if $vaultStore.providers.length === 0}
           <p class="group-empty">No providers connected.</p>
+        {/if}
+        {#if orphanProviders.length > 0}
+          <div class="orphans-block">
+            <p class="orphans-help">
+              Saved on this device but not in the vault — usually left over from a connect that didn't finish.
+              Retry to attach, or remove the saved credentials.
+            </p>
+            {#each orphanProviders as o (o.provider_id)}
+              {@const decrypted = o.config !== null}
+              <div class="orphan-row" title="{o.type.toUpperCase()} · saved {formatDate(o.saved_at)}{decrypted ? '' : ' · decrypt failed'}">
+                <span class="prow-icon" aria-hidden="true">{providerIcon(o.type)}</span>
+                <span class="row-label">
+                  {o.display_name}
+                  <span class="orphan-meta">
+                    {o.type.toUpperCase()} · saved {formatDate(o.saved_at)}
+                    {#if !decrypted} · can't decrypt on this device{/if}
+                  </span>
+                </span>
+                {#if decrypted}
+                  <button
+                    class="orphan-btn"
+                    disabled={retryingOrphanId !== null || editingOrphanId !== null}
+                    onclick={() => retryOrphan(o as HydratedProviderConfig)}
+                  >
+                    {retryingOrphanId === o.provider_id ? 'Retrying…' : 'Retry'}
+                  </button>
+                  <button
+                    class="orphan-btn"
+                    disabled={retryingOrphanId !== null || editingOrphanId !== null}
+                    onclick={() => editingOrphanId = (editingOrphanId === o.provider_id ? null : o.provider_id)}
+                  >Edit</button>
+                {/if}
+                <button
+                  class="orphan-btn orphan-danger"
+                  disabled={retryingOrphanId !== null || editingOrphanId !== null}
+                  onclick={() => removeOrphan(o)}
+                >Remove</button>
+              </div>
+              {#if editingOrphanId === o.provider_id && o.config !== null}
+                <div class="orphan-edit">
+                  <EditProviderForm
+                    type={o.type}
+                    currentConfig={o.config}
+                    displayName={o.display_name}
+                    submitting={savingOrphanEdit}
+                    submitLabel="Save & retry"
+                    onSubmit={(cfg) => saveOrphanEdit(o as HydratedProviderConfig, cfg)}
+                    onCancel={() => editingOrphanId = null}
+                  />
+                </div>
+              {/if}
+            {/each}
+          </div>
         {/if}
         <button class="settings-row" onclick={() => showAddProvider = true}>
           <span class="row-icon"><Icon name="plus" size={16} /></span>
@@ -974,6 +1268,67 @@
     margin-left: var(--sp-xs, 4px);
   }
 
+  /* ── Orphan provider rows ── */
+  .orphans-block {
+    border-top: 1px solid var(--border, #2E2E2E);
+    background: var(--bg-surface, rgba(255,255,255,0.03));
+  }
+  .orphans-help {
+    margin: 0;
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px) 0;
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    color: var(--text-secondary, #999);
+    line-height: 1.45;
+  }
+  .orphan-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm, 8px);
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px);
+    min-height: 48px;
+  }
+  .orphan-row .row-label {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .orphan-meta {
+    font-size: var(--t-label-size, 0.75rem);
+    color: var(--text-disabled, #757575);
+  }
+  .orphan-btn {
+    flex-shrink: 0;
+    border: 1px solid var(--border, #2E2E2E);
+    border-radius: var(--r-input, 12px);
+    background: transparent;
+    color: var(--text-primary, #EDEDED);
+    font-size: var(--t-label-size, 0.75rem);
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+  .orphan-btn:hover:not(:disabled) {
+    background: var(--bg-surface-hover, #2E2E2E);
+  }
+  .orphan-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .orphan-btn.orphan-danger {
+    color: var(--danger, #D64545);
+    border-color: var(--danger, #D64545);
+  }
+  .orphan-btn.orphan-danger:hover:not(:disabled) {
+    background: rgba(214, 69, 69, 0.1);
+  }
+  .orphan-edit {
+    padding: var(--sp-sm, 8px) var(--sp-md, 16px) var(--sp-md, 16px);
+    border-top: 1px solid var(--border, #2E2E2E);
+    background: var(--bg-surface-raised, #1E1E1E);
+  }
+
   /* ── Device rows (§18.1) ── */
   .device-row {
     display: flex;
@@ -1014,6 +1369,7 @@
     border-radius: var(--r-pill, 9999px);
     color: var(--accent-text, #5FDB8A);
     padding: 1px 6px;
+    margin-left: 4px;
   }
 
   .device-meta {

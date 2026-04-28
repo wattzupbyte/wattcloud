@@ -7,13 +7,19 @@
    */
 
   import { getContext, onMount, onDestroy } from 'svelte';
+  import { fade, fly } from 'svelte/transition';
+  import { quintOut } from 'svelte/easing';
   import type { DataProvider, ShareEntry } from '../../byo/DataProvider';
   import ConfirmModal from '../ConfirmModal.svelte';
+  import QrDisplay from './QrDisplay.svelte';
   import Link from 'phosphor-svelte/lib/Link';
   import FolderSimple from 'phosphor-svelte/lib/FolderSimple';
   import ImageSquare from 'phosphor-svelte/lib/ImageSquare';
   import UploadSimple from 'phosphor-svelte/lib/UploadSimple';
   import Trash from 'phosphor-svelte/lib/Trash';
+  import Copy from 'phosphor-svelte/lib/Copy';
+  import QrCode from 'phosphor-svelte/lib/QrCode';
+  import X from 'phosphor-svelte/lib/X';
   import { byoToast } from '../../byo/stores/byoToasts';
 
   const dataProvider = getContext<{ current: DataProvider }>('byo:dataProvider').current;
@@ -26,12 +32,68 @@
   // Revoke confirmation (§11.2 — destructive action needs consequence line).
   let confirmShareId: string | null = $state(null);
   let confirmDisplayName = $state('');
+  /** True if the row's expiry has already passed at confirm-prompt time
+   *  — drives the modal's title + body so we don't tell the user they're
+   *  cutting off recipients who already lost access at expiry. */
+  let confirmIsExpired = $state(false);
+
+  // QR sheet for a single share (only available when fragment is stored —
+  // shares created before recoverable-link shipped have fragment=null).
+  let qrShare: ShareEntry | null = $state(null);
+  let qrCopied = $state(false);
+
+  function shareUrl(entry: ShareEntry): string {
+    if (!entry.fragment) return '';
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    return `${origin}/s/${entry.share_id}#${entry.fragment}`;
+  }
+
+  async function copyShareLink(entry: ShareEntry) {
+    const url = shareUrl(entry);
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      byoToast.show('Link copied');
+    } catch {
+      byoToast.show('Could not copy. Try Show QR and copy from there.', { icon: 'danger' });
+    }
+  }
+
+  async function copyFromQrSheet() {
+    if (!qrShare) return;
+    const url = shareUrl(qrShare);
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      qrCopied = true;
+      setTimeout(() => { qrCopied = false; }, 2000);
+    } catch {
+      byoToast.show('Could not copy', { icon: 'danger' });
+    }
+  }
 
   async function loadShares() {
     shares = dataProvider.listShares();
     const next = new Map<string, string>();
     await Promise.all(
       shares.map(async (s) => {
+        // Prefer the user-supplied label so the creator sees the same
+        // string the recipient sees on the landing page.
+        if (s.label && s.label.trim().length > 0) {
+          next.set(s.share_id, s.label);
+          return;
+        }
+        // Multi-source bundles never had a single source row to decrypt
+        // a name from — fall back to a generic count derived from the
+        // bundle_kind + blob_count.
+        const bundleKind = s.bundle_kind ?? s.kind;
+        if (bundleKind === 'mixed' || bundleKind === 'multi-files') {
+          const fileCount = s.blob_count !== null && s.blob_count > 1
+            ? s.blob_count - 1
+            : 0;
+          next.set(s.share_id, fileCount > 0 ? `${fileCount} items` : 'Share');
+          return;
+        }
         let name = 'Share';
         if (s.kind === 'file' && s.file_id !== null) {
           name = await dataProvider.getDecryptedFileName(s.file_id);
@@ -58,6 +120,8 @@
   function promptRevoke(share: ShareEntry) {
     confirmShareId = share.share_id;
     confirmDisplayName = displayNames.get(share.share_id) ?? 'this share';
+    confirmIsExpired =
+      share.presigned_expires_at !== null && share.presigned_expires_at <= Date.now();
   }
 
   async function revokeConfirmed() {
@@ -75,16 +139,36 @@
     }
   }
 
-  function kindIcon(kind: string) {
-    if (kind === 'folder') return FolderSimple;
-    if (kind === 'collection') return ImageSquare;
+  function kindIcon(entry: ShareEntry) {
+    const k = entry.bundle_kind ?? entry.kind;
+    if (k === 'folder' || k === 'mixed') return FolderSimple;
+    if (k === 'collection') return ImageSquare;
     return UploadSimple;
   }
 
-  function kindLabel(kind: string) {
-    if (kind === 'folder') return 'Folder';
-    if (kind === 'collection') return 'Collection';
-    return 'File';
+  /** Badges shown on the share row. Mixed bundles get TWO badges so the
+   *  user sees at a glance that the share contains both kinds. Legacy
+   *  rows without bundle_kind fall back to the 'kind' column. */
+  function kindBadges(entry: ShareEntry): string[] {
+    const k = entry.bundle_kind ?? entry.kind;
+    switch (k) {
+      case 'mixed':       return ['Folder', 'Files'];
+      case 'multi-files': return ['Files'];
+      case 'folder':      return ['Folder'];
+      case 'collection':  return ['Collection'];
+      default:            return ['File'];
+    }
+  }
+
+  /** Full timestamp shown as a tooltip on the timeAgo label so the user
+   *  can see exactly when each share was created. Locale-formatted via
+   *  the user's browser settings. */
+  function fullTimestamp(ms: number): string {
+    try {
+      return new Date(ms).toLocaleString();
+    } catch {
+      return new Date(ms).toString();
+    }
   }
 
   const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -153,7 +237,8 @@
   {:else}
     <ul class="shares-items" aria-label="Active share links">
       {#each shares as share (share.share_id)}
-        {@const SvelteComponent = kindIcon(share.kind)}
+        {@const SvelteComponent = kindIcon(share)}
+        {@const badges = kindBadges(share)}
         <li class="share-item">
           <div class="share-item-icon" aria-hidden="true">
             <SvelteComponent size={20} />
@@ -161,12 +246,18 @@
           <div class="share-item-body">
             <div class="share-item-top">
               <span class="share-filename">{displayNames.get(share.share_id) ?? '…'}</span>
-              <span class="kind-pill">{kindLabel(share.kind)}</span>
+              {#each badges as badge}
+                <span class="kind-pill">{badge}</span>
+              {/each}
             </div>
             <div class="share-item-meta">
               {#each metaParts(share) as part, i}
                 {#if i > 0}<span class="meta-dot" aria-hidden="true">·</span>{/if}
-                <span>{part}</span>
+                {#if i === 0}
+                  <span title={fullTimestamp(share.created_at)}>{part}</span>
+                {:else}
+                  <span>{part}</span>
+                {/if}
               {/each}
               {#if expiryLabel(share)}
                 <span class="meta-dot" aria-hidden="true">·</span>
@@ -174,21 +265,45 @@
               {/if}
             </div>
           </div>
-          <button
-            class="revoke-btn"
-            onclick={() => promptRevoke(share)}
-            disabled={revoking.has(share.share_id)}
-            aria-label="Revoke share link for {displayNames.get(share.share_id) ?? 'share'}"
-            title="Revoke"
-          >
-            <span class="revoke-visual" aria-hidden="true">
-              {#if revoking.has(share.share_id)}
-                <span class="spinner-sm"></span>
-              {:else}
-                <Trash size={18} />
-              {/if}
-            </span>
-          </button>
+          <div class="share-actions">
+            {#if share.fragment}
+              <button
+                class="action-btn"
+                onclick={() => copyShareLink(share)}
+                aria-label="Copy share link for {displayNames.get(share.share_id) ?? 'share'}"
+                title="Copy link"
+              >
+                <span class="action-visual" aria-hidden="true">
+                  <Copy size={16} />
+                </span>
+              </button>
+              <button
+                class="action-btn"
+                onclick={() => { qrShare = share; qrCopied = false; }}
+                aria-label="Show QR for {displayNames.get(share.share_id) ?? 'share'}"
+                title="Show QR / link"
+              >
+                <span class="action-visual" aria-hidden="true">
+                  <QrCode size={16} />
+                </span>
+              </button>
+            {/if}
+            <button
+              class="action-btn revoke-btn"
+              onclick={() => promptRevoke(share)}
+              disabled={revoking.has(share.share_id)}
+              aria-label="Revoke share link for {displayNames.get(share.share_id) ?? 'share'}"
+              title="Revoke"
+            >
+              <span class="action-visual revoke-visual" aria-hidden="true">
+                {#if revoking.has(share.share_id)}
+                  <span class="spinner-sm"></span>
+                {:else}
+                  <Trash size={16} />
+                {/if}
+              </span>
+            </button>
+          </div>
         </li>
       {/each}
     </ul>
@@ -197,13 +312,65 @@
 
 <ConfirmModal
   isOpen={confirmShareId !== null}
-  title="Revoke share link?"
-  message="Anyone holding this link will immediately lose access to {confirmDisplayName}. This cannot be undone."
-  confirmText="Revoke"
+  title={confirmIsExpired ? 'Remove expired share?' : 'Revoke share link?'}
+  message={confirmIsExpired
+    ? `${confirmDisplayName} expired and is no longer accessible — the relay already discarded the encrypted blob. Remove it from the list?`
+    : `Anyone holding this link will immediately lose access to ${confirmDisplayName}. This cannot be undone.`}
+  confirmText={confirmIsExpired ? 'Remove' : 'Revoke'}
   confirmClass="btn-danger"
   onConfirm={revokeConfirmed}
   onCancel={() => { confirmShareId = null; }}
 />
+
+{#if qrShare}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="qr-overlay"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Share link"
+    onclick={(e) => { if (e.target === e.currentTarget) qrShare = null; }}
+    onkeydown={(e) => { if (e.key === 'Escape') qrShare = null; }}
+    tabindex="-1"
+    transition:fade={{ duration: 150 }}
+  >
+    <div class="qr-sheet" transition:fly={{ y: 40, duration: 220, easing: quintOut }}>
+      <div class="qr-header">
+        <h3 class="qr-title">{displayNames.get(qrShare.share_id) ?? 'Share link'}</h3>
+        <button class="qr-close" onclick={() => qrShare = null} aria-label="Close">
+          <X size={18} />
+        </button>
+      </div>
+
+      <div class="qr-body">
+        <div class="qr-display-wrap">
+          <QrDisplay data={shareUrl(qrShare)} ariaLabel="QR code for share link" />
+        </div>
+
+        <div class="qr-link-row">
+          <input
+            class="qr-link-input"
+            type="text"
+            readonly
+            value={shareUrl(qrShare)}
+            aria-label="Share link"
+            onclick={(e) => (e.currentTarget as HTMLInputElement).select()}
+          />
+          <button class="qr-copy-btn" onclick={copyFromQrSheet}>
+            <Copy size={14} />
+            {qrCopied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+
+        <p class="qr-note">
+          The decryption key is in the link's <code>#</code> fragment — never
+          sent to the relay. Anyone with this URL can read the share until
+          you revoke it.
+        </p>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .shares-list {
@@ -322,23 +489,29 @@
 
   .expiry-label { color: var(--accent-warm, #E0A320); }
 
-  .revoke-btn {
-    width: 44px;
-    height: 44px;
+  .share-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
+  .action-btn {
+    width: 36px;
+    height: 36px;
     display: flex;
     align-items: center;
     justify-content: center;
     border: none;
     background: transparent;
     cursor: pointer;
-    flex-shrink: 0;
-    color: var(--danger, #D64545);
+    color: var(--text-secondary, #999);
     padding: 0;
   }
+  .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .action-btn.revoke-btn { color: var(--danger, #D64545); }
 
-  .revoke-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  .revoke-visual {
+  .action-visual {
     width: 28px;
     height: 28px;
     display: flex;
@@ -349,8 +522,12 @@
     background: transparent;
     transition: background 150ms;
   }
-
-  .revoke-btn:hover:not(:disabled) .revoke-visual { background: var(--danger-muted, #3D1F1F); }
+  .action-btn:hover:not(:disabled) .action-visual {
+    background: var(--bg-surface-raised, #1E1E1E);
+  }
+  .action-btn.revoke-btn:hover:not(:disabled) .action-visual {
+    background: var(--danger-muted, #3D1F1F);
+  }
 
   .spinner-sm {
     width: 14px;
@@ -360,6 +537,113 @@
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
-
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── QR sheet ─────────────────────────────────────────────────────── */
+  .qr-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 600;
+    padding: var(--sp-md, 16px);
+  }
+  .qr-sheet {
+    background: var(--bg-surface-raised, #262626);
+    border: 1px solid var(--border, #2E2E2E);
+    border-radius: var(--r-card, 16px);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+    width: 100%;
+    max-width: 380px;
+    max-height: calc(100vh - var(--sp-xl, 32px));
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .qr-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--sp-md, 16px) var(--sp-md, 16px) var(--sp-sm, 8px);
+    gap: var(--sp-sm, 8px);
+    border-bottom: 1px solid var(--border, #2E2E2E);
+  }
+  .qr-title {
+    margin: 0;
+    font-size: var(--t-title-size, 1rem);
+    font-weight: 600;
+    color: var(--text-primary, #ededed);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .qr-close {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary, #999);
+    cursor: pointer;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--r-pill, 9999px);
+  }
+  .qr-close:hover { background: var(--bg-surface, #1C1C1C); color: var(--text-primary, #ededed); }
+  .qr-body {
+    padding: var(--sp-md, 16px);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-md, 16px);
+  }
+  /* QrDisplay already renders its own dark frame + green corner brackets +
+     white canvas, so all we do here is center it. No background/padding,
+     otherwise we double-frame the QR. */
+  .qr-display-wrap {
+    display: flex;
+    justify-content: center;
+  }
+  .qr-link-row {
+    display: flex;
+    gap: var(--sp-xs, 4px);
+  }
+  .qr-link-input {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 10px;
+    font-size: 0.75rem;
+    background: var(--bg-surface, #1C1C1C);
+    border: 1px solid var(--border, #2E2E2E);
+    border-radius: var(--r-input, 12px);
+    color: var(--text-primary, #ededed);
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+  .qr-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 12px;
+    background: var(--accent, #2EB860);
+    border: none;
+    border-radius: var(--r-input, 12px);
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .qr-copy-btn:hover { filter: brightness(1.1); }
+  .qr-note {
+    margin: 0;
+    font-size: 0.6875rem;
+    line-height: 1.5;
+    color: var(--text-disabled, #616161);
+  }
+  .qr-note code {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    background: var(--bg-surface, #1C1C1C);
+    padding: 0 4px;
+    border-radius: 4px;
+  }
 </style>

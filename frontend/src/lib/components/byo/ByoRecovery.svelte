@@ -15,7 +15,7 @@
   import { bytesToBase64, base64ToBytes } from '../../byo/VaultLifecycle';
   // recoverySessionId is stored between the verify and rekey steps
   let recoverySessionId: number | null = null;
-  import { generateDeviceCryptoKey, setDeviceRecord } from '../../byo/DeviceKeyStore';
+  import { generateDeviceCryptoKey, setDeviceRecord, clearWebAuthnRecord } from '../../byo/DeviceKeyStore';
   import StepIndicator from '../StepIndicator.svelte';
   import RecoveryKeyDisplay from '../RecoveryKeyDisplay.svelte';
   import ByoPassphraseInput from './ByoPassphraseInput.svelte';
@@ -31,7 +31,7 @@
   let { provider,
   onCancel,
   onComplete }: Props = $props();
-const STEPS = ['Recovery Key', 'New Passphrase', 'Re-keying', 'New Recovery Key'];
+const STEPS = ['Recovery Key', 'New Passphrase', 'Re-keying', 'New Key'];
   type RecoveryStep = 'enter-key' | 'verifying' | 'new-passphrase' | 'rekeying' | 'new-recovery-key' | 'error';
 
   let step: RecoveryStep = $state('enter-key');
@@ -107,8 +107,7 @@ const STEPS = ['Recovery Key', 'New Passphrase', 'Re-keying', 'New Recovery Key'
     }
   }
 
-  async function handleNewPassphrase(event: CustomEvent<string>) {
-    const newPassphrase = event.detail;
+  async function handleNewPassphrase(newPassphrase: string) {
     step = 'rekeying';
     argon2Done = false;
     error = '';
@@ -217,6 +216,15 @@ const STEPS = ['Recovery Key', 'New Passphrase', 'Re-keying', 'New Recovery Key'
         last_backup_prompt_at: null,
       });
 
+      // 9. Drop any prior WebAuthn record for this vault. The record wraps
+      //    the *old* per-vault device CryptoKey, but step 5 generated a
+      //    brand-new one and step 6 cleared every device slot — so the
+      //    PRF-unwrapped key would no longer decrypt the device shard
+      //    (Windows Hello prompts, then the unlock fails). Clearing here
+      //    makes the next unlock land on the standard "first unlock —
+      //    enable WebAuthn?" onboarding instead of a stale gate.
+      await clearWebAuthnRecord(vaultIdB64);
+
       recoveryInput = '';
       step = 'new-recovery-key';
     } catch (e: any) {
@@ -243,7 +251,7 @@ const STEPS = ['Recovery Key', 'New Passphrase', 'Re-keying', 'New Recovery Key'
 </script>
 
 <div class="byo-recovery">
-  <StepIndicator steps={STEPS} currentStep={stepIndex} {completedSteps} />
+  <StepIndicator steps={STEPS} currentStep={stepIndex} {completedSteps} showLabels={false} />
 
   {#if step === 'enter-key' || step === 'verifying'}
     <div class="step-content">
@@ -276,7 +284,7 @@ const STEPS = ['Recovery Key', 'New Passphrase', 'Re-keying', 'New Recovery Key'
       >
         {step === 'verifying' ? 'Verifying…' : 'Continue'}
       </button>
-      <button class="btn btn-secondary" onclick={() => onCancel?.()}>Cancel</button>
+      <button class="btn btn-ghost recovery-cancel" onclick={() => onCancel?.()}>Cancel</button>
     </div>
 
   {:else if step === 'new-passphrase'}
@@ -324,7 +332,7 @@ const STEPS = ['Recovery Key', 'New Passphrase', 'Re-keying', 'New Recovery Key'
       <button class="btn btn-secondary" onclick={() => { error = ''; step = 'enter-key'; }}>
         Try again
       </button>
-      <button class="btn btn-ghost" onclick={() => onCancel?.()}>Cancel</button>
+      <button class="btn btn-ghost recovery-cancel" onclick={() => onCancel?.()}>Cancel</button>
     </div>
   {/if}
 </div>
@@ -334,7 +342,7 @@ const STEPS = ['Recovery Key', 'New Passphrase', 'Re-keying', 'New Recovery Key'
     display: flex;
     flex-direction: column;
     gap: var(--sp-xl, 32px);
-    max-width: 480px;
+    max-width: 420px;
     margin: 0 auto;
     padding: var(--sp-lg, 24px) var(--sp-md, 16px);
   }
@@ -343,6 +351,18 @@ const STEPS = ['Recovery Key', 'New Passphrase', 'Re-keying', 'New Recovery Key'
     display: flex;
     flex-direction: column;
     gap: var(--sp-md, 16px);
+  }
+
+  /* Cancel sits below Continue/Re-key/Try again — keep it visibly
+     subordinate so the primary action is unambiguous. align-self:center
+     + auto width drops it from full-bleed pill to a tight text link
+     that still has hit target. */
+  .recovery-cancel {
+    align-self: center;
+    width: auto;
+    padding: var(--sp-xs, 4px) var(--sp-md, 16px);
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    font-weight: 500;
   }
 
   .step-title {

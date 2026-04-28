@@ -101,7 +101,7 @@ pub struct Config {
     pub disk_watermark_percent: u8,
 
     // ── SFTP abuse protections ──────────────────────────────────────────────
-    /// Per-IP (/64-bucketed) concurrent SFTP connection cap. Default 3.
+    /// Per-IP (/64-bucketed) concurrent SFTP connection cap. Default 8.
     pub sftp_max_concurrent_per_ip: u32,
     /// SFTP failed-auth attempts per 5 minutes before a 1-hour block.
     /// Default 5.
@@ -259,7 +259,15 @@ impl Config {
             }
             v as u8
         };
-        let sftp_max_concurrent_per_ip = env_u32("SFTP_MAX_CONCURRENT_PER_IP", 3);
+        // Default 8 — covers a multi-provider vault (3+ persistent SFTP
+        // connections per open vault) plus a second tab or device-enrollment
+        // attempt from the same client IP. The previous default of 3 hit
+        // exactly when users tried to enroll a new device while their main
+        // vault was unlocked: the 4th attempt got 429'd and surfaced as
+        // "SFTP relay WebSocket connection failed" on the receiver side.
+        // Operators who want a tighter cap can still set
+        // SFTP_MAX_CONCURRENT_PER_IP explicitly.
+        let sftp_max_concurrent_per_ip = env_u32("SFTP_MAX_CONCURRENT_PER_IP", 8);
         let sftp_failed_auth_per_5min = env_u32("SFTP_FAILED_AUTH_PER_5MIN", 5);
         let auth_max_body_bytes = env_u64("AUTH_MAX_BODY_BYTES", 16 * 1024) as usize;
         let bundle_init_max_body_bytes = env_u64("BUNDLE_INIT_MAX_BODY_BYTES", 4 * 1024) as usize;

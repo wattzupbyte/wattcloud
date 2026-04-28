@@ -113,6 +113,19 @@ export interface ShareEntry {
   blob_count: number | null;
   created_at: number;
   revoked: boolean;
+  /** URL fragment (key + optional bundle name) needed to reconstruct the
+   *  share link after the create-flow modal is dismissed. NULL for shares
+   *  created before the recoverable-link change shipped — those remain
+   *  copy-once. Never POSTed; vault SQLite is wrapped under vault_key. */
+  fragment: string | null;
+  /** Finer-grained classification than `kind` for UI badges. Values:
+   *  'file' | 'folder' | 'collection' | 'multi-files' | 'mixed'.
+   *  NULL for legacy rows — UI falls back to `kind`. */
+  bundle_kind: string | null;
+  /** Optional user-supplied display name. Same value surfaces on the
+   *  recipient's landing page (via fragment) so the two ends agree.
+   *  NULL → both ends fall back to the inferred name. */
+  label: string | null;
 }
 
 export interface TrashEntry {
@@ -227,6 +240,13 @@ export interface DataProvider {
   /** Case-insensitive substring search over decrypted filenames. */
   searchFiles(query: string): Promise<FileEntry[]>;
 
+  /** Case-insensitive substring search over decrypted folder names. */
+  searchFolders(query: string): Promise<FolderEntry[]>;
+
+  /** All files belonging to the active provider, any folder. Used as a
+   *  type-filter fallback when the search has no free-text query. */
+  listAllFiles(): Promise<FileEntry[]>;
+
   /**
    * List image files sorted by created_at descending.
    * - `undefined` → all images in the active provider.
@@ -277,6 +297,10 @@ export interface DataProvider {
        *  and saves the download under that name instead of a generic
        *  sentinel. Fragment never reaches the relay. */
       filename?: string;
+      /** Optional user-supplied display name. When set, OVERRIDES `filename`
+       *  on the recipient's landing page and is persisted to share_tokens
+       *  so Settings shows the same name. */
+      label?: string;
     },
   ): Promise<{ entry: ShareEntry; fragment: string }>;
 
@@ -289,13 +313,13 @@ export interface DataProvider {
    */
   createFolderShare(
     folderId: number,
-    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void },
+    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void; label?: string },
   ): Promise<{ entry: ShareEntry; fragment: string }>;
 
   /** Same as `createFolderShare` but for a photo collection. */
   createCollectionShare(
     collectionId: number,
-    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void },
+    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void; label?: string },
   ): Promise<{ entry: ShareEntry; fragment: string }>;
 
   /**
@@ -306,7 +330,20 @@ export interface DataProvider {
    */
   createFilesShare(
     fileIds: number[],
-    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void },
+    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void; label?: string },
+  ): Promise<{ entry: ShareEntry; fragment: string }>;
+
+  /**
+   * Mixed-source bundle share — any combination of folders + loose files
+   * in a single link. Folder descendants keep their tree (rel_path =
+   * `<folder>/<nested>/<file>`); loose files land at the bundle root.
+   * Use this when the selection has folders AND files, or two-or-more
+   * folders. Single-folder / single-file flows still go through their
+   * dedicated methods for clearer recipient titles.
+   */
+  createMixedShare(
+    args: { folderIds: number[]; fileIds: number[] },
+    options?: { password?: string; ttlSeconds?: number; onProgress?: (done: number, total: number) => void; label?: string },
   ): Promise<{ entry: ShareEntry; fragment: string }>;
 
   /** Revoke a share link by share_id. */

@@ -68,7 +68,7 @@ const ENCRYPT_DECRYPT_OPS = new Set([
   'byoDerivePerVaultWalKey', 'byoDerivePerVaultJournalKeys',
   'byoJournalAppend', 'byoJournalParse',
   'byoMergeRows',
-  'byoManifestAddProvider', 'byoManifestRenameProvider', 'byoManifestSetPrimary', 'byoManifestTombstone',
+  'byoManifestAddProvider', 'byoManifestRenameProvider', 'byoManifestSetPrimary', 'byoManifestTombstone', 'byoManifestUpdateProviderConfig',
   'byoPlanUnlock', 'byoPlanSave', 'byoPlanCrossProviderMove', 'byoDeriveManifestAeadKey',
   'byoCrossProviderMoveDecideReplay', 'byoCrossProviderMovePlanReconcile',
   // Generic dispatcher (P8)
@@ -567,6 +567,15 @@ export async function byoEnrollmentDecryptShard(
 /** Open an enrollment channel. Returns { ephPkB64, channelIdB64, sessionId }. */
 export async function byoEnrollmentOpen(): Promise<{ ephPkB64: string; channelIdB64: string; sessionId: number }> {
   return sendRequest({ type: 'byoEnrollmentOpen' });
+}
+
+/** Open an enrollment session for the JOINING device, reusing the
+ *  initiator's channel ID from the QR. The two sides MUST agree on
+ *  channel_id — it's mixed into the SAS HKDF info, so a freshly-minted
+ *  channel_id on the joiner produces a different SAS code than the
+ *  initiator's. Returns { ephPkB64, sessionId }. */
+export async function byoEnrollmentJoin(channelIdB64: string): Promise<{ ephPkB64: string; sessionId: number }> {
+  return sendRequest({ type: 'byoEnrollmentJoin', channelIdB64 });
 }
 
 /** Derive session keys from peer public key. Returns { sasCode }. */
@@ -1905,6 +1914,24 @@ export async function byoManifestTombstone(
   nowUnixSecs: number,
 ): Promise<{ manifestJson: string }> {
   return sendRequest({ type: 'byoManifestTombstone', manifestJson, providerId, nowUnixSecs });
+}
+
+/** Replace a provider entry's config_json. Returns updated `manifestJson`.
+ *  Caller is expected to have already validated the new config (e.g. by
+ *  attempting init() against it) — the manifest layer treats config_json as opaque. */
+export async function byoManifestUpdateProviderConfig(
+  manifestJson: string,
+  providerId: string,
+  newConfigJson: string,
+  nowUnixSecs: number,
+): Promise<{ manifestJson: string }> {
+  return sendRequest({
+    type: 'byoManifestUpdateProviderConfig',
+    manifestJson,
+    providerId,
+    newConfigJson,
+    nowUnixSecs,
+  });
 }
 
 // ── Stats (Phase 5) ──────────────────────────────────────────────────────────

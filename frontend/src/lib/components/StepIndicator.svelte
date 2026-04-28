@@ -3,9 +3,13 @@
     steps: string[];
     currentStep: number; // 0-indexed, -1 if not on any step
     completedSteps?: number[];
+    /** Hide the per-step text labels under the circles. Useful in flows
+     * where the step name is already in the page heading and the labels
+     * would just wrap unevenly. Default: true (labels visible). */
+    showLabels?: boolean;
   }
 
-  let { steps, currentStep, completedSteps = [] }: Props = $props();
+  let { steps, currentStep, completedSteps = [], showLabels = true }: Props = $props();
 
   // A connector should be green if the step BEFORE it is completed
   // Connector after step 0 connects steps 0-1, should be green if step 0 is completed
@@ -31,7 +35,9 @@
           <span class="step-number">{i + 1}</span>
         {/if}
       </div>
-      <span class="step-label">{step}</span>
+      {#if showLabels}
+        <span class="step-label">{step}</span>
+      {/if}
       {#if i < steps.length - 1}
         <div class="step-connector" class:completed={isConnectorCompleted(i)}></div>
       {/if}

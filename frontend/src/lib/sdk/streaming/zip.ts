@@ -11,7 +11,7 @@
  * files) and owner-side folder downloads both use this.
  */
 
-import { makeZip } from 'client-zip';
+import { makeZip, predictLength } from 'client-zip';
 
 /**
  * A single file that lands inside the zip.
@@ -43,4 +43,22 @@ export function createZipStream(
   entries: AsyncIterable<ZipEntry> | Iterable<ZipEntry>,
 ): ReadableStream<Uint8Array> {
   return makeZip(entries as Parameters<typeof makeZip>[0]);
+}
+
+/**
+ * Predict the exact byte length of the zip stream {@link createZipStream}
+ * would produce for these entries. Caller must supply name + size for
+ * every entry. The result is precise (zip uses STORE method here, no
+ * compression to vary the output), so it's safe to use as Content-Length
+ * on a streaming Response — that's what fixes Firefox's download-manager
+ * `.part → final` rename failure for SW-streamed bundles.
+ */
+export function predictZipLength(
+  entries: Array<{ name: string; size: number | bigint; lastModified?: Date }>,
+): number {
+  // client-zip's predictLength wants its `JustMeta` shape (name + size).
+  // It returns a bigint; coerce to a regular number — the response's
+  // Content-Length stays well within Number.MAX_SAFE_INTEGER for any
+  // realistic share (≤ 2 ** 53 bytes).
+  return Number(predictLength(entries));
 }

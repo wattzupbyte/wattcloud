@@ -82,6 +82,22 @@ export async function loadByoPhotoTimeline(): Promise<void> {
 
   byoPhotosLoading.set(true);
   try {
+    // Sibling $effects (ByoApp + ByoPhotoTimeline) both react to
+    // vaultStore.activeProviderId changes. Svelte's scheduler doesn't
+    // guarantee parent-first order, so without this re-sync the timeline
+    // can fire its load before ByoApp has pushed the new id onto the
+    // dataProvider — listImageFiles would then query under the previous
+    // active provider and the user sees the wrong vault's photos. Reading
+    // the store directly here keeps the load self-contained. The cast
+    // is safe in practice: BYO mode always supplies a ByoDataProvider,
+    // and the abstract DataProvider interface intentionally doesn't
+    // expose the active-id mutator (single-provider managed mode has
+    // no concept of an active id).
+    const activeId = get(vaultStore).activeProviderId;
+    const dpAny = _dataProvider as unknown as { activeProviderId?: string; setActiveProviderId?(id: string): void };
+    if (activeId && dpAny.activeProviderId !== activeId && typeof dpAny.setActiveProviderId === 'function') {
+      dpAny.setActiveProviderId(activeId);
+    }
     const folderFilter = get(byoPhotoFolderFilter);
     const files = await _dataProvider.listImageFiles(folderFilter);
     byoPhotoTimeline.set(groupByDay(files));
@@ -193,6 +209,43 @@ async function resizeToThumbnail(data: Uint8Array, mimeType: string): Promise<Bl
   }
 }
 
+// Cap concurrent thumbnail downloads. The SFTP relay holds a small,
+// fixed pool of read sessions per vault — IntersectionObserver firing
+// for an entire grid at once trivially blows past the cap and the
+// relay starts rejecting with "too many open read sessions". The
+// requests still succeed eventually because each tile's lazyThumbnail
+// observer doesn't disconnect on failure (it disconnects on first
+// intersection regardless of result), so subsequent load attempts
+// come from elsewhere — but the rejected ones spam the console.
+// Throttling up front keeps the request rate inside the relay's
+// budget and stops the noise at the source. Six is empirical: high
+// enough that an idle wide grid finishes warming in a few hundred
+// ms, low enough that mobile + relay keep up.
+const MAX_CONCURRENT_THUMB_LOADS = 6;
+let _thumbInFlight = 0;
+const _thumbWaiters: Array<() => void> = [];
+
+async function acquireThumbSlot(): Promise<void> {
+  if (_thumbInFlight < MAX_CONCURRENT_THUMB_LOADS) {
+    _thumbInFlight++;
+    return;
+  }
+  await new Promise<void>((resolve) => _thumbWaiters.push(resolve));
+  _thumbInFlight++;
+}
+function releaseThumbSlot(): void {
+  _thumbInFlight--;
+  const next = _thumbWaiters.shift();
+  if (next) next();
+}
+
+/** True for transient errors that the relay raises under load — the
+ *  caller should retry rather than surface as a real failure. */
+function isTransientThumbError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /too many open read sessions|read_open|temporarily unavailable/i.test(msg);
+}
+
 export async function loadByoThumbnail(file: FileEntry): Promise<string | null> {
   const cache = get(byoThumbnailCache);
   if (cache.has(file.id)) return cache.get(file.id)!;
@@ -212,11 +265,31 @@ export async function loadByoThumbnail(file: FileEntry): Promise<string | null> 
   }
 
   // Tier 2 — download + decrypt + resize. On success, seed the IDB cache
-  // for future reloads.
+  // for future reloads. Wrapped in a small retry loop so transient relay
+  // back-pressure (e.g. "too many open read sessions" when the user
+  // scrolls a fresh grid into view) doesn't surface as a failure — the
+  // operation is naturally re-runnable since nothing was committed.
+  await acquireThumbSlot();
   let data: Uint8Array | null = null;
   try {
-    const stream = await _dataProvider.downloadFile(file.id);
-    data = await streamToUint8Array(stream);
+    const MAX_ATTEMPTS = 4;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const stream = await _dataProvider.downloadFile(file.id);
+        data = await streamToUint8Array(stream);
+        break;
+      } catch (e) {
+        if (attempt < MAX_ATTEMPTS && isTransientThumbError(e)) {
+          // Exponential backoff with jitter — 200/400/800 ms ± 25%.
+          const base = 200 * Math.pow(2, attempt - 1);
+          const jitter = base * (Math.random() * 0.5 - 0.25);
+          await new Promise((r) => setTimeout(r, base + jitter));
+          continue;
+        }
+        throw e;
+      }
+    }
+    if (!data) return null;
 
     const mimeType = getMimeType(file.decrypted_name) || file.mime_type || 'image/jpeg';
 
@@ -243,10 +316,19 @@ export async function loadByoThumbnail(file: FileEntry): Promise<string | null> 
     }
     return url;
   } catch (e) {
-    console.error(`[byoPhotos] thumbnail load failed for file ${file.id}:`, e);
+    // Demote transient back-pressure to a debug log: the lazyThumbnail
+    // IntersectionObserver naturally re-attempts on the next grid scroll,
+    // and the cache hit path makes that retry effectively free. Anything
+    // else still goes to console.error so genuine failures stay loud.
+    if (isTransientThumbError(e)) {
+      console.debug(`[byoPhotos] thumbnail throttled for file ${file.id}; will retry on next view.`);
+    } else {
+      console.error(`[byoPhotos] thumbnail load failed for file ${file.id}:`, e);
+    }
     return null;
   } finally {
     if (data) data.fill(0);
+    releaseThumbSlot();
   }
 }
 
@@ -311,7 +393,12 @@ export function resetByoPhotos(): void {
   byoThumbnailCache.set(new Map());
   byoPhotoTimeline.set([]);
   byoPhotosLoading.set(false);
-  _dataProvider = null;
+  // _dataProvider intentionally NOT cleared here — it's app-scoped (set
+  // by ByoApp on unlock, set to null on lock). The dashboard's onDestroy
+  // also calls this fn on tab-switch remounts (Settings → Photos), and
+  // wiping the provider mid-session would race ByoPhotoTimeline.onMount
+  // (which fires before the parent dashboard's onMount can re-wire it),
+  // leaving the timeline empty until a manual reload.
 }
 
 // ── Derived ────────────────────────────────────────────────────────────────

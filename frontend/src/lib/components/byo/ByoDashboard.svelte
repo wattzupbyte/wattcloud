@@ -14,7 +14,7 @@
   import { byoFolders, byoSelectedFiles, byoSelectedFolders, byoSelectionMode, toggleByoFileSelection, toggleByoFolderSelection, clearByoSelection, resetByoFileStores } from '../../byo/stores/byoFileStore';
   import { byoUploadQueue } from '../../byo/stores/byoUploadQueue';
   import { byoDownloadQueue } from '../../byo/stores/byoDownloadQueue';
-  import { setByoSearchDataProvider, clearByoSearch, byoSearchQuery, byoSearchResults, hasByoActiveFilters, setByoSearchQuery, setByoFileTypeFilter } from '../../byo/stores/byoSearch';
+  import { setByoSearchDataProvider, clearByoSearch, byoSearchQuery, byoSearchResults, byoSearchFolderResults, hasByoActiveFilters, setByoSearchQuery, setByoFileTypeFilter } from '../../byo/stores/byoSearch';
   import { setByoPhotosDataProvider, resetByoPhotos, byoPhotoTimeline, loadByoPhotoTimeline } from '../../byo/stores/byoPhotos';
   import {
     byoCollections,
@@ -67,7 +67,6 @@
   import ByoUploadQueue from './ByoUploadQueue.svelte';
   import ByoDownloadQueue from './ByoDownloadQueue.svelte';
   import ShareLinkSheet from './ShareLinkSheet.svelte';
-  import ProviderContextSheet from './ProviderContextSheet.svelte';
   import ByoPhotoTimeline from './ByoPhotoTimeline.svelte';
   import ByoFileDetails from './ByoFileDetails.svelte';
   import ProviderMoveSheet from './ProviderMoveSheet.svelte';
@@ -197,9 +196,11 @@
   let showFabMenu = $state(false);
   let folderInput: HTMLInputElement | null = $state(null);
 
-  // File details modal
+  // File details modal — also serves folder details (ByoFileDetails branches
+  // on whichever of `file`/`folder` is non-null).
   let showDetailsModal = $state(false);
   let detailsFile: FileEntry | null = $state(null);
+  let detailsFolder: FolderEntry | null = $state(null);
 
   // Share link sheet
   let showShareSheet = $state(false);
@@ -207,7 +208,8 @@
     | { kind: 'file'; file: FileEntry }
     | { kind: 'folder'; folder: FolderEntry }
     | { kind: 'collection'; collection: CollectionEntry }
-    | { kind: 'files'; files: FileEntry[] };
+    | { kind: 'files'; files: FileEntry[] }
+    | { kind: 'mixed'; folders: FolderEntry[]; files: FileEntry[] };
   let shareSource: ShareSheetSource | null = $state(null);
 
   // Favorites
@@ -236,7 +238,9 @@
 
   // DashboardHeader uses plural tokens ('images', 'documents'…) matching
   // the managed search. BYO's DataProvider expects singular ('image',
-  // 'document'…). Map once at the boundary.
+  // 'document'…). Map once at the boundary. 'folder' is the sentinel
+  // byoSearch's performByoSearch reads — it suppresses file results and
+  // populates byoSearchFolderResults instead.
   const FILE_TYPE_MAP: Record<string, string | null> = {
     '': null,
     images: 'image',
@@ -245,7 +249,7 @@
     archives: 'archive',
     audio: 'audio',
     code: 'code',
-    folders: null, // BYO search doesn't filter folders separately
+    folders: 'folder',
   };
   function normalizeFileType(v: string | undefined | null): string | null {
     if (!v) return null;
@@ -379,6 +383,22 @@
   // ── Navigation ─────────────────────────────────────────────────────────────
 
   function openFolder(folder: FolderEntry) {
+    // Folder hits surfaced by search aren't necessarily children of the
+    // current breadcrumb. Detect the search-result case (folder isn't in
+    // the current folder's children) and jump to it from Home; otherwise
+    // append to the breadcrumb stack as usual.
+    const isCurrentChild = currentFolders.some((f) => f.id === folder.id);
+    if (!isCurrentChild) {
+      if (get(hasByoActiveFilters)) {
+        showSearch = false;
+        clearByoSearch();
+      }
+      folderStack = [
+        { id: null, name: 'Home' },
+        { id: folder.id, name: folder.decrypted_name },
+      ];
+      return;
+    }
     folderStack = [...folderStack, { id: folder.id, name: folder.decrypted_name }];
   }
 
@@ -392,6 +412,80 @@
   async function handleRenameFile(fileId: number, newName: string) {
     await dataProvider.renameFile(fileId, newName);
     await loadCurrentFolder();
+  }
+
+  // ── Rename UI plumbing ────────────────────────────────────────────────────
+  // FileList accepts a `bind:renameFileId` — when set, it enters inline rename
+  // mode for that file (its own $effect resets the prop to null after consuming).
+  // FolderTile uses an `isRenaming` flag + bound `renameValue` + keydown/blur
+  // callbacks; ByoDashboard owns the state because it controls the toolbar.
+  let renameFileId: number | null = $state(null);
+  let renamingFolderId: number | null = $state(null);
+  let folderRenameValue = $state('');
+
+  function findFolderForRename(folderId: number) {
+    return currentFolders.find((f) => f.id === folderId)
+      ?? favoriteFolders.find((f) => f.id === folderId)
+      ?? null;
+  }
+
+  function startFolderRename(folderId: number) {
+    const folder = findFolderForRename(folderId);
+    if (!folder) return;
+    folderRenameValue = (folder as any).decrypted_name || folder.name;
+    renamingFolderId = folderId;
+  }
+
+  async function commitFolderRename() {
+    if (renamingFolderId === null) return;
+    const id = renamingFolderId;
+    const newName = folderRenameValue.trim();
+    renamingFolderId = null;
+    folderRenameValue = '';
+    if (!newName) return;
+    try {
+      await dataProvider.renameFolder(id, newName);
+      // Refresh both views — favorites list mirrors the folder rows, and
+      // the file/folder list relies on currentFolders for sortedFolders.
+      await Promise.all([loadCurrentFolder(), loadFavorites().catch(() => {})]);
+    } catch (e: any) {
+      error = e?.message ?? 'Failed to rename folder';
+    }
+  }
+
+  function cancelFolderRename() {
+    renamingFolderId = null;
+    folderRenameValue = '';
+  }
+
+  function handleFolderRenameKeydown(payload: { event: KeyboardEvent }) {
+    if (payload.event.key === 'Enter') {
+      payload.event.preventDefault();
+      commitFolderRename();
+    } else if (payload.event.key === 'Escape') {
+      payload.event.preventDefault();
+      cancelFolderRename();
+    }
+  }
+
+  function handleFolderRenameBlur() {
+    // Commit on blur — matches the file-rename UX in FileList.
+    if (renamingFolderId !== null) commitFolderRename();
+  }
+
+  function triggerRenameFromToolbar() {
+    // Single-selection invariant guaranteed by SelectionToolbar.canRename.
+    if ($byoSelectedFiles.size === 1 && $byoSelectedFolders.size === 0) {
+      const [fileId] = [...$byoSelectedFiles];
+      renameFileId = fileId; // FileList's $effect picks this up
+      clearByoSelection();
+      return;
+    }
+    if ($byoSelectedFolders.size === 1 && $byoSelectedFiles.size === 0) {
+      const [folderId] = [...$byoSelectedFolders];
+      startFolderRename(folderId);
+      clearByoSelection();
+    }
   }
 
   async function handleCreateFolder() {
@@ -594,6 +688,17 @@
     const f = sortedFiles.find((x) => x.id === fileId) ?? currentFiles.find((x) => x.id === fileId);
     if (f) {
       detailsFile = f;
+      detailsFolder = null;
+      showDetailsModal = true;
+    }
+  }
+
+  function openFolderDetails(folderId: number) {
+    const folder = currentFolders.find((x) => x.id === folderId)
+      ?? favoriteFolders.find((x) => x.id === folderId);
+    if (folder) {
+      detailsFolder = folder;
+      detailsFile = null;
       showDetailsModal = true;
     }
   }
@@ -626,6 +731,32 @@
     }
     if (resolved.length < 2) return;
     shareSource = { kind: 'files', files: resolved };
+    showShareSheet = true;
+  }
+
+  /** Open the share sheet for any mixed selection: multiple folders, or
+   *  folders + loose files. Single-file / single-folder go through their
+   *  dedicated openers so the recipient title stays specific. */
+  function openMixedShareSheet(folderIds: number[], fileIds: number[]) {
+    const folderLookup = new Map<number, FolderEntry>();
+    for (const f of currentFolders) folderLookup.set(f.id, f);
+    for (const f of favoriteFolders) if (!folderLookup.has(f.id)) folderLookup.set(f.id, f);
+    const folders: FolderEntry[] = [];
+    for (const id of folderIds) {
+      const f = folderLookup.get(id);
+      if (f) folders.push(f);
+    }
+    const fileLookup = new Map<number, FileEntry>();
+    for (const f of sortedFiles) fileLookup.set(f.id, f);
+    for (const f of currentFiles) if (!fileLookup.has(f.id)) fileLookup.set(f.id, f);
+    for (const f of favoriteFiles) if (!fileLookup.has(f.id)) fileLookup.set(f.id, f);
+    const files: FileEntry[] = [];
+    for (const id of fileIds) {
+      const f = fileLookup.get(id);
+      if (f) files.push(f);
+    }
+    if (folders.length + files.length === 0) return;
+    shareSource = { kind: 'mixed', folders, files };
     showShareSheet = true;
   }
 
@@ -888,8 +1019,8 @@
 
   // ── Move/copy ──────────────────────────────────────────────────────────────
 
-  async function handleMoveCopyConfirm(event: CustomEvent<{ destinationId: number | null; mode: 'move' | 'copy' }>) {
-    const { destinationId, mode } = event.detail;
+  async function handleMoveCopyConfirm(event: { destinationId: number | null; mode: 'move' | 'copy' }) {
+    const { destinationId, mode } = event;
     const selectedFileIds = [...get(byoSelectedFiles)];
     if (mode === 'move') {
       for (const id of selectedFileIds) {
@@ -994,12 +1125,12 @@
     }
   }
 
-  function handleMoveRetry(e: CustomEvent<{ fileIds: number[] }>) {
-    handleCrossProviderMove(crossMoveDestProviderId, e.detail.fileIds);
+  function handleMoveRetry(e: { fileIds: number[] }) {
+    handleCrossProviderMove(crossMoveDestProviderId, e.fileIds);
   }
 
-  function handleMoveSkipErrors(e: CustomEvent<{ fileId: number }>) {
-    crossMoveErrors = crossMoveErrors.filter(err => err.fileId !== e.detail.fileId);
+  function handleMoveSkipErrors(e: { fileId: number }) {
+    crossMoveErrors = crossMoveErrors.filter(err => err.fileId !== e.fileId);
     if (crossMoveErrors.length === 0) {
       if (crossMoveSucceeded !== null && crossMoveSucceeded > 0) {
         loadCurrentFolder();
@@ -1009,56 +1140,40 @@
     }
   }
 
-  // ── Provider switcher (P9) ────────────────────────────────────────────────
+  // ── Provider switching ─────────────────────────────────────────────────────
+  // Switching now happens through the Drawer's Providers section (Drawer.svelte),
+  // which writes to vaultStore.activeProviderId. We react reactively below to
+  // reset the folder stack and reload — same effect the old chip handler had,
+  // just sourced from store changes instead of a chip click.
 
   let showAddProvider = $state(false);
 
-  // Provider context sheet (long-press / right-click on chip)
-  let contextSheetProvider: ProviderMeta | null = $state(null);
-  let longPressTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function openContextSheet(p: ProviderMeta) {
-    contextSheetProvider = p;
-  }
-
-  function onChipContextMenu(e: MouseEvent, p: ProviderMeta) {
-    e.preventDefault();
-    openContextSheet(p);
-  }
-
-  function onChipPointerDown(e: PointerEvent, p: ProviderMeta) {
-    if (e.button !== 0) return;
-    longPressTimer = setTimeout(() => { openContextSheet(p); }, 600);
-  }
-
-  function onChipPointerUp() {
-    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-  }
-
-  async function onProviderAdded(e: CustomEvent<{ providerId?: string }>) {
-    showAddProvider = false;
-    if (e.detail?.providerId) {
-      vaultStore.setActiveProviderId(e.detail.providerId);
-      (dataProvider as any).setActiveProviderId?.(e.detail.providerId);
-      folderStack = [{ id: null, name: 'Home' }];
-      await loadCurrentFolder();
+  let _activeIdLastSeen: string | null = null;
+  $effect(() => {
+    const id = $vaultStore.activeProviderId;
+    if (_activeIdLastSeen === null) {
+      // First read after mount — onMount's loadCurrentFolder() handles the
+      // initial load, so we just record the baseline.
+      _activeIdLastSeen = id;
+      return;
     }
-  }
-
-  async function switchProvider(meta: ProviderMeta) {
-    if (meta.providerId === $vaultStore.activeProviderId) return;
-    vaultStore.setActiveProviderId(meta.providerId);
-    (dataProvider as any).setActiveProviderId?.(meta.providerId);
-    // Reset folder navigation and reload
+    if (id === _activeIdLastSeen) return;
+    _activeIdLastSeen = id;
+    (dataProvider as any).setActiveProviderId?.(id);
     folderStack = [{ id: null, name: 'Home' }];
-    await loadCurrentFolder();
-  }
+    loadCurrentFolder().catch(() => {/* surfaced via byoToast inside */});
+    // Favorites are now provider-scoped — reload so the Favorites view
+    // (and the star indicators on file rows) reflect the new provider.
+    loadFavorites().catch(() => {/* non-fatal */});
+  });
 
-  function providerIcon(type: string): string {
-    const icons: Record<string, string> = {
-      gdrive: 'G', dropbox: 'D', onedrive: 'O', webdav: 'W', sftp: 'S', box: 'B', pcloud: 'P', s3: 'S3',
-    };
-    return icons[type] ?? '?';
+  async function onProviderAdded(e: { providerId?: string }) {
+    showAddProvider = false;
+    if (e.providerId) {
+      // The $effect above will pick up the activeProviderId change and
+      // reload the folder list automatically.
+      vaultStore.setActiveProviderId(e.providerId);
+    }
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -1187,10 +1302,16 @@
         ? favoriteFiles
         : $hasByoActiveFilters ? ($byoSearchResults as unknown as FileEntry[]) : currentFiles,
     ))(sortBy as SortByT, sortDir));
+  // When search is active, folders come from byoSearchFolderResults instead
+  // of being hidden — the chip filter "Folders" sets fileType=folder which
+  // suppresses file results, and a free-text query also surfaces matching
+  // folder names so the user can navigate by name from the search bar.
   let sortedFolders = $derived(((_by: SortByT, _dir: 'asc' | 'desc') =>
     view === 'favorites'
       ? sortFolders(favoriteFolders)
-      : $hasByoActiveFilters ? [] : sortFolders(currentFolders))(sortBy as SortByT, sortDir));
+      : $hasByoActiveFilters
+        ? sortFolders($byoSearchFolderResults as unknown as FolderEntry[])
+        : sortFolders(currentFolders))(sortBy as SortByT, sortDir));
   // Sorting state for SortControl
   let sortingState = $derived({ by: sortBy as SortByT, direction: (sortDir === 'asc' ? 'up' : 'down') as SortDirT });
   // Typed aliases for template use (Svelte 4 / Acorn doesn't support `as` casts in templates)
@@ -1233,60 +1354,23 @@
     onToggleSearch={() => { showSearch = !showSearch; if (!showSearch) clearByoSearch(); }}
     onCloseSearch={() => { showSearch = false; clearByoSearch(); }}
     onSearchChange={(e) => {
-      setByoSearchQuery(e.detail?.query ?? '');
-      setByoFileTypeFilter(normalizeFileType(e.detail?.fileType));
+      setByoSearchQuery(e.query ?? '');
+      setByoFileTypeFilter(normalizeFileType(e.fileType));
     }}
   />
 
-  <!-- Provider-switcher row — only rendered when the user actually has
-       2+ providers. Saved/Saving/Unsaved/Offline pills moved into
-       DashboardHeader so single-provider screens never shift layout. -->
-  {#if $vaultStore.providers.length > 1 || offlineProviderCount > 0}
+  <!-- Multi-provider status pill — shown when one or more secondary
+       providers are offline, regardless of which provider is active.
+       The provider switcher itself moved into the Drawer (above the
+       Storage section); this row exists only for the offline notice. -->
+  {#if offlineProviderCount > 0}
   <div class="status-bar">
-    {#if offlineProviderCount > 0}
-      <div class="status-pills">
-        <span class="status-pill status-offline offline-global-pill">
-          <CloudSlash size={12} />
-          {offlineProviderCount === 1 ? '1 provider offline' : `${offlineProviderCount} providers offline`}
-        </span>
-      </div>
-    {/if}
-
-    {#if $vaultStore.providers.length > 1}
-      <div class="provider-switcher" role="tablist" aria-label="Storage providers">
-        {#each $vaultStore.providers as p (p.providerId)}
-          <button
-            class="provider-chip"
-            class:active={p.providerId === $vaultStore.activeProviderId}
-            class:chip-is-offline={p.status === 'offline' || p.status === 'error' || p.status === 'unauthorized'}
-            role="tab"
-            aria-selected={p.providerId === $vaultStore.activeProviderId}
-            title="{p.displayName}{p.status === 'unauthorized' ? ' · Token expired' : (p.status === 'offline' || p.status === 'error') ? ' · Offline' : ''}"
-            onclick={() => switchProvider(p)}
-            oncontextmenu={(e) => onChipContextMenu(e, p)}
-            onpointerdown={(e) => onChipPointerDown(e, p)}
-            onpointerup={onChipPointerUp}
-            onpointerleave={onChipPointerUp}
-          >
-            <span class="provider-chip-icon" aria-hidden="true">{providerIcon(p.type)}</span>
-            <span class="provider-chip-name">{p.displayName}{p.status === 'unauthorized' ? ' · Token expired' : (p.status === 'offline' || p.status === 'error') ? ' · Offline' : ''}</span>
-            {#if p.status === 'syncing'}
-              <span class="chip-status chip-syncing" aria-label="Syncing"></span>
-            {:else if p.status === 'offline' || p.status === 'error' || p.status === 'unauthorized'}
-              <span class="chip-status chip-offline" aria-label="Offline"></span>
-            {/if}
-          </button>
-        {/each}
-        <button
-          class="provider-chip provider-chip-add"
-          title="Add provider"
-          onclick={() => showAddProvider = true}
-          aria-label="Add storage provider"
-        >
-          <span aria-hidden="true">+</span>
-        </button>
-      </div>
-    {/if}
+    <div class="status-pills">
+      <span class="status-pill status-offline offline-global-pill">
+        <CloudSlash size={12} />
+        {offlineProviderCount === 1 ? '1 provider offline' : `${offlineProviderCount} providers offline`}
+      </span>
+    </div>
   </div>
   {/if}
 
@@ -1319,27 +1403,38 @@
     {@const selIds = [...$byoSelectedFiles]}
     {@const favCount = selIds.filter((id) => favoriteFileIds.has(id)).length + [...$byoSelectedFolders].filter((id) => favoriteFolderIds.has(id)).length}
     {@const totalSel = $byoSelectedFiles.size + $byoSelectedFolders.size}
-    <!-- canShare: single file OR single folder OR 2+ files (no folders).
-         Mixed / multi-folder shares are not implemented. -->
-    {@const canShareSelection =
+    <!-- canShare: anything except an empty selection. Single-file/single-
+         folder still go through their dedicated flows for clearer
+         recipient titles; everything else funnels through the mixed
+         bundle path. -->
+    {@const canShareSelection = ($byoSelectedFiles.size + $byoSelectedFolders.size) > 0}
+    {@const canRenameSelection =
       ($byoSelectedFiles.size === 1 && $byoSelectedFolders.size === 0) ||
-      ($byoSelectedFolders.size === 1 && $byoSelectedFiles.size === 0) ||
-      ($byoSelectedFiles.size >= 2 && $byoSelectedFolders.size === 0)}
+      ($byoSelectedFolders.size === 1 && $byoSelectedFiles.size === 0)}
     <SelectionToolbar
       selectedCount={totalSel}
       canDetails={true}
       canShare={canShareSelection}
+      canRename={canRenameSelection}
       canAddToCollection={view === 'photos' && $byoSelectedFiles.size > 0}
+      canMoveToProvider={$vaultStore.providers.length > 1 && $byoSelectedFiles.size > 0 && $byoSelectedFolders.size === 0}
       favoriteState={favCount === 0 ? 'none' : favCount === totalSel ? 'all' : 'mixed'}
       onClear={clearByoSelection}
+      onRename={triggerRenameFromToolbar}
       onMove={async () => { moveCopyMode = 'move'; await refreshMoveCopyFolders(); showMoveCopyDialog = true; }}
       onCopy={async () => { moveCopyMode = 'copy'; await refreshMoveCopyFolders(); showMoveCopyDialog = true; }}
+      onMoveToProvider={() => { showProviderMoveSheet = true; }}
       onFavorite={() => bulkToggleFavorite(true)}
       onUnfavorite={() => bulkToggleFavorite(false)}
       onDownload={() => handleDownloadSelection()}
       onDetails={() => {
-        const ids = [...get(byoSelectedFiles)];
-        if (ids.length === 1) openDetails(ids[0]);
+        const fileIds = [...get(byoSelectedFiles)];
+        const folderIds = [...get(byoSelectedFolders)];
+        if (fileIds.length === 1 && folderIds.length === 0) {
+          openDetails(fileIds[0]);
+        } else if (folderIds.length === 1 && fileIds.length === 0) {
+          openFolderDetails(folderIds[0]);
+        }
       }}
       onShare={() => {
         const fileIds = [...get(byoSelectedFiles)];
@@ -1349,14 +1444,14 @@
         } else if (folderIds.length === 1 && fileIds.length === 0) {
           openFolderShareSheet(folderIds[0]);
         } else if (fileIds.length >= 2 && folderIds.length === 0) {
-          // Multi-file selection always packs into one zip bundle —
-          // consistent with the folder-share flow and the >9 owner
-          // download threshold. Recipient gets a single link.
+          // Multi-file selection (no folders) — flat bundle. Recipient gets
+          // every file at the zip root with " (n)" dedup on collisions.
           openFilesShareSheet(fileIds);
+        } else {
+          // Mixed (folders + files) or multi-folder. The bundle preserves
+          // each folder's tree and lays loose files at the root.
+          openMixedShareSheet(folderIds, fileIds);
         }
-        // Mixed selections (folders + files) and multi-folder share are
-        // intentionally unsupported for now — the share toolbar button
-        // is disabled by SelectionToolbar's canShare guard for those.
       }}
       onDelete={() => {
         const ids = [...get(byoSelectedFiles)];
@@ -1458,6 +1553,10 @@
                     }}
                     onSelect={() => { toggleByoFolderSelection(folder.id); byoSelectionMode.set(true); }}
                     onToggle={() => toggleByoFolderSelection(folder.id)}
+                    isRenaming={renamingFolderId === folder.id}
+                    bind:renameValue={folderRenameValue}
+                    onRenameKeydown={handleFolderRenameKeydown}
+                    onRenameBlur={handleFolderRenameBlur}
                   />
                 {/each}
               </div>
@@ -1488,6 +1587,10 @@
                       }}
                       onSelect={() => { toggleByoFolderSelection(folder.id); byoSelectionMode.set(true); }}
                       onToggle={() => toggleByoFolderSelection(folder.id)}
+                      isRenaming={renamingFolderId === folder.id}
+                      bind:renameValue={folderRenameValue}
+                      onRenameKeydown={handleFolderRenameKeydown}
+                      onRenameBlur={handleFolderRenameBlur}
                     />
                   </div>
                 {/each}
@@ -1509,6 +1612,10 @@
                     }}
                     onSelect={() => { toggleByoFolderSelection(folder.id); byoSelectionMode.set(true); }}
                     onToggle={() => toggleByoFolderSelection(folder.id)}
+                    isRenaming={renamingFolderId === folder.id}
+                    bind:renameValue={folderRenameValue}
+                    onRenameKeydown={handleFolderRenameKeydown}
+                    onRenameBlur={handleFolderRenameBlur}
                   />
                 {/each}
               </div>
@@ -1525,8 +1632,8 @@
             viewMode={filesViewMode}
             {selectionContext}
             favoriteFileIds={favoriteFileIds}
+            bind:renameFileId
             onRename={handleRenameFile}
-            showEncryptionBadge={true}
             onPreview={(file) => { previewFile = file; previewOpen = !!previewFile; }}
             onUpload={handleFabUpload}
           />
@@ -1541,7 +1648,7 @@
         {selectionContext}
         onUpload={() => { if (canWrite) handleFabUpload(); }}
         onShareCollection={(e) => {
-          const col = $byoCollections.find((c) => c.id === e.detail.collectionId);
+          const col = $byoCollections.find((c) => c.id === e.collectionId);
           if (col) openCollectionShareSheet(col);
         }}
       />
@@ -1604,6 +1711,10 @@
                     }}
                     onSelect={() => { toggleByoFolderSelection(folder.id); byoSelectionMode.set(true); }}
                     onToggle={() => toggleByoFolderSelection(folder.id)}
+                    isRenaming={renamingFolderId === folder.id}
+                    bind:renameValue={folderRenameValue}
+                    onRenameKeydown={handleFolderRenameKeydown}
+                    onRenameBlur={handleFolderRenameBlur}
                   />
                 {/each}
               </div>
@@ -1634,6 +1745,10 @@
                       }}
                       onSelect={() => { toggleByoFolderSelection(folder.id); byoSelectionMode.set(true); }}
                       onToggle={() => toggleByoFolderSelection(folder.id)}
+                      isRenaming={renamingFolderId === folder.id}
+                      bind:renameValue={folderRenameValue}
+                      onRenameKeydown={handleFolderRenameKeydown}
+                      onRenameBlur={handleFolderRenameBlur}
                     />
                   </div>
                 {/each}
@@ -1655,6 +1770,10 @@
                     }}
                     onSelect={() => { toggleByoFolderSelection(folder.id); byoSelectionMode.set(true); }}
                     onToggle={() => toggleByoFolderSelection(folder.id)}
+                    isRenaming={renamingFolderId === folder.id}
+                    bind:renameValue={folderRenameValue}
+                    onRenameKeydown={handleFolderRenameKeydown}
+                    onRenameBlur={handleFolderRenameBlur}
                   />
                 {/each}
               </div>
@@ -1667,8 +1786,8 @@
             viewMode={filesViewMode}
             {selectionContext}
             favoriteFileIds={favoriteFileIds}
+            bind:renameFileId
             onRename={handleRenameFile}
-            showEncryptionBadge={true}
             onPreview={(file) => { previewFile = file; previewOpen = !!previewFile; }}
             onUpload={handleFabUpload}
           />
@@ -1774,13 +1893,18 @@
     onCancel={() => showMoveCopyDialog = false}
   />
 
-  <!-- File details modal -->
+  <!-- File / folder details modal — ByoFileDetails branches on `file`/`folder`. -->
   <ByoFileDetails
     file={detailsFile}
+    folder={detailsFolder}
     isOpen={showDetailsModal}
-    isFavorite={detailsFile ? favoriteFileIds.has(detailsFile.id) : false}
+    isFavorite={detailsFile
+      ? favoriteFileIds.has(detailsFile.id)
+      : detailsFolder
+        ? favoriteFolderIds.has(detailsFolder.id)
+        : false}
     folders={detailsFolders}
-    onClose={() => { showDetailsModal = false; detailsFile = null; }}
+    onClose={() => { showDetailsModal = false; detailsFile = null; detailsFolder = null; }}
   />
 
   <!-- Share link sheet -->
@@ -1803,15 +1927,6 @@
     <AddProviderSheet
       onAdded={onProviderAdded}
       onClose={() => showAddProvider = false}
-    />
-  {/if}
-
-  {#if contextSheetProvider}
-    <ProviderContextSheet
-      provider={contextSheetProvider}
-      isOnlyProvider={$vaultStore.providers.length <= 1}
-      onClose={() => contextSheetProvider = null}
-      onChange={() => { contextSheetProvider = null; }}
     />
   {/if}
 
@@ -1891,7 +2006,7 @@
     progress={crossMoveProgress}
     fileErrors={crossMoveErrors}
     succeededCount={crossMoveSucceeded}
-    onConfirm={(e) => handleCrossProviderMove(e.detail.destProviderId)}
+    onConfirm={(e) => handleCrossProviderMove(e.destProviderId)}
     onRetry={handleMoveRetry}
     onSkipErrors={handleMoveSkipErrors}
     onClose={() => { if (!crossMoveProgress) { showProviderMoveSheet = false; crossMoveSucceeded = null; crossMoveErrors = []; } }}
@@ -2064,27 +2179,6 @@
     flex: 1;
   }
 
-  .status-bar .provider-switcher {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    flex-shrink: 0;
-  }
-
-  .status-bar .provider-chip {
-    /* Compact chip in the status bar — still keeps tap target ≥ 36dp. */
-    min-height: 36px;
-    padding: 0 var(--sp-sm, 8px);
-    font-size: var(--t-label-size, 0.75rem);
-  }
-
-  .status-bar .provider-chip-name {
-    max-width: 80px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .status-pill {
     /* §31.8 performance budget: content-layer pills shouldn't blur.
        Opaque surface tone keeps GPU headroom for chrome. */
@@ -2103,104 +2197,10 @@
   .status-dirty { color: var(--accent-warm, #E0A320); }
   .status-saved { color: var(--accent-text, #5FDB8A); }
 
-  /* ── Provider switcher (P9) ─────────────────────────────────────────────── */
-
-  .provider-switcher {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-xs, 4px);
-    padding: var(--sp-xs, 4px) var(--sp-md, 16px);
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .provider-switcher::-webkit-scrollbar { display: none; }
-
-  .provider-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0 var(--sp-md, 16px);
-    /* §25: tap targets ≥ 44dp. */
-    min-height: 44px;
-    border-radius: var(--r-pill, 9999px);
-    background: var(--bg-surface-raised, #1E1E1E);
-    border: 1px solid var(--border, #2E2E2E);
-    color: var(--text-secondary, #999);
-    font-size: var(--t-body-sm-size, 0.8125rem);
-    white-space: nowrap;
-    cursor: pointer;
-    transition: background 150ms, color 150ms, border-color 150ms;
-  }
-
-  .provider-chip:hover {
-    background: var(--surface-2, #222);
-    color: var(--text-primary, #ededed);
-  }
-
-  .provider-chip.active {
-    background: var(--accent-muted, rgba(46, 184, 96, 0.15));
-    border-color: var(--accent, #2EB860);
-    color: var(--accent-text, #5FDB8A);
-  }
-
-  .provider-chip-icon {
-    font-size: 0.7rem;
-    font-weight: 700;
-    width: 18px;
-    height: 18px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 4px;
-    background: var(--glass-bg, rgba(255,255,255,0.06));
-    flex-shrink: 0;
-  }
-
-  .provider-chip-name {
-    max-width: 80px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .chip-status {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-
-  .chip-syncing {
-    background: var(--accent, #2EB860);
-    animation: pulse 1.2s ease-in-out infinite;
-  }
-
-  .chip-error { background: var(--danger, #D64545); }
-  .chip-offline { background: var(--danger, #D64545); }
-
-  .chip-is-offline {
-    border-color: var(--danger, #D64545);
-    color: var(--danger, #D64545);
-  }
-
-  .chip-is-offline .provider-chip-icon {
-    background: color-mix(in srgb, var(--danger, #D64545) 20%, transparent);
-  }
-
+  /* Provider chips moved to the Drawer's Providers section. The only
+     leftover from this row is the offline pill below. */
   .offline-global-pill {
     margin-left: auto;
-  }
-
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.35; }
-  }
-
-  .provider-chip-add {
-    color: var(--text-secondary, #999);
-    font-size: 1rem;
-    padding: 0 var(--sp-sm, 8px);
-    flex-shrink: 0;
   }
 
   /* ── End provider switcher ──────────────────────────────────────────────── */

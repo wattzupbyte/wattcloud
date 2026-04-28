@@ -47,7 +47,7 @@ export {
 // Streaming adapters
 export { ByoUploadStream } from './streaming/UploadStream';
 export { ByoDownloadStream } from './streaming/DownloadStream';
-export { createZipStream, type ZipEntry } from './streaming/zip';
+export { createZipStream, predictZipLength, type ZipEntry } from './streaming/zip';
 
 // OAuth
 export { generatePKCE, base64URLEncode, type PKCEPair } from './oauth/PKCE';

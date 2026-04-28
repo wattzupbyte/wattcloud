@@ -185,7 +185,9 @@ ENROLLMENT_DB_PATH="${ENROLLMENT_DB_PATH:-/var/lib/wattcloud/enrollment.sqlite3}
 ENV_FILE="${WATTCLOUD_ENV_FILE:-/etc/wattcloud/wattcloud.env}"
 
 case "${1:-status}" in
-  oauth-setup|setup-oauth) exec "$CURRENT/scripts/oauth-setup.sh" "${@:2}" ;;
+  # oauth-setup wizard is hidden until the OAuth flow ships. Re-enable
+  # alongside the SPA's OAuth tile block when ready:
+  # oauth-setup|setup-oauth) exec "$CURRENT/scripts/oauth-setup.sh" "${@:2}" ;;
   harden)                  exec "$CURRENT/scripts/harden-vps.sh" "${@:2}" ;;
   update)                  exec /usr/local/bin/wattcloud-update "${@:2}" ;;
   rollback)                exec /usr/local/bin/wattcloud-update --rollback "${@:2}" ;;
@@ -240,7 +242,6 @@ Commands:
   harden                     apply the opinionated VPS hardening bundle (opt-in)
   update                     upgrade to the latest release (or pass a version)
   rollback                   revert to the previous release
-  oauth-setup                interactive OAuth provider wizard (when OAuth ships)
   uninstall                  remove Wattcloud from this host
 USAGE
     exit 1

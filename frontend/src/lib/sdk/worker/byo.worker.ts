@@ -56,6 +56,7 @@ let byo_enrollment_decrypt_shard: any;
 
 // BYO enrollment session WASM functions (ZK-safe)
 let byo_enrollment_open: any;
+let byo_enrollment_join: any;
 let byo_enrollment_derive_keys: any;
 let byo_enrollment_session_encrypt_shard: any;
 let byo_enrollment_session_decrypt_shard: any;
@@ -176,6 +177,7 @@ let byo_manifest_add_provider: any;
 let byo_manifest_rename_provider: any;
 let byo_manifest_set_primary_provider: any;
 let byo_manifest_tombstone_provider: any;
+let byo_manifest_update_provider_config: any;
 
 // R6 multi-vault WASM functions
 let byo_manifest_encrypt: any;
@@ -448,6 +450,7 @@ async function initWasm(): Promise<void> {
     byo_enrollment_decrypt_shard = wasmModule.byo_enrollment_decrypt_shard;
 
     byo_enrollment_open = wasmModule.byo_enrollment_open;
+    byo_enrollment_join = wasmModule.byo_enrollment_join;
     byo_enrollment_derive_keys = wasmModule.byo_enrollment_derive_keys;
     byo_enrollment_session_encrypt_shard = wasmModule.byo_enrollment_session_encrypt_shard;
     byo_enrollment_session_decrypt_shard = wasmModule.byo_enrollment_session_decrypt_shard;
@@ -563,6 +566,7 @@ async function initWasm(): Promise<void> {
     byo_manifest_rename_provider = wasmModule.byo_manifest_rename_provider;
     byo_manifest_set_primary_provider = wasmModule.byo_manifest_set_primary_provider;
     byo_manifest_tombstone_provider = wasmModule.byo_manifest_tombstone_provider;
+    byo_manifest_update_provider_config = wasmModule.byo_manifest_update_provider_config;
 
     // Stats (Phase 5)
     stats_init = wasmModule.statsInit;
@@ -947,6 +951,11 @@ interface ByoEnrollmentDecryptShardRequest {
 // Enrollment session API (ZK-safe)
 interface ByoEnrollmentOpenRequest {
   type: 'byoEnrollmentOpen';
+}
+
+interface ByoEnrollmentJoinRequest {
+  type: 'byoEnrollmentJoin';
+  channelIdB64: string;
 }
 
 interface ByoEnrollmentDeriveKeysRequest {
@@ -1407,6 +1416,13 @@ interface ByoManifestTombstoneRequest {
   providerId: string;
   nowUnixSecs: number;
 }
+interface ByoManifestUpdateProviderConfigRequest {
+  type: 'byoManifestUpdateProviderConfig';
+  manifestJson: string;
+  providerId: string;
+  newConfigJson: string;
+  nowUnixSecs: number;
+}
 
 // Journal codec (P3.1)
 interface ByoJournalAppendRequest {
@@ -1480,6 +1496,7 @@ type WorkerRequest =
   | ByoEnrollmentDecryptShardRequest
   // Enrollment session API (ZK-safe)
   | ByoEnrollmentOpenRequest
+  | ByoEnrollmentJoinRequest
   | ByoEnrollmentDeriveKeysRequest
   | ByoEnrollmentSessionEncryptShardRequest
   | ByoEnrollmentSessionDecryptShardRequest
@@ -1577,6 +1594,7 @@ type WorkerRequest =
   | ByoManifestRenameProviderRequest
   | ByoManifestSetPrimaryRequest
   | ByoManifestTombstoneRequest
+  | ByoManifestUpdateProviderConfigRequest
   // Stats (Phase 5)
   | { type: 'statsInit'; baseUrl: string; deviceId: string }
   | { type: 'statsRecord'; eventJson: string }
@@ -1595,7 +1613,7 @@ const CRYPTO_OPS = new Set([
   'byoWrapVaultKey', 'byoEncryptVaultBody', 'byoDecryptVaultBody', 'byoGenerateVaultKeys',
   'byoEnrollmentInitiate', 'byoEnrollmentDeriveSession',
   'byoEnrollmentEncryptShard', 'byoEnrollmentDecryptShard',
-  'byoEnrollmentOpen', 'byoEnrollmentDeriveKeys',
+  'byoEnrollmentOpen', 'byoEnrollmentJoin', 'byoEnrollmentDeriveKeys',
   'byoEnrollmentSessionEncryptShard', 'byoEnrollmentSessionDecryptShard',
   'byoEnrollmentSessionGetShard',
   'byoEnrollmentSessionEncryptPayload', 'byoEnrollmentSessionDecryptPayload',
@@ -1678,6 +1696,7 @@ const CRYPTO_OPS = new Set([
   'byoManifestRenameProvider',
   'byoManifestSetPrimary',
   'byoManifestTombstone',
+  'byoManifestUpdateProviderConfig',
   'byoPlanUnlock',
   'byoPlanSave',
   'byoPlanCrossProviderMove',
@@ -2034,6 +2053,12 @@ async function handleMessage(request: WorkerRequest): Promise<any> {
       const result = byo_enrollment_open();
       if (result && result.error) throw new Error(result.error);
       return { ephPkB64: result.eph_pk, channelIdB64: result.channel_id, sessionId: result.session_id };
+    }
+
+    case 'byoEnrollmentJoin': {
+      const result = byo_enrollment_join(request.channelIdB64);
+      if (result && result.error) throw new Error(result.error);
+      return { ephPkB64: result.eph_pk, sessionId: result.session_id };
     }
 
     case 'byoEnrollmentDeriveKeys': {
@@ -3053,6 +3078,17 @@ async function handleMessage(request: WorkerRequest): Promise<any> {
 
     case 'byoManifestTombstone': {
       const result = byo_manifest_tombstone_provider(request.manifestJson, request.providerId, request.nowUnixSecs);
+      if (result && result.error) throw new Error(result.error);
+      return { manifestJson: result.manifest_json as string };
+    }
+
+    case 'byoManifestUpdateProviderConfig': {
+      const result = byo_manifest_update_provider_config(
+        request.manifestJson,
+        request.providerId,
+        request.newConfigJson,
+        request.nowUnixSecs,
+      );
       if (result && result.error) throw new Error(result.error);
       return { manifestJson: result.manifest_json as string };
     }

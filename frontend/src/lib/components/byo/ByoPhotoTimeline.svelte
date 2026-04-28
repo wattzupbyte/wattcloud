@@ -17,6 +17,9 @@
   import CaretDown from 'phosphor-svelte/lib/CaretDown';
   import ArrowUp from 'phosphor-svelte/lib/ArrowUp';
   import ArrowDown from 'phosphor-svelte/lib/ArrowDown';
+  import GridFour from 'phosphor-svelte/lib/GridFour';
+  import SquaresFour from 'phosphor-svelte/lib/SquaresFour';
+  import GridNine from 'phosphor-svelte/lib/GridNine';
   import CalendarBlank from 'phosphor-svelte/lib/CalendarBlank';
   import MapPin from 'phosphor-svelte/lib/MapPin';
   import { parseExif } from '../../byo/ExifExtractor';
@@ -72,6 +75,47 @@
   let { loadFileData = null, sortDir = $bindable('desc'), selectionContext = null,
   onShareCollection,
   onUpload }: Props = $props();
+
+  // ── Density toggle ────────────────────────────────────────────────────────
+  // Cycles thumbnail size; pinned per-vault in localStorage so the choice
+  // survives reloads. Three steps span the useful range without an
+  // overwhelming menu — small (more thumbs, packed tight) → medium (the
+  // legacy default that all existing CSS was tuned for) → large (fewer
+  // thumbs, bigger glance area). The actual column counts differ between
+  // mobile and desktop so the relative density feels consistent across
+  // both — see the .photo-grid CSS rules below for the breakpoint values.
+  type PhotoDensity = 'small' | 'medium' | 'large';
+  const PHOTO_DENSITY_PREFIX = 'byo:photo_density:';
+  let photoDensity = $state<PhotoDensity>('medium');
+  $effect(() => {
+    const vId = get(vaultStore).vaultId;
+    if (!vId) return;
+    try {
+      const raw = localStorage.getItem(PHOTO_DENSITY_PREFIX + vId);
+      if (raw === 'small' || raw === 'medium' || raw === 'large') photoDensity = raw;
+    } catch { /* storage blocked */ }
+  });
+  function cycleDensity() {
+    const next: PhotoDensity = photoDensity === 'small'
+      ? 'medium'
+      : photoDensity === 'medium' ? 'large' : 'small';
+    photoDensity = next;
+    const vId = get(vaultStore).vaultId;
+    if (vId) {
+      try { localStorage.setItem(PHOTO_DENSITY_PREFIX + vId, next); }
+      catch { /* storage blocked */ }
+    }
+  }
+  let DensityIcon = $derived(photoDensity === 'small' ? GridNine
+    : photoDensity === 'medium' ? GridFour
+    : SquaresFour);
+  let densityLabel = $derived(
+    photoDensity === 'small' ? 'Smaller thumbnails — click for medium'
+    : photoDensity === 'medium' ? 'Medium thumbnails — click for larger'
+    : 'Larger thumbnails — click for smaller'
+  );
+  let photoColsMobile = $derived(photoDensity === 'small' ? 4 : photoDensity === 'medium' ? 3 : 2);
+  let photoColsDesktop = $derived(photoDensity === 'small' ? 8 : photoDensity === 'medium' ? 5 : 3);
 function toggleSelection(fileId: number) {
     selectionContext?.toggle(fileId);
   }
@@ -215,6 +259,55 @@ function toggleSelection(fileId: number) {
   let locationPlace: PlaceBounds | null = $state(null);
   let placeSheetOpen = $state(false);
 
+  // Refs for the place chip + its menu so we can clamp the menu's left
+  // edge inside the viewport on narrow phones. Pure CSS can't compute
+  // "shift menu right when its natural left would fall off-screen"
+  // because right:0 anchoring depends on the chip's runtime viewport
+  // position, which CSS doesn't expose.
+  let placeChipEl = $state<HTMLDivElement | undefined>(undefined);
+  let placeMenuEl = $state<HTMLDivElement | undefined>(undefined);
+
+  /** Width below which we abandon chip-relative anchoring and pin the
+   *  menu to the viewport instead. Above this, the chip has enough
+   *  horizontal space to its left for the default right:0 anchor to
+   *  fit a 320px-wide menu without clipping. */
+  const NARROW_VIEWPORT_PX = 480;
+
+  $effect(() => {
+    if (!placeSheetOpen) return;
+    if (!placeChipEl || !placeMenuEl) return;
+    const chipEl = placeChipEl;
+    const menuEl = placeMenuEl;
+    // Reset every overridable property — narrow viewport gets fixed
+    // positioning, wide viewport reverts to the CSS default. We always
+    // start from a clean slate so a viewport that's resized while the
+    // menu is open ends up consistent.
+    menuEl.style.position = '';
+    menuEl.style.top = '';
+    menuEl.style.left = '';
+    menuEl.style.right = '';
+    menuEl.style.width = '';
+    menuEl.style.maxWidth = '';
+
+    const viewportWidth = document.documentElement.clientWidth;
+    if (viewportWidth >= NARROW_VIEWPORT_PX) return;
+
+    // Pin to viewport — chip-relative right:0 + width:min(...) still
+    // clips the menu's left edge when the chip lives near the right of
+    // a narrow toolbar. Position fixed escapes the chip's containing
+    // block; top tracks the chip so the visual link is preserved.
+    requestAnimationFrame(() => {
+      if (!menuEl.isConnected || !chipEl.isConnected) return;
+      const chipRect = chipEl.getBoundingClientRect();
+      menuEl.style.position = 'fixed';
+      menuEl.style.top = `${chipRect.bottom + 4}px`;
+      menuEl.style.left = '12px';
+      menuEl.style.right = '12px';
+      menuEl.style.width = 'auto';
+      menuEl.style.maxWidth = 'none';
+    });
+  });
+
   function fileHasLocation(f: { metadata?: string }): boolean {
     const e = parseExif(f.metadata);
     return typeof e.lat === 'number' && typeof e.lon === 'number';
@@ -225,8 +318,8 @@ function toggleSelection(fileId: number) {
     return e.lat >= p.latMin && e.lat <= p.latMax && e.lon >= p.lonMin && e.lon <= p.lonMax;
   }
 
-  function handlePlaceSelect(e: CustomEvent<PlaceBounds>) {
-    locationPlace = e.detail;
+  function handlePlaceSelect(place: PlaceBounds) {
+    locationPlace = place;
     placeSheetOpen = false;
   }
   function handlePlaceClear() {
@@ -302,6 +395,19 @@ function toggleSelection(fileId: number) {
   // them down on tab-switch unmount wipes state that should survive
   // Photos→Files→Photos and forces a full reload + thumbnail re-download.
   onMount(() => {
+    loadByoPhotoTimeline();
+  });
+
+  // Reload the timeline when the active provider changes (e.g. user picks
+  // a different provider in the drawer). listImageFiles is provider-scoped,
+  // so without this effect a switch would leave the previous provider's
+  // photos on screen until the user remounts the timeline.
+  let _photoActiveIdSeen: string | null = null;
+  $effect(() => {
+    const id = $vaultStore.activeProviderId;
+    if (_photoActiveIdSeen === null) { _photoActiveIdSeen = id; return; }
+    if (id === _photoActiveIdSeen) return;
+    _photoActiveIdSeen = id;
     loadByoPhotoTimeline();
   });
 
@@ -392,7 +498,11 @@ function toggleSelection(fileId: number) {
     : false);
 </script>
 
-<div class="photo-timeline">
+<div
+  class="photo-timeline"
+  style:--photo-cols-mobile={photoColsMobile}
+  style:--photo-cols-desktop={photoColsDesktop}
+>
   <!-- Toolbar: view toggle + folder source picker (timeline only) -->
   <div class="photo-toolbar">
     <div class="view-toggle" role="tablist" aria-label="Photo view">
@@ -510,7 +620,7 @@ function toggleSelection(fileId: number) {
             </div>
           {/if}
 
-          <div class="folder-picker" class:open={placeSheetOpen}>
+          <div class="folder-picker" class:open={placeSheetOpen} bind:this={placeChipEl}>
             <button
               class="filter-chip"
               class:has-filter={!!locationPlace || locationOnly}
@@ -524,7 +634,7 @@ function toggleSelection(fileId: number) {
               <CaretDown size={12} />
             </button>
             {#if placeSheetOpen}
-              <div class="folder-picker-menu place-menu">
+              <div class="folder-picker-menu place-menu" bind:this={placeMenuEl}>
                 <button
                   class="folder-picker-item"
                   class:selected={!locationPlace && !locationOnly}
@@ -551,6 +661,15 @@ function toggleSelection(fileId: number) {
               </div>
             {/if}
           </div>
+
+          <button
+            class="filter-direction"
+            onclick={cycleDensity}
+            aria-label={densityLabel}
+            title={densityLabel}
+          >
+            <DensityIcon size={14} />
+          </button>
 
           <button
             class="filter-direction"
@@ -1014,7 +1133,38 @@ function toggleSelection(fileId: number) {
   .folder-picker-item.sub { padding-left: 24px; font-size: var(--t-label-size); color: var(--text-secondary); }
   .folder-picker-item.sub.selected { color: var(--accent-text); }
   .folder-picker-divider { height: 1px; background: var(--border); margin: 4px 0; }
-  .folder-picker-menu.place-menu { min-width: 320px; padding: var(--sp-sm); }
+  /* Place menu houses PlaceSearch whose own results dropdown is
+     absolute-positioned. The parent's overflow-y:auto would clip it
+     regardless of max-height (absolute children don't contribute to
+     content height, so the scroll trigger never fires for the dropdown
+     overflow). Drop overflow on this variant and remove max-height —
+     the static rows here (Any location / Located only / search input /
+     Re-scan) are bounded; the dropdown spills below them naturally. */
+  .folder-picker-menu.place-menu {
+    width: min(320px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+    max-height: none;
+    overflow: visible;
+    padding: var(--sp-sm);
+  }
+  /* Narrow viewport CSS fallback for ALL filter dropdowns (folder,
+     date, place). The chips live near the right of the toolbar on
+     phones, so right:0 anchoring + any meaningful menu width pushes
+     the left edge off-screen. Pin to viewport directly. For the
+     place menu, the $effect in the script also refines `top` from
+     the chip's actual bottom; the other two rely on this static
+     120px which lands just below the toolbar in practice. */
+  @media (max-width: 480px) {
+    .folder-picker-menu {
+      position: fixed;
+      top: 120px;
+      left: 12px;
+      right: 12px;
+      width: auto;
+      max-width: none;
+      min-width: 0;
+    }
+  }
 
   .toggle-btn {
     display: inline-flex;
@@ -1291,17 +1441,21 @@ function toggleSelection(fileId: number) {
     z-index: 2;
   }
 
-  /* Grid — §16.2: 3-col default, 5-col at ≥600px, 2px gap, no border-radius */
+  /* Grid — §16.2: 3-col default mobile, 5-col default desktop. The actual
+     column count is driven by --photo-cols-mobile / --photo-cols-desktop
+     CSS variables set on .photo-timeline by the density toggle so the
+     user can pack thumbs tighter or spread them out without leaving the
+     toolbar. Defaults below cover the no-vault / pre-effect render. */
   .photo-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(var(--photo-cols-mobile, 3), 1fr);
     /* Slightly looser gap — rounded corners need breathing room. */
     gap: var(--sp-xs, 4px);
   }
 
   @media (min-width: 600px) {
     .photo-grid {
-      grid-template-columns: repeat(5, 1fr);
+      grid-template-columns: repeat(var(--photo-cols-desktop, 5), 1fr);
     }
   }
 

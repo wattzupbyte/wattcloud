@@ -5,6 +5,7 @@
   import X from 'phosphor-svelte/lib/X';
   import ShareNetwork from 'phosphor-svelte/lib/ShareNetwork';
   import ArrowRight from 'phosphor-svelte/lib/ArrowRight';
+  import ArrowsLeftRight from 'phosphor-svelte/lib/ArrowsLeftRight';
   import Trash from 'phosphor-svelte/lib/Trash';
   import DotsThreeVertical from 'phosphor-svelte/lib/DotsThreeVertical';
   import Copy from 'phosphor-svelte/lib/Copy';
@@ -30,6 +31,9 @@
     canShare?: boolean;
     /** Show "Add to collection" button (Photos view). */
     canAddToCollection?: boolean;
+    /** Show "Move to another provider" — only when the open vault has
+     *  more than one provider attached (BYO multi-provider mode). */
+    canMoveToProvider?: boolean;
     /** 'none' = none are favorites, 'all' = all are favorites, 'mixed' = some are */
     favoriteState?: 'none' | 'all' | 'mixed';
     onClear?: () => void;
@@ -43,6 +47,7 @@
     onUnfavorite?: () => void;
     onDelete?: () => void;
     onAddToCollection?: () => void;
+    onMoveToProvider?: () => void;
   }
 
   let {
@@ -56,6 +61,7 @@
     canDetails = false,
     canShare = false,
     canAddToCollection = false,
+    canMoveToProvider = false,
     favoriteState = 'none',
     onClear,
     onDetails,
@@ -67,7 +73,8 @@
     onFavorite,
     onUnfavorite,
     onDelete,
-    onAddToCollection
+    onAddToCollection,
+    onMoveToProvider
   }: Props = $props();
 let showSheet = $state(false);
   let favBurstActive = $state(false);
@@ -76,17 +83,18 @@ let showSheet = $state(false);
   function emit(event: string) {
     showSheet = false;
     switch (event) {
-      case 'clear':           onClear?.(); break;
-      case 'details':         onDetails?.(); break;
-      case 'share':           onShare?.(); break;
-      case 'rename':          onRename?.(); break;
-      case 'download':        onDownload?.(); break;
-      case 'move':            onMove?.(); break;
-      case 'copy':            onCopy?.(); break;
-      case 'favorite':        onFavorite?.(); break;
-      case 'unfavorite':      onUnfavorite?.(); break;
-      case 'delete':          onDelete?.(); break;
-      case 'addToCollection': onAddToCollection?.(); break;
+      case 'clear':            onClear?.(); break;
+      case 'details':          onDetails?.(); break;
+      case 'share':            onShare?.(); break;
+      case 'rename':           onRename?.(); break;
+      case 'download':         onDownload?.(); break;
+      case 'move':             onMove?.(); break;
+      case 'copy':             onCopy?.(); break;
+      case 'favorite':         onFavorite?.(); break;
+      case 'unfavorite':       onUnfavorite?.(); break;
+      case 'delete':           onDelete?.(); break;
+      case 'addToCollection':  onAddToCollection?.(); break;
+      case 'moveToProvider':   onMoveToProvider?.(); break;
     }
   }
 
@@ -123,7 +131,7 @@ let showSheet = $state(false);
         <Info size={20} />
       </button>
     {/if}
-    {#if canShare && singleSelection}
+    {#if canShare}
       <button class="btn-icon" onclick={() => emit('share')} aria-label="Share link" title="Share link">
         <ShareNetwork size={20} />
       </button>
@@ -232,7 +240,7 @@ let showSheet = $state(false);
             <span>Details</span>
           </button>
         {/if}
-        {#if canShare && singleSelection}
+        {#if canShare}
           <button class="sheet-option" onclick={() => emit('share')}>
             <span class="sheet-option-icon"><ShareNetwork size={20} /></span>
             <span>Share link</span>
@@ -248,6 +256,12 @@ let showSheet = $state(false);
           <button class="sheet-option" onclick={() => emit('move')}>
             <span class="sheet-option-icon"><ArrowRight size={20} /></span>
             <span>Move</span>
+          </button>
+        {/if}
+        {#if canMoveToProvider}
+          <button class="sheet-option" onclick={() => emit('moveToProvider')}>
+            <span class="sheet-option-icon"><ArrowsLeftRight size={20} /></span>
+            <span>Move to another provider</span>
           </button>
         {/if}
         {#if canCopy}

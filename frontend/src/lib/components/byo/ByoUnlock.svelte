@@ -121,8 +121,7 @@ type UnlockStep = 'passphrase' | 'unlocking';
     }
   }
 
-  async function handlePassphrase(event: CustomEvent<string>) {
-    const passphrase = event.detail;
+  async function handlePassphrase(passphrase: string) {
     step = 'unlocking';
     argon2Done = false;
     error = '';

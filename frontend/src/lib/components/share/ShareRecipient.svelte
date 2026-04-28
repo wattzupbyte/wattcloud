@@ -51,7 +51,7 @@
     type IOSPathDecision,
   } from '../../byo/iosSave';
   import { parseShareLimitError } from '../../byo/shareLimitCopy';
-  import { createZipStream, type ZipEntry } from '@wattcloud/sdk';
+  import { createZipStream, predictZipLength, type ZipEntry } from '@wattcloud/sdk';
 
   const iosDevice = isIOSDevice();
 
@@ -359,6 +359,13 @@
       const plaintextStream = await buildDecryptStream(resp.body, keyB64);
       await streamToDisk(plaintextStream, filename, mime, {
         sizeHint,
+        // Same Firefox-finalize fix as the bundle path: when we know the
+        // exact plaintext size up front, set Content-Length on the SW
+        // response so the download manager can rename .part → final
+        // cleanly. For single-file shares the plaintext size came in
+        // through `sizeHint` from the manifest's plaintext_size field.
+        contentLength:
+          typeof sizeHint === 'number' && sizeHint >= 0 ? sizeHint : undefined,
         onProgress: (n) => {
           downloading = new Map(downloading).set(blobId, n);
         },
@@ -627,6 +634,25 @@
 
     try {
       const zipStream = createZipStream(zipInputs());
+      // Compute the exact zip output size up front from the manifest
+      // entries — client-zip uses STORE method (no compression) so the
+      // result is a precise number we can hand to streamToDisk as
+      // Content-Length. Without it Firefox's download manager fails the
+      // .part → final rename for SW-streamed bundles ("source file
+      // could not be read"), even though the page-side pump completes.
+      // predictLength's name+size pair must match what zipInputs()
+      // actually emits, which is `entry.rel_path` + `entry.size`.
+      let zipContentLength: number | undefined;
+      try {
+        zipContentLength = predictZipLength(
+          entries.map((e) => ({ name: e.rel_path, size: e.size })),
+        );
+      } catch (predErr) {
+        // Predictor failure is non-fatal — drop Content-Length and let
+        // the download proceed via chunked transfer (Chrome/Safari fine,
+        // Firefox finalize may fail, but no worse than before).
+        console.warn('[share] predictZipLength failed; falling back to chunked', predErr);
+      }
       if (iosDevice) {
         // iOS: buffer the zip (RAM or OPFS, depending on feature
         // support + quota probe), then wait for the user's Save tap.
@@ -646,6 +672,7 @@
         );
       } else {
         await streamToDisk(zipStream, filename, 'application/zip', {
+          contentLength: zipContentLength,
           onProgress: (n) => {
             bundleBytesWritten = n;
           },

@@ -193,8 +193,7 @@
 
   // ── Setup flow ─────────────────────────────────────────────────────────────
 
-  async function handlePassphrase(event: CustomEvent<string>) {
-    const passphrase = event.detail;
+  async function handlePassphrase(passphrase: string) {
     memoryError = false;
 
     if (!localStorage.getItem(SYNC_WARNING_ACK_KEY)) {

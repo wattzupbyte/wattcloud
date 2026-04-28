@@ -30,8 +30,13 @@ let query = $state('');
 
   $effect(() => {
     if (query.trim().length >= 1) {
-      results = searchIn($placesStore, query, 8);
-      open = results.length > 0;
+      // Compute into a local first, then assign — Svelte 5 tracks reads
+      // inside an effect as dependencies, so reading `results.length`
+      // immediately after writing `results` would treat the write as a
+      // dep of itself and trigger an infinite update-depth loop.
+      const found = searchIn($placesStore, query, 8);
+      results = found;
+      open = found.length > 0;
       activeIndex = -1;
     } else {
       results = [];
@@ -121,7 +126,7 @@ let query = $state('');
     margin: 0; padding: var(--sp-xs) 0;
     background: var(--bg-surface-raised); border: 1px solid var(--border);
     border-top: none; border-radius: 0 0 var(--r-input) var(--r-input);
-    box-shadow: var(--shadow-dropdown); max-height: 280px; overflow-y: auto; z-index: 10;
+    box-shadow: var(--shadow-dropdown); max-height: 420px; overflow-y: auto; z-index: 10;
   }
   .result-item {
     display: flex; align-items: center; gap: var(--sp-sm);

@@ -13,7 +13,6 @@
   
   
   // ─────────────────────────────────────────────────────────────────────────
-  import CloudEncBadge from './CloudEncBadge.svelte';
 
   // Phosphor icons (v2.x imports)
   import FolderSimple from 'phosphor-svelte/lib/FolderSimple';
@@ -55,8 +54,6 @@
     showFolderContext?: boolean;
     folderNames?: Record<number, string>;
     viewMode?: 'list' | 'grid';
-    /** BYO mode: show encryption badge on all file thumbnails (§29.1). */
-    showEncryptionBadge?: boolean;
   }
 
   let {
@@ -71,7 +68,6 @@
     showFolderContext = false,
     folderNames = {},
     viewMode = 'list',
-    showEncryptionBadge = false,
     onRefresh,
     onPreview,
     onUpload
@@ -394,12 +390,24 @@ let draggedFileId: number | null = $state(null);
        600px each row stays as the stacked icon + name + inline meta
        layout. The header row below is hidden on mobile via CSS. -->
   {#if files.length > 0}
+    <!-- The header is wrapped in two row-groups so the 2-col viewport
+         (≥1280px) can repeat the labels across both columns. The second
+         row stays display:none below that breakpoint. -->
     <div class="file-list-header" aria-hidden="true">
-      <span class="file-list-header-icon"></span>
-      <span class="file-list-header-cell">Name</span>
-      <span class="file-list-header-cell file-list-header-cell-right">Modified</span>
-      <span class="file-list-header-cell file-list-header-cell-right">Size</span>
-      <span class="file-list-header-actions"></span>
+      <div class="file-list-header-row">
+        <span class="file-list-header-icon"></span>
+        <span class="file-list-header-cell">Name</span>
+        <span class="file-list-header-cell file-list-header-cell-right">Modified</span>
+        <span class="file-list-header-cell file-list-header-cell-right">Size</span>
+        <span class="file-list-header-actions"></span>
+      </div>
+      <div class="file-list-header-row file-list-header-row-extra">
+        <span class="file-list-header-icon"></span>
+        <span class="file-list-header-cell">Name</span>
+        <span class="file-list-header-cell file-list-header-cell-right">Modified</span>
+        <span class="file-list-header-cell file-list-header-cell-right">Size</span>
+        <span class="file-list-header-actions"></span>
+      </div>
     </div>
   {/if}
   <div class="file-list" role="list">
@@ -445,9 +453,6 @@ let draggedFileId: number | null = $state(null);
               <File size={20} color="var(--text-primary)" />
             {/if}
           </div>
-          {#if showEncryptionBadge}
-            <span class="enc-badge"><CloudEncBadge size={14} /></span>
-          {/if}
         </div>
 
         {#if renamingFileId === file.id}
@@ -622,11 +627,13 @@ let draggedFileId: number | null = $state(null);
   }
 
   /* ── List View ──────────────────────────────────────────── */
-  .file-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-xs);
-  }
+  /* Base .file-list rules (display:flex, gap, ≥600px row grid, wide
+     2-column layout) live in component-classes.css. Don't redeclare
+     here — Svelte's scoped-class wrapping bumps specificity higher
+     than the global @media (min-width:1280px) override, so a duplicate
+     `display:flex` would clobber the 2-column grid on the Files screen
+     while folders (which render their .file-list inside ByoDashboard)
+     would still pick up the override. */
 
   .dragging {
     opacity: 0.5;

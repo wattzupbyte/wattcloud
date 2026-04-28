@@ -37,6 +37,35 @@ function normalizeBasePath(raw: string): string {
   return withoutTrailing.startsWith('/') ? withoutTrailing : `/${withoutTrailing}`;
 }
 
+/**
+ * Render a WS pre-open failure with whatever diagnostics the browser
+ * gives us. Code 1006 is the "abnormal closure" the spec requires for
+ * upgrade-time failures (the server didn't respond with 101); it's
+ * frustratingly opaque because the browser hides the actual HTTP status
+ * for security reasons. A close code != 1006 (or a non-empty reason)
+ * usually means the upgrade succeeded but the server-side handler
+ * rejected the session early — surface both so the operator can
+ * triangulate.
+ */
+function formatWsFailure(host: string, port: number, code: number | null, reason: string): string {
+  const parts: string[] = [`SFTP relay WebSocket connection failed (${host}:${port})`];
+  if (code !== null) {
+    parts.push(`close code ${code}`);
+    if (code === 1006) {
+      // 1006 specifically: upgrade refused before WS frames started.
+      // Most common causes are the relay returning 401 (missing/invalid
+      // relay_auth_sftp cookie), 403 (cookie purpose mismatch / consumed
+      // jti / host or port not in allowlist / DNS-SSRF rejection /
+      // Origin mismatch), or a network failure. DevTools → Network →
+      // failed `/relay/ws?...` request will show the actual HTTP
+      // status the server returned.
+      parts.push('upgrade refused (HTTP status hidden by browser; check DevTools → Network)');
+    }
+  }
+  if (reason) parts.push(`reason: ${reason}`);
+  return parts.join(' — ');
+}
+
 export class SftpProvider implements StorageProvider {
   readonly type = 'sftp' as const;
   readonly displayName = 'SFTP';
@@ -117,43 +146,99 @@ export class SftpProvider implements StorageProvider {
 
     const wsUrl = `/relay/ws?mode=sftp&host=${encodeURIComponent(this.host)}&port=${encodeURIComponent(String(this.port))}`;
 
-    await new Promise<void>((resolve, reject) => {
-      this.ws = new WebSocket(wsUrl);
-      this.ws.binaryType = 'arraybuffer';
+    // WebSocket upgrade can fail intermittently — transient relay
+    // back-pressure, fleeting network blip, or a stale single-use cookie
+    // racing with eviction. The browser API doesn't expose the upgrade
+    // HTTP status, so the onerror handler can't distinguish "definitive
+    // 4xx" from "retry-worthy". Try twice before giving up: re-acquire
+    // a fresh cookie between attempts (the previous one may have been
+    // consumed) and surface host:port in the final error so the user
+    // can see which target failed instead of a generic "connection
+    // failed". This is the path device-enrollment hits on the receiver
+    // side when the just-handed-over SFTP config has its first connect
+    // attempt swallowed by a transient.
+    const MAX_ATTEMPTS = 2;
+    let lastErr: Error | null = null;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      if (attempt > 1) {
+        // Backoff + cookie refresh — the previous attempt's cookie may
+        // already be consumed server-side and the cache eviction in
+        // onerror only drops our local entry. Re-running acquire ensures
+        // the next WS upgrade carries a fresh jti.
+        await new Promise((r) => setTimeout(r, 500));
+        await acquireSftpRelayCookie(this.host, this.port);
+      }
+      let opened = false;
+      let closeCode: number | null = null;
+      let closeReason = '';
+      try {
+        await new Promise<void>((resolve, reject) => {
+          this.ws = new WebSocket(wsUrl);
+          this.ws.binaryType = 'arraybuffer';
 
-      this.session = new SftpSessionWasm(
-        (text: string) => this.ws?.send(text),
-        (text: string, bin: Uint8Array) => { this.ws?.send(text); this.ws?.send(bin); },
-        () => this.ws?.close(),
-        this.basePath || undefined,
+          this.session = new SftpSessionWasm(
+            (text: string) => this.ws?.send(text),
+            (text: string, bin: Uint8Array) => { this.ws?.send(text); this.ws?.send(bin); },
+            () => this.ws?.close(),
+            this.basePath || undefined,
+          );
+
+          this.ws.onmessage = (e: MessageEvent) => {
+            if (typeof e.data === 'string') this.session.on_recv_text(e.data);
+            else this.session.on_recv_binary(new Uint8Array(e.data as ArrayBuffer));
+          };
+
+          this.ws.onclose = (e: CloseEvent) => {
+            // Capture the close code so a pre-open failure can include it
+            // in the surfaced error — the WS API hides the upgrade HTTP
+            // status from JS, but the close code at least narrows the
+            // diagnosis (1006 abnormal vs application-defined codes).
+            if (!opened) {
+              closeCode = e.code;
+              closeReason = e.reason ?? '';
+            }
+            this.session.on_close();
+            this._drainRejecters(new ProviderError('NETWORK_ERROR', 'SFTP WebSocket closed during operation', 'sftp'));
+            if (!opened) {
+              reject(new Error(formatWsFailure(this.host, this.port, closeCode, closeReason)));
+            }
+          };
+
+          this.ws.onerror = () => {
+            evictSftpRelayCookieCache(this.host, this.port).catch(() => {});
+            this._drainRejecters(new ProviderError('NETWORK_ERROR', 'SFTP WebSocket error during operation', 'sftp'));
+            // Don't reject here — onclose fires right after with a close
+            // code we can include in the error message. Rejecting twice
+            // is harmless (the second is a no-op on a settled Promise)
+            // but the code-augmented message is the better one to keep.
+          };
+
+          this.ws.onopen = () => {
+            opened = true;
+            // The server consumes the cookie's JTI on a successful upgrade
+            // (single-use enforcement). Keeping the per-purpose cache entry would
+            // re-offer the same consumed cookie on the next reconnect and earn a
+            // 403 "jti already consumed (replay)". Drop it now so the next init()
+            // runs a fresh PoW handshake.
+            evictSftpRelayCookieCache(this.host, this.port).catch(() => {});
+            resolve();
+          };
+        });
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e instanceof Error ? e : new Error(String(e));
+        // Tear down the half-open socket so the next attempt's onclose
+        // handler doesn't fire against a stale session.
+        try { this.ws?.close(); } catch { /* ignore */ }
+        this.ws = null;
+      }
+    }
+    if (lastErr) {
+      throw new Error(
+        `SFTP relay WebSocket connection failed (${this.host}:${this.port}) after ${MAX_ATTEMPTS} attempts: ${lastErr.message}`,
       );
-
-      this.ws.onmessage = (e: MessageEvent) => {
-        if (typeof e.data === 'string') this.session.on_recv_text(e.data);
-        else this.session.on_recv_binary(new Uint8Array(e.data as ArrayBuffer));
-      };
-
-      this.ws.onclose = () => {
-        this.session.on_close();
-        this._drainRejecters(new ProviderError('NETWORK_ERROR', 'SFTP WebSocket closed during operation', 'sftp'));
-      };
-
-      this.ws.onerror = () => {
-        evictSftpRelayCookieCache(this.host, this.port).catch(() => {});
-        this._drainRejecters(new ProviderError('NETWORK_ERROR', 'SFTP WebSocket error during operation', 'sftp'));
-        reject(new Error('SFTP relay WebSocket connection failed'));
-      };
-
-      this.ws.onopen = () => {
-        // The server consumes the cookie's JTI on a successful upgrade
-        // (single-use enforcement). Keeping the per-purpose cache entry would
-        // re-offer the same consumed cookie on the next reconnect and earn a
-        // 403 "jti already consumed (replay)". Drop it now so the next init()
-        // runs a fresh PoW handshake.
-        evictSftpRelayCookieCache(this.host, this.port).catch(() => {});
-        resolve();
-      };
-    });
+    }
 
     // Handshake (TOFU + relay_version negotiation).
     const storedFp = savedConfig.sftpHostKeyFingerprint ?? null;
@@ -207,14 +292,46 @@ export class SftpProvider implements StorageProvider {
       const current = await this.getVersion(ref || `${this.vaultRoot()}/data/${name}`).catch(() => null);
       if (current !== null && current !== options.expectedVersion) throw new ConflictError('sftp', current);
     }
-    const streamId: string = await this._rpc(() => this.session.upload_open(name, data.length));
-    if (streamId.startsWith('v2:')) {
-      for (let pos = 0; pos < data.length; pos += UPLOAD_CHUNK_SIZE) {
-        await this._rpc(() => this.session.upload_write_chunk(streamId, data.subarray(pos, pos + UPLOAD_CHUNK_SIZE)));
+    return this._uploadWithDirRecover(name, data, async () => {
+      const streamId: string = await this._rpc(() => this.session.upload_open(name, data.length));
+      if (streamId.startsWith('v2:')) {
+        for (let pos = 0; pos < data.length; pos += UPLOAD_CHUNK_SIZE) {
+          await this._rpc(() => this.session.upload_write_chunk(streamId, data.subarray(pos, pos + UPLOAD_CHUNK_SIZE)));
+        }
+        return JSON.parse(await this._rpc(() => this.session.upload_close_v2(streamId)));
       }
-      return JSON.parse(await this._rpc(() => this.session.upload_close_v2(streamId)));
+      return JSON.parse(await this._rpc(() => this.session.upload_close_v1(streamId, data)));
+    });
+  }
+
+  /** Wrap an upload attempt with one auto-retry after ensure_root_folders.
+   *  init() already calls ensure_root_folders — but if a remote operator
+   *  prunes the vault directory between sessions, or if a future code
+   *  path skips the init mkdir for any reason, the first write hits a
+   *  "No such file" from CREATE|WRITE|TRUNCATE on a missing parent dir.
+   *  Re-running the mkdir-p chain and retrying once is cheap, idempotent,
+   *  and avoids the "Debounced save failed: No such file" loop the user
+   *  hit when adding a second SFTP provider. */
+  private async _uploadWithDirRecover<T>(
+    name: string,
+    _data: Uint8Array,
+    attempt: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await attempt();
+    } catch (e: any) {
+      const msg = String(e?.message ?? e ?? '');
+      if (!/no such file|nosuchfile/i.test(msg)) throw e;
+      // Best-effort dir reconciliation. ensure_root_folders is idempotent
+      // (each step stat's first, only mkdir's on miss).
+      try {
+        await this._rpc(() => this.session.ensure_root_folders());
+      } catch (mkdirErr) {
+        console.warn(`[SftpProvider] ensure_root_folders during upload retry failed for ${name}`, mkdirErr);
+        throw e; // Surface the original error rather than the mkdir error.
+      }
+      return await attempt();
     }
-    return JSON.parse(await this._rpc(() => this.session.upload_close_v1(streamId, data)));
   }
 
   async download(ref: string): Promise<{ data: Uint8Array; version: string }> {

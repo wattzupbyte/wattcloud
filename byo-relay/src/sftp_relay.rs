@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::timeout;
+use tokio::time::{timeout, timeout_at, Instant};
 
 use crate::errors::SftpRelayError;
 use crate::rate_limit::SftpAuthFailureTracker;
@@ -100,6 +100,91 @@ fn err_json_str(id: u32, msg: &str) -> String {
         error: Some(msg.to_string()),
     })
     .unwrap_or_else(|_| format!(r#"{{"id":{id},"error":"internal"}}"#))
+}
+
+/// Tag a `Message` variant by name for diagnostic logs. The default
+/// `{:?}` for `Message` would include payload bytes which we do NOT want
+/// in logs (could be ciphertext fragments or credentials mid-frame).
+fn ws_variant_name(m: &Message) -> &'static str {
+    match m {
+        Message::Text(_) => "text",
+        Message::Binary(_) => "binary",
+        Message::Ping(_) => "ping",
+        Message::Pong(_) => "pong",
+        Message::Close(_) => "close",
+    }
+}
+
+/// Read the next `Message::Text` or `Message::Close` from the stream,
+/// transparently skipping any WS-level `Ping`/`Pong` keepalive frames,
+/// AND sending a server-side `Ping` every `KEEPALIVE_PING_INTERVAL`
+/// while waiting. The overall `timeout_dur` budget is honored across
+/// ping sends and Ping/Pong skips — neither resets the clock.
+///
+/// Why the ping: during the pre-auth TOFU wait the relay holds the WS
+/// idle for up to 30 seconds while the human clicks Accept. Cellular
+/// NAT and mobile-browser-tab-background timers can silently RST the
+/// TCP during that window (observed as tungstenite "Connection reset
+/// without closing handshake"). A ~10 s server-ping prods NAT middle
+/// boxes, keeps the connection accounted-for by mobile OSes, and lets
+/// us detect a dead peer sooner than tungstenite's own read timeout.
+async fn recv_text_or_close(
+    stream: &mut futures_util::stream::SplitStream<WebSocket>,
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    timeout_dur: Duration,
+    step: &'static str,
+) -> Result<Message, SftpRelayError> {
+    const KEEPALIVE_PING_INTERVAL: Duration = Duration::from_secs(10);
+    let deadline = Instant::now() + timeout_dur;
+    let mut next_ping = Instant::now() + KEEPALIVE_PING_INTERVAL;
+    loop {
+        let wake_at = deadline.min(next_ping);
+        let recv_outcome = timeout_at(wake_at, stream.next()).await;
+        match recv_outcome {
+            Err(_) => {
+                // timeout_at elapsed — either we hit the hard deadline or
+                // it's time to send a keepalive ping.
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(SftpRelayError::Timeout);
+                }
+                if let Err(e) = sink.send(Message::Ping(Vec::new())).await {
+                    // Ping send failure usually means the peer is already
+                    // gone; don't bail here, let the next stream.next()
+                    // surface the terminal error with full context.
+                    tracing::debug!(step, error = %e, "ws ping send failed");
+                }
+                next_ping = now + KEEPALIVE_PING_INTERVAL;
+            }
+            Ok(None) => {
+                tracing::debug!(step, "ws stream closed before frame arrived");
+                return Err(SftpRelayError::HostKeyRejected);
+            }
+            Ok(Some(Err(e))) => {
+                tracing::warn!(step, error = %e, "ws read error");
+                return Err(SftpRelayError::UnexpectedMessage);
+            }
+            Ok(Some(Ok(msg))) => match msg {
+                Message::Ping(_) | Message::Pong(_) => {
+                    tracing::debug!(
+                        step,
+                        variant = ws_variant_name(&msg),
+                        "ignoring ws keepalive frame"
+                    );
+                    continue;
+                }
+                Message::Text(_) | Message::Close(_) => return Ok(msg),
+                other => {
+                    tracing::warn!(
+                        step,
+                        variant = ws_variant_name(&other),
+                        "unexpected ws message variant during setup"
+                    );
+                    return Err(SftpRelayError::UnexpectedMessage);
+                }
+            },
+        }
+    }
 }
 
 fn param_str<'a>(params: &'a Value, key: &str) -> Option<&'a str> {
@@ -298,33 +383,39 @@ async fn run_session(
         serde_json::to_string(&host_key_frame).unwrap_or_default(),
     ))
     .await
-    .map_err(|_| SftpRelayError::UnexpectedMessage)?;
+    .map_err(|e| {
+        tracing::warn!(step = "send_host_key", error = %e, "ws send failed");
+        SftpRelayError::UnexpectedMessage
+    })?;
 
-    // Step 3: Wait for host_key_accepted (30 s). Credentials must not arrive first.
-    let ack = timeout(Duration::from_secs(30), stream.next())
-        .await
-        .map_err(|_| SftpRelayError::Timeout)?
-        .ok_or(SftpRelayError::HostKeyRejected)? // WS closed = client rejected
-        .map_err(|_| SftpRelayError::UnexpectedMessage)?;
+    // Step 3: Wait for host_key_accepted (30 s). Credentials must not arrive
+    // first. Ignore Ping/Pong keepalive frames — anything else is terminal.
+    let ack = recv_text_or_close(
+        &mut stream,
+        &mut sink,
+        Duration::from_secs(30),
+        "host_key_ack",
+    )
+    .await?;
 
     match ack {
         Message::Text(t) => {
-            let v: serde_json::Value =
-                serde_json::from_str(&t).map_err(|_| SftpRelayError::UnexpectedMessage)?;
+            let v: serde_json::Value = serde_json::from_str(&t).map_err(|e| {
+                tracing::warn!(step = "host_key_ack", error = %e, body = %t, "malformed JSON");
+                SftpRelayError::UnexpectedMessage
+            })?;
             if v.get("type").and_then(|t| t.as_str()) != Some("host_key_accepted") {
                 return Err(SftpRelayError::HostKeyRejected);
             }
         }
         Message::Close(_) => return Err(SftpRelayError::HostKeyRejected),
-        _ => return Err(SftpRelayError::UnexpectedMessage),
+        _ => unreachable!("recv_text_or_close only returns Text or Close"),
     }
 
-    // Step 4: Read auth message (credentials only arrive after TOFU is confirmed).
-    let auth_msg = timeout(Duration::from_secs(30), stream.next())
-        .await
-        .map_err(|_| SftpRelayError::Timeout)?
-        .ok_or(SftpRelayError::UnexpectedMessage)?
-        .map_err(|_| SftpRelayError::UnexpectedMessage)?;
+    // Step 4: Read auth message (credentials only arrive after TOFU is
+    // confirmed). Ping/Pong tolerated; Close or WS error terminates.
+    let auth_msg =
+        recv_text_or_close(&mut stream, &mut sink, Duration::from_secs(30), "auth_read").await?;
 
     let AuthParams {
         id: auth_id,
@@ -600,7 +691,7 @@ async fn handle_text_command(
             };
             let resp = match sftp.metadata(&path).await {
                 Ok(m) => {
-                    tracing::warn!(path = %path, is_dir = m.file_type().is_dir(), size = m.size.unwrap_or(0), "sftp stat ok");
+                    tracing::debug!(path = %path, is_dir = m.file_type().is_dir(), size = m.size.unwrap_or(0), "sftp stat ok");
                     ok_json(
                         id,
                         serde_json::json!({
@@ -875,12 +966,11 @@ async fn handle_text_command(
                 Ok(f) => f,
                 Err(e) => {
                     tracing::warn!(path = %path, error = %e, "sftp read_open failed");
-                    let _ = sink
-                        .send(Message::Text(err_json(
-                            id,
-                            format!("read_open {path}: {e}"),
-                        )))
-                        .await;
+                    // Plain russh-sftp error — sdk-core's read_open wrapper
+                    // adds the "read_open {path}: " prefix once. Pre-existing
+                    // double prefix here is what produced the duplicated
+                    // "read_open /x: read_open /x: …" the user reported.
+                    let _ = sink.send(Message::Text(err_json(id, e))).await;
                     return;
                 }
             };
@@ -935,9 +1025,10 @@ async fn handle_text_command(
                         error = %e,
                         "sftp read_chunk failed"
                     );
-                    let _ = sink
-                        .send(Message::Text(err_json(id, format!("read_chunk: {e}"))))
-                        .await;
+                    // sdk-core's read_chunk wrapper adds the verb+handle
+                    // prefix; emit the plain russh-sftp error here so we
+                    // don't double-prefix.
+                    let _ = sink.send(Message::Text(err_json(id, e))).await;
                     // Drop the session on read error — caller should reopen.
                     read_sessions.remove(&handle);
                     return;
@@ -986,7 +1077,7 @@ async fn handle_text_command(
             };
             let resp = match sftp.create_dir(&path).await {
                 Ok(_) => {
-                    tracing::warn!(path = %path, "sftp mkdir ok");
+                    tracing::debug!(path = %path, "sftp mkdir ok");
                     ok_json(id, serde_json::json!({}))
                 }
                 Err(e) => {
@@ -1080,11 +1171,25 @@ struct AuthParams {
 fn parse_auth(msg: Message) -> Result<AuthParams, SftpRelayError> {
     let text = match msg {
         Message::Text(t) => t,
-        _ => return Err(SftpRelayError::UnexpectedMessage),
+        other => {
+            tracing::warn!(
+                step = "parse_auth",
+                variant = ws_variant_name(&other),
+                "auth msg wrong ws variant"
+            );
+            return Err(SftpRelayError::UnexpectedMessage);
+        }
     };
-    let req: WsRequest =
-        serde_json::from_str(&text).map_err(|_| SftpRelayError::UnexpectedMessage)?;
+    let req: WsRequest = serde_json::from_str(&text).map_err(|e| {
+        tracing::warn!(step = "parse_auth", error = %e, "auth msg not JSON");
+        SftpRelayError::UnexpectedMessage
+    })?;
     if req.method != "auth" {
+        tracing::warn!(
+            step = "parse_auth",
+            method = %req.method,
+            "auth msg method mismatch (expected 'auth')"
+        );
         return Err(SftpRelayError::UnexpectedMessage);
     }
 

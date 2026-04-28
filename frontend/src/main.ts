@@ -56,30 +56,38 @@ async function boot(): Promise<void> {
     await initRuntimeConfig();
 
     // Restricted-enrollment gate. On boot we probe /relay/info + the
-    // identity endpoint /relay/admin/me. Three outcomes when mode is
-    // `restricted`:
+    // identity endpoint /relay/admin/me. Outcomes when mode is `restricted`:
     //   - not bootstrapped → BootstrapClaim takes over the DOM.
+    //   - bootstrapped + no device cookie + ?claim flag → BootstrapClaim
+    //     in recovery mode (operator minted a fresh token via
+    //     `wattcloud regenerate-claim-token` to add a new owner alongside
+    //     existing ones; reached via a link on InviteEntry).
     //   - bootstrapped + no device cookie → InviteEntry.
     //   - bootstrapped + valid cookie → fall through to normal ByoApp.
     // In `open` mode (default on existing installs) the probe is fast and
     // the result is ignored. If either call fails (transient network,
     // older relay without the endpoints) we fall through to ByoApp so a
     // relay hiccup doesn't block the whole SPA.
+    const wantBootstrap = new URLSearchParams(window.location.search).has('claim');
     let gated = false;
     try {
       const [info, me] = await Promise.all([fetchRelayInfo(), fetchMe()]);
       if (info.mode === 'restricted') {
         if (!info.bootstrapped) {
-          mount(BootstrapClaim, { target: appElement });
+          mount(BootstrapClaim, { target: appElement, props: { bootstrapped: false } });
           gated = true;
         } else if (!me.device) {
-          // Expired variant: this browser was enrolled once before. Show the
-          // session-expired explanation so the user understands what happened,
-          // not just "enter an invite."
-          mount(InviteEntry, {
-                        target: appElement,
-                        props: { expired: hasEnrolledHint() },
-                      });
+          if (wantBootstrap) {
+            mount(BootstrapClaim, { target: appElement, props: { bootstrapped: true } });
+          } else {
+            // Expired variant: this browser was enrolled once before. Show the
+            // session-expired explanation so the user understands what happened,
+            // not just "enter an invite."
+            mount(InviteEntry, {
+              target: appElement,
+              props: { expired: hasEnrolledHint() },
+            });
+          }
           gated = true;
         }
       }

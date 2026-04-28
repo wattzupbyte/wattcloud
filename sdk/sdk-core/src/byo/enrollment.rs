@@ -201,6 +201,23 @@ pub fn enrollment_initiate() -> Result<(X25519SecretKey, [u8; 32], [u8; 16]), En
     Ok((eph_sk, *eph_pk.as_bytes(), channel_id))
 }
 
+/// Generate enrollment material for the JOINING device (the one scanning a
+/// QR). Generates only the ephemeral X25519 keypair — the channel ID is
+/// taken from the QR payload, NOT freshly generated, so the joiner's
+/// session shares the same `channel_id` with the initiator and HKDF
+/// info-binding produces matching SAS codes.
+///
+/// Pairs with `enrollment_initiate` (initiator) and is consumed by
+/// `enrollment_derive_session(eph_sk, peer_pk, channel_id)` exactly the
+/// same way; the only difference is which device generates the channel
+/// id (initiator) vs reuses it (joiner).
+///
+/// Returns `(ephemeral_secret_key, ephemeral_public_key)`.
+pub fn enrollment_join() -> Result<(X25519SecretKey, [u8; 32]), EnrollmentError> {
+    let (eph_pk, eph_sk) = generate_x25519_keypair()?;
+    Ok((eph_sk, *eph_pk.as_bytes()))
+}
+
 // ─── Derive session ───────────────────────────────────────────────────────
 
 /// Derive all enrollment session keys from an ephemeral Diffie-Hellman shared secret.
@@ -489,6 +506,42 @@ mod tests {
     }
 
     // ─── Derive session ────────────────────────────────────────────────
+
+    #[test]
+    fn enrollment_derive_session_produces_different_sas_on_mismatched_channel_ids() {
+        // Regression: the WASM joiner used to call `enrollment_initiate` and
+        // generate a fresh channel_id, ignoring the one in the QR payload.
+        // The shared X25519 secret matches across the two sides (DH is
+        // commutative), but channel_id is HKDF-info-mixed into the SAS
+        // derivation, so the codes diverge — exactly the "different SAS on
+        // each device" symptom users hit. `enrollment_join` (below) fixes
+        // this by leaving channel_id generation to the initiator.
+        let (a_sk, a_pk, ch_a) = enrollment_initiate().unwrap();
+        let (b_sk, b_pk, ch_b) = enrollment_initiate().unwrap();
+        assert_ne!(ch_a, ch_b);
+
+        let session_a = enrollment_derive_session(&a_sk, &b_pk, &ch_a).unwrap();
+        let session_b = enrollment_derive_session(&b_sk, &a_pk, &ch_b).unwrap();
+        assert_ne!(session_a.sas_code().value(), session_b.sas_code().value());
+    }
+
+    #[test]
+    fn enrollment_join_uses_initiator_channel_for_matching_sas() {
+        let (a_sk, a_pk, ch) = enrollment_initiate().unwrap();
+        let (b_sk, b_pk) = enrollment_join().unwrap();
+        // Joiner reuses initiator's `ch` rather than minting its own.
+        let session_a = enrollment_derive_session(&a_sk, &b_pk, &ch).unwrap();
+        let session_b = enrollment_derive_session(&b_sk, &a_pk, &ch).unwrap();
+        assert_eq!(session_a.sas_code().value(), session_b.sas_code().value());
+        assert_eq!(
+            session_a.enc_key().as_bytes(),
+            session_b.enc_key().as_bytes()
+        );
+        assert_eq!(
+            session_a.mac_key().as_bytes(),
+            session_b.mac_key().as_bytes()
+        );
+    }
 
     #[test]
     fn enrollment_derive_session_produces_identical_keys_on_both_sides() {

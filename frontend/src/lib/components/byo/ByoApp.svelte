@@ -30,7 +30,7 @@
   import { setByoSearchDataProvider } from '../../byo/stores/byoSearch';
   import { setByoPhotosDataProvider, initByoPhotoFolderFilter } from '../../byo/stores/byoPhotos';
   import { setByoCollectionsDataProvider, resetByoCollections, initByoCollectionsOrder } from '../../byo/stores/byoCollections';
-  import { vaultStore } from '../../byo/stores/vaultStore';
+  import { vaultStore, sortedProviders } from '../../byo/stores/vaultStore';
   import {
     listPersistedVaults,
     loadProvidersForVault,
@@ -41,7 +41,7 @@
   import {
     hydrateProvider,
     providerNeedsReauth,
-    type SftpCredentials,
+    type ProviderCredentials,
   } from '../../byo/ProviderHydrate';
   import { getWebAuthnRecord } from '../../byo/DeviceKeyStore';
   import { unlockVaultKeyViaPasskey } from '../../byo/WebAuthnGate';
@@ -57,12 +57,13 @@
   import VaultLockAnimation from './VaultLockAnimation.svelte';
   import VaultsListScreen from './VaultsListScreen.svelte';
   import VaultContextSheet from './VaultContextSheet.svelte';
-  import SftpReauthSheet from './SftpReauthSheet.svelte';
+  import ProviderReauthSheet from './ProviderReauthSheet.svelte';
   import ByoToastHost from './ByoToastHost.svelte';
   import ByoCredProtectionOffer from './ByoCredProtectionOffer.svelte';
   import ConfirmModal from '../ConfirmModal.svelte';
   import Drawer from '../Drawer.svelte';
   import BottomNav from '../BottomNav.svelte';
+  import CloudBadge from '../CloudBadge.svelte';
   import { byoSelectionMode } from '../../byo/stores/byoFileStore';
   import { drawerOpen, drawerCollapsed } from '../../stores/drawer';
   import { storageUsage, resetStorageUsage } from '../../stores/storageUsage';
@@ -78,7 +79,7 @@
 
   type AppState =
     | 'vault-list'
-    | 'sftp-reauth'
+    | 'provider-reauth'
     | 'provider-select'
     | 'check-vault'
     | 'new-user-setup'
@@ -178,6 +179,21 @@
   setContext<DataProviderHolder>('byo:dataProvider', dataProviderHolder);
   setContext<StorageProviderHolder>('byo:storageProvider', storageProviderHolder);
 
+  // Keep dataProvider's activeProviderId in sync with the vault store
+  // regardless of which screen is mounted. ByoDashboard owns its own
+  // $effect that reloads the file list when the active provider changes,
+  // but that effect only runs while the dashboard is mounted — switching
+  // providers from the drawer while on Settings/Trash would otherwise
+  // leave dataProvider on the previous provider, so the next visit to
+  // Files would list rows from the wrong vault until the user toggled
+  // the switcher again.
+  $effect(() => {
+    const id = $vaultStore.activeProviderId;
+    if (!dataProvider || !id) return;
+    if (dataProvider.activeProviderId === id) return;
+    dataProvider.setActiveProviderId(id);
+  });
+
   onMount(async () => {
     // Kick off stats initialisation in the background — fire-and-forget.
     initStatsClient().catch(() => {});
@@ -212,8 +228,8 @@
    * config predates credential persistence (see SECURITY.md §12) detour
    * through the re-auth sheet first and self-upgrade after one re-entry.
    */
-  async function handleVaultListOpen(event: CustomEvent<{ vault_id: string }>) {
-    const { vault_id } = event.detail;
+  async function handleVaultListOpen(event: { vault_id: string }) {
+    const { vault_id } = event;
     currentVaultId = vault_id;
     reauthError = '';
 
@@ -299,9 +315,10 @@
       if (!primaryRow) throw new Error('Could not determine primary provider.');
 
       if (providerNeedsReauth(primaryRow.config)) {
-        // SFTP credentials missing — we still need the user to re-enter
-        // them. Close the preopened session; the reauth flow owns its own
-        // unlock path (and will route through ByoUnlock if needed).
+        // Provider credentials missing (legacy vault, or device-enrolled
+        // from a source that didn't have them either) — user needs to
+        // re-enter. Close the preopened session; the reauth flow owns
+        // its own unlock path.
         if (preopenedSessionId !== undefined) {
           await byoWorker.Worker.byoVaultClose(preopenedSessionId).catch(() => {});
           preopenedSessionId = undefined;
@@ -311,7 +328,7 @@
           primary: primaryRow,
           vaultLabel: summary?.vault_label ?? primaryRow.display_name,
         };
-        appState = 'sftp-reauth';
+        appState = 'provider-reauth';
         return;
       }
 
@@ -416,11 +433,12 @@
   /**
    * Shared tail of the vault-open flow: hydrate the primary, probe for an
    * existing manifest, and route to unlock / new-user-setup. `creds` is
-   * supplied by the reauth sheet for SFTP; other providers pass undefined.
+   * supplied by the reauth sheet (SFTP/WebDAV/S3 legacy paths); fully-stored
+   * configs pass undefined.
    */
   async function completeVaultOpen(
     primaryRow: HydratedProviderConfig,
-    creds?: SftpCredentials,
+    creds?: ProviderCredentials,
   ) {
     const instance = await hydrateProvider(primaryRow.config, creds);
     provider = instance;
@@ -440,35 +458,61 @@
     appState = vaultExists ? 'unlock' : 'new-user-setup';
   }
 
-  async function handleSftpReauthSubmit(
-    event: CustomEvent<{ username: string; password: string; privateKey: string; passphrase: string }>,
-  ) {
+  async function handleProviderReauthSubmit(creds: {
+    username?: string;
+    password?: string;
+    privateKey?: string;
+    passphrase?: string;
+    accessKeyId?: string;
+    secretAccessKey?: string;
+  }) {
     if (!reauthPending) return;
     reauthBusy = true;
     reauthError = '';
-    const { username, password, privateKey, passphrase } = event.detail;
-    // Splice the re-entered username back into the config so `init()` uses
-    // the fresh value (the user may have corrected a typo from the original
-    // setup); everything else is read-only in the sheet.
-    const configWithUser: ProviderConfig = {
-      ...reauthPending.primary.config,
-      sftpUsername: username,
-    };
-    // Legacy-vault upgrade path: once reauth succeeds we persist the
-    // freshly-entered creds back to ProviderConfigStore so the next page
-    // reload skips the sheet entirely. New vaults created after this
-    // change already include creds in the manifest config_json and never
-    // land here. See SECURITY.md §12 for the storage model.
-    const configWithCreds: ProviderConfig = {
-      ...configWithUser,
-      sftpPassword: password || undefined,
-      sftpPrivateKey: privateKey || undefined,
-      sftpPassphrase: passphrase || undefined,
-    };
+    // Splice the re-entered identity + secret back into the config so
+    // init() uses the fresh values AND the legacy-vault upgrade path
+    // persists them back to ProviderConfigStore — next reload skips the
+    // sheet entirely. New vaults already include creds and never land
+    // here. See SECURITY.md §12 for the storage model.
+    const baseCfg = reauthPending.primary.config;
+    let configWithCreds: ProviderConfig;
+    switch (baseCfg.type) {
+      case 'sftp':
+        configWithCreds = {
+          ...baseCfg,
+          sftpUsername: creds.username ?? baseCfg.sftpUsername,
+          sftpPassword: creds.password || undefined,
+          sftpPrivateKey: creds.privateKey || undefined,
+          sftpPassphrase: creds.passphrase || undefined,
+        };
+        break;
+      case 'webdav':
+        configWithCreds = {
+          ...baseCfg,
+          username: creds.username ?? baseCfg.username,
+          password: creds.password || undefined,
+        };
+        break;
+      case 's3':
+        configWithCreds = {
+          ...baseCfg,
+          s3AccessKeyId: creds.accessKeyId ?? baseCfg.s3AccessKeyId,
+          s3SecretAccessKey: creds.secretAccessKey || undefined,
+        };
+        break;
+      default:
+        configWithCreds = baseCfg;
+    }
     try {
       await completeVaultOpen(
-        { ...reauthPending.primary, config: configWithUser },
-        { password: password || undefined, privateKey: privateKey || undefined, passphrase: passphrase || undefined },
+        { ...reauthPending.primary, config: configWithCreds },
+        {
+          password: creds.password || undefined,
+          privateKey: creds.privateKey || undefined,
+          passphrase: creds.passphrase || undefined,
+          accessKeyId: creds.accessKeyId || undefined,
+          secretAccessKey: creds.secretAccessKey || undefined,
+        },
       );
       try {
         const { saveProviderConfig } = await import('../../byo/ProviderConfigStore');
@@ -491,14 +535,14 @@
       }
       reauthPending = null;
     } catch (e: any) {
-      console.error('[ByoApp] SFTP reauth/hydrate failed', e);
+      console.error('[ByoApp] provider reauth/hydrate failed', e);
       reauthError = e?.message ?? 'Failed to connect — check credentials and try again.';
     } finally {
       reauthBusy = false;
     }
   }
 
-  function handleSftpReauthCancel() {
+  function handleProviderReauthCancel() {
     reauthPending = null;
     reauthBusy = false;
     reauthError = '';
@@ -506,8 +550,8 @@
     appState = 'vault-list';
   }
 
-  function handleVaultListMenu(event: CustomEvent<{ vault_id: string }>) {
-    const v = persistedVaults.find((x) => x.vault_id === event.detail.vault_id);
+  function handleVaultListMenu(event: { vault_id: string }) {
+    const v = persistedVaults.find((x) => x.vault_id === event.vault_id);
     if (!v) return;
     menuVault = v;
     menuOpen = true;
@@ -539,7 +583,34 @@
     try {
       sourceShard = await exportCurrentShard();
       const primaryId = getPrimaryProviderId();
-      sourcePrimaryConfig = primaryId ? getProviderConfig(primaryId) : null;
+
+      // Prefer the per-device persisted config over the manifest's
+      // config_json. The per-device row IS the config that hydrateProvider
+      // used to actually connect this session, so it has the working SFTP
+      // credentials by construction. The manifest config_json is also
+      // supposed to have them (addProvider stores the full config), but
+      // some legacy paths (older builds, dashboard-add before AddProvider
+      // also called saveProviderConfig) left the manifest entry without
+      // creds — falling back to it would force the receiver to re-type
+      // the SFTP password it could otherwise inherit. Defensive fallback
+      // covers (a) per-device row missing for primary, (b) decrypt
+      // failure (post-recovery device-key migration).
+      let primaryCfg: ProviderConfig | null = null;
+      if (primaryId && currentVaultId) {
+        try {
+          const { loadProvidersForVault } = await import('../../byo/ProviderConfigStore');
+          const { hydrated } = await loadProvidersForVault(currentVaultId);
+          const hit = hydrated.find((h) => h.provider_id === primaryId);
+          if (hit) primaryCfg = hit.config;
+        } catch (loadErr) {
+          console.warn('[ByoApp] loadProvidersForVault during enroll failed', loadErr);
+        }
+      }
+      if (!primaryCfg) {
+        primaryCfg = primaryId ? getProviderConfig(primaryId) : null;
+      }
+      sourcePrimaryConfig = primaryCfg;
+
       const summary = currentVaultId
         ? persistedVaults.find((v) => v.vault_id === currentVaultId)
         : null;
@@ -556,7 +627,7 @@
     sourcePrimaryLabel = '';
   }
 
-  async function handleVaultForgotten(_event: CustomEvent<{ vault_id: string }>) {
+  async function handleVaultForgotten(_event: { vault_id: string }) {
     byoToast.show('Vault forgotten on this device.');
     await refreshPersistedVaults();
     if (persistedVaults.length === 0) appState = 'provider-select';
@@ -567,10 +638,10 @@
   // AddProviderSheet (firstRun=true) fires on:selected with an already-initialized
   // provider instance — no need to re-create or re-init here.
   async function handleAddSheetSelected(
-    event: CustomEvent<{ provider: StorageProvider; config: ProviderConfig }>,
+    event: { provider: StorageProvider; config: ProviderConfig },
   ) {
     appState = 'check-vault';
-    const { provider: readyProvider, config } = event.detail;
+    const { provider: readyProvider, config } = event;
 
     try {
       provider = readyProvider;
@@ -639,19 +710,32 @@
     // Persist the provider config on this device. Belt-and-braces: covers
     // the case where the user connected a provider whose vault already
     // existed (second-device flow) — ByoSetup wouldn't have run, so the
-    // save hook there didn't fire. Skipped on hydrate-from-IDB because the
-    // row already exists (saveProviderConfig is an upsert).
+    // save hook there didn't fire. saveProviderConfig is an upsert, so
+    // call it unconditionally; the catch is that we mustn't clobber the
+    // user-chosen display_name in the process.
+    //
+    // provider.displayName is a hardcoded class constant ('SFTP', 'WebDAV',
+    // 'S3'…) — using it here used to wipe any rename the user had done
+    // from Settings → Providers on the previous session, because the
+    // manifest's display_name (which renameProvider mutates) never made
+    // it back into IDB. Pull the post-unlock vaultStore entry instead;
+    // it's seeded from the manifest by VaultLifecycle, so it reflects
+    // the latest rename.
     const vaultId = get(vaultStore).vaultId ?? null;
     if (vaultId && provider && providerConfig) {
       try {
         const { saveProviderConfig } = await import('../../byo/ProviderConfigStore');
+        const manifestEntry = get(vaultStore).providers.find(
+          (p) => p.providerId === activeProviderId,
+        );
+        const displayName = manifestEntry?.displayName ?? provider.displayName;
         await saveProviderConfig(
           {
             provider_id: activeProviderId,
             vault_id: vaultId,
-            vault_label: provider.displayName,
+            vault_label: displayName,
             type: provider.type,
-            display_name: provider.displayName,
+            display_name: displayName,
             is_primary: true,
             saved_at: new Date().toISOString(),
           },
@@ -670,8 +754,13 @@
 
   function handleLockAnimationDone() {
     showLockAnimation = false;
-    // Only navigate after unlock path — not when locking.
-    if (dataProvider && appState === 'unlock') appState = 'dashboard';
+    // Navigate after any unlock path — vault unlock OR device enrollment
+    // (link-device-sink). Without including 'link-device-sink' here, the
+    // receiver's DeviceEnrollment stays mounted at step='unlocking' even
+    // though handleUnlocked has already wired up the dataProvider.
+    if (dataProvider && (appState === 'unlock' || appState === 'link-device-sink')) {
+      appState = 'dashboard';
+    }
   }
 
   // ── Lock ───────────────────────────────────────────────────────────────
@@ -706,8 +795,8 @@
   // Drawer is hoisted here so it persists across dashboard/settings/trash.
   // "Files/Photos/Favorites" in the drawer always return to dashboard with
   // the matching subview; "Settings" opens the settings screen.
-  function handleDrawerNavigate(e: CustomEvent<{ view: string }>) {
-    const v = e.detail?.view;
+  function handleDrawerNavigate(e: { view: string }) {
+    const v = e.view;
     $drawerOpen = false;
     if (v === 'files' || v === 'photos' || v === 'favorites') {
       dashboardView = v;
@@ -739,15 +828,15 @@
       />
     </div>
 
-  {:else if appState === 'sftp-reauth' && reauthPending}
+  {:else if appState === 'provider-reauth' && reauthPending}
     <div class="byo-shell">
-      <SftpReauthSheet
+      <ProviderReauthSheet
         config={reauthPending.primary.config}
         vaultLabel={reauthPending.vaultLabel}
         busy={reauthBusy}
         error={reauthError}
-        onSubmit={handleSftpReauthSubmit}
-        onCancel={handleSftpReauthCancel}
+        onSubmit={handleProviderReauthSubmit}
+        onCancel={handleProviderReauthCancel}
       />
     </div>
 
@@ -756,7 +845,9 @@
       {#if appState === 'check-vault'}
         <div class="byo-centered">
           <div class="checking">
-            <div class="spinner"></div>
+            <div class="cloud-pulse" aria-hidden="true">
+              <CloudBadge size={56} />
+            </div>
             <p>Connecting to provider…</p>
           </div>
         </div>
@@ -785,7 +876,7 @@
       <ByoUnlock
         {provider}
         vaultIdHint={currentVaultId}
-        onUnlocked={(e) => handleUnlocked(e.detail)}
+        onUnlocked={handleUnlocked}
         onUseRecovery={() => { appState = 'use-recovery'; }}
         onLinkDevice={() => { appState = 'link-device'; }}
         onCancel={() => {
@@ -833,9 +924,9 @@
         shard=""
         provider={null}
         onEnrolled={(e) => {
-          provider = e.detail.provider;
-          providerConfig = e.detail.config;
-          handleUnlocked({ db: e.detail.db, sessionId: e.detail.sessionId });
+          provider = e.provider;
+          providerConfig = e.config;
+          handleUnlocked({ db: e.db, sessionId: e.sessionId });
         }}
         onComplete={goToDashboard}
         onCancel={() => {
@@ -893,6 +984,9 @@
       shareCount={dataProvider ? $byoShareStats.count : null}
       shareBytes={dataProvider ? $byoShareStats.bytes : null}
       relayHeadroomFreeBytes={$byoRelayHeadroom?.freeBytes ?? null}
+      providers={$sortedProviders}
+      activeProviderId={$vaultStore.activeProviderId ?? ''}
+      onSelectProvider={(providerId) => vaultStore.setActiveProviderId(providerId)}
       onNavigate={handleDrawerNavigate}
       onLockVault={handleLock}
       onSharesClick={openSharesSettings}
@@ -995,16 +1089,23 @@
 
   .checking p { margin: 0; font-size: var(--t-body-sm-size, 0.8125rem); }
 
-  .spinner {
-    width: 32px;
-    height: 32px;
-    border: 2px solid var(--border, #2E2E2E);
-    border-top-color: var(--accent, #2EB860);
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
+  /* Brand-on-brand loading indicator: gentle scale + opacity pulse on
+     the CloudBadge motif so the connecting state shows the same icon
+     the user sees once the dashboard renders, instead of a generic
+     spinner that gets replaced. */
+  .cloud-pulse {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    animation: cloud-pulse 1.6s ease-in-out infinite;
   }
-
-  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes cloud-pulse {
+    0%, 100% { transform: scale(1);    opacity: 1; }
+    50%      { transform: scale(0.92); opacity: 0.6; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cloud-pulse { animation: none; }
+  }
 
   /* Bottom-nav wrapper — slides down + fades when BYO selection mode is on
      (matches what ByoDashboard used to do before the hoist). */

@@ -61,7 +61,15 @@ pub async fn ws_handler(
     };
     let claims = match verify_relay_cookie(&cookies, cookie_name, &state.config.relay_signing_key) {
         Ok(c) => c,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(e) => {
+            tracing::warn!(
+                mode = mode,
+                cookie = cookie_name,
+                error = %e,
+                "ws upgrade denied: relay_auth cookie missing or invalid",
+            );
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
     };
 
     let client_ip = extract_client_ip(addr.ip(), &headers, &state.config.trusted_proxies);
@@ -118,13 +126,24 @@ pub async fn ws_handler(
 
             // Check if IP is blocked by auth-failure or spray tracker.
             if state.sftp_auth_tracker.is_blocked(client_ip) {
+                tracing::warn!(
+                    %client_ip,
+                    "sftp relay denied: client IP is in auth-failure block window",
+                );
                 return StatusCode::TOO_MANY_REQUESTS.into_response();
             }
 
             // Per-IP concurrent SFTP connection limit.
             let _guard = match state.sftp_tracker.try_acquire(client_ip) {
                 Some(g) => g,
-                None => return StatusCode::TOO_MANY_REQUESTS.into_response(),
+                None => {
+                    tracing::warn!(
+                        %client_ip,
+                        max = state.config.sftp_max_concurrent_per_ip,
+                        "sftp relay denied: per-IP concurrent connection limit reached",
+                    );
+                    return StatusCode::TOO_MANY_REQUESTS.into_response();
+                }
             };
 
             // DNS resolution + SSRF protection — must happen before upgrade.
@@ -252,18 +271,51 @@ fn is_origin_allowed(headers: &HeaderMap, configured_domain: &str) -> bool {
     let Ok(origin) = origin_hv.to_str() else {
         return false;
     };
-    // D6: only accept http:// for `localhost` (dev/tests). Production domains
-    // require https — a cleartext HTTP page on the same hostname must not be
-    // able to open an authenticated WebSocket.
-    let acceptable: Vec<String> = if configured_domain == "localhost" {
-        vec![
-            format!("https://{configured_domain}"),
-            format!("http://{configured_domain}"),
-        ]
-    } else {
-        vec![format!("https://{configured_domain}")]
+    if configured_domain == "localhost" {
+        // Dev/test: accept any loopback origin regardless of port or scheme
+        // choice. Real dev flows include the SPA served by Vite on
+        // :5173 proxying /relay to the relay on :8443, relay serving its
+        // own built SPA on :8443, and occasionally 127.0.0.1 or [::1] in
+        // place of the `localhost` hostname. All are loopback by
+        // definition — the CSRF threat model this check guards against
+        // doesn't apply off-machine.
+        return is_loopback_origin(origin);
+    }
+    // D6: production requires exact https://<domain> match. Cleartext HTTP
+    // on the same hostname must not be able to open an authenticated WS.
+    format!("https://{configured_domain}").eq_ignore_ascii_case(origin)
+}
+
+/// Parse `<scheme>://<host>[:<port>]` per RFC 6454 Origin serialization
+/// (no path, query, fragment, or userinfo) and return true iff scheme is
+/// http/https AND host is a loopback literal. Rejects hostnames that
+/// merely contain a loopback label (`attacker.localhost`, `localhost.evil`).
+fn is_loopback_origin(origin: &str) -> bool {
+    let origin_lower = origin.to_ascii_lowercase();
+    let Some(hostport) = origin_lower
+        .strip_prefix("https://")
+        .or_else(|| origin_lower.strip_prefix("http://"))
+    else {
+        return false;
     };
-    acceptable.iter().any(|a| a.eq_ignore_ascii_case(origin))
+    // Origin serialization has no path/query/fragment/userinfo/backslashes.
+    if hostport.contains(['/', '?', '#', '@', '\\']) {
+        return false;
+    }
+    // Extract host. IPv6 literals are bracketed: `[::1]` or `[::1]:port`.
+    let host = if let Some(rest) = hostport.strip_prefix('[') {
+        let Some(end) = rest.find(']') else {
+            return false;
+        };
+        let remainder = &rest[end + 1..];
+        if !remainder.is_empty() && !remainder.starts_with(':') {
+            return false;
+        }
+        &rest[..end]
+    } else {
+        hostport.split(':').next().unwrap_or(hostport)
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
 #[cfg(test)]
@@ -321,6 +373,53 @@ mod tests {
             "byo.example.com"
         ));
         assert!(is_origin_allowed(&hv("http://localhost"), "localhost"));
+    }
+
+    #[test]
+    fn origin_localhost_accepts_any_port() {
+        // Dev: Vite on :5173 proxying to relay on :8443 → Origin is
+        // `http://localhost:5173`, which must be accepted on localhost.
+        assert!(is_origin_allowed(&hv("http://localhost:5173"), "localhost"));
+        assert!(is_origin_allowed(
+            &hv("https://localhost:8443"),
+            "localhost"
+        ));
+        assert!(is_origin_allowed(&hv("http://localhost:1"), "localhost"));
+    }
+
+    #[test]
+    fn origin_localhost_accepts_loopback_ip_literals() {
+        assert!(is_origin_allowed(&hv("http://127.0.0.1"), "localhost"));
+        assert!(is_origin_allowed(&hv("http://127.0.0.1:5173"), "localhost"));
+        assert!(is_origin_allowed(&hv("http://[::1]"), "localhost"));
+        assert!(is_origin_allowed(&hv("http://[::1]:8443"), "localhost"));
+    }
+
+    #[test]
+    fn origin_localhost_rejects_non_loopback_hostnames() {
+        // Subdomain / suffix / prefix spoofing attempts.
+        assert!(!is_origin_allowed(
+            &hv("https://attacker.localhost"),
+            "localhost"
+        ));
+        assert!(!is_origin_allowed(
+            &hv("http://localhost.evil.com"),
+            "localhost"
+        ));
+        assert!(!is_origin_allowed(
+            &hv("http://127.0.0.1.evil.com"),
+            "localhost"
+        ));
+        // Non-http(s) scheme.
+        assert!(!is_origin_allowed(&hv("ftp://localhost"), "localhost"));
+        assert!(!is_origin_allowed(
+            &hv("chrome-extension://abc"),
+            "localhost"
+        ));
+        // Unrelated loopback IPs outside the accepted set.
+        assert!(!is_origin_allowed(&hv("http://127.0.0.2"), "localhost"));
+        // Malformed IPv6 bracket form.
+        assert!(!is_origin_allowed(&hv("http://[::1"), "localhost"));
     }
 
     #[test]

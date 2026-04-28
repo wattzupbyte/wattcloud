@@ -14,6 +14,9 @@
   import { createProvider, SftpProvider } from '@wattcloud/sdk';
   import * as byoWorker from '@wattcloud/sdk';
   import { addProvider } from '../../byo/VaultLifecycle';
+  import { saveProviderConfig } from '../../byo/ProviderConfigStore';
+  import { vaultStore } from '../../byo/stores/vaultStore';
+  import { get } from 'svelte/store';
   import { initiateOAuthFlow } from '@wattcloud/sdk';
   import CloudBadge from '../CloudBadge.svelte';
   import Lock from 'phosphor-svelte/lib/Lock';
@@ -50,9 +53,20 @@
   const PROVIDERS: Array<{
     type: ProviderType;
     name: string;
+    /** Optional tile-only short label. Long-form `name` is still used in
+     *  the explainer popover, the sheet title when the form opens, and
+     *  the Settings → Add another provider list — only the picker tile
+     *  uses this so cards don't have to compete with the multi-vendor
+     *  description for horizontal space. */
+    tileName?: string;
     description: string;
     mode: 'oauth' | 'inline';
     icon: ComponentType;
+    /** Hide from the picker behind a "Coming soon" pill — feature not yet
+     *  production-ready. Existing vaults that already use this provider
+     *  type continue to load via ProviderConfigStore + hydrateProvider;
+     *  only the *new* enrollment entry point is gated. */
+    comingSoon?: boolean;
   }> = [
     // OAuth cloud accounts — deferred. Keep rows commented out (not deleted)
     // so re-enabling is a one-line change once the OAuth flow is shipped.
@@ -66,7 +80,7 @@
     // Bring your own endpoint — inline-form credentials, no provider console needed.
     { type: 'webdav',   name: 'WebDAV',                  description: 'Nextcloud, ownCloud, Synology, …',   mode: 'inline', icon: HardDrives      },
     { type: 'sftp',     name: 'SFTP',                    description: 'Any SSH server you control',         mode: 'inline', icon: Terminal        },
-    { type: 's3',       name: 'S3 / R2 / Wasabi / MinIO',description: 'AWS, R2, Wasabi, MinIO, Backblaze',  mode: 'inline', icon: Database        },
+    { type: 's3',       name: 'S3 / R2 / Wasabi / MinIO', tileName: 'S3', description: 'AWS, R2, Wasabi, MinIO, Backblaze',  mode: 'inline', icon: Database, comingSoon: true },
   ];
   const INLINE_PROVIDERS = PROVIDERS.filter((p) => p.mode === 'inline');
 
@@ -76,6 +90,15 @@
   let oauthLoading: ProviderType | null = $state(null);
   let connecting = $state(false);
   let error = $state('');
+  /** Long-form name of a coming-soon provider the user just tapped.
+   *  Drives an inline notice below the picker grid — much harder to
+   *  miss than the corner toast, and stays put until the user moves
+   *  on (clears when activeInline flips, the sheet is closed, or the
+   *  user dismisses it). */
+  let comingSoonNotice: string | null = $state(null);
+  $effect(() => {
+    if (activeInline) comingSoonNotice = null;
+  });
 
   // Surface an error to the user via the global toast host — replaces the
   // old top-of-sheet banner that users couldn't see when scrolled down to
@@ -274,6 +297,36 @@
       } else {
         // Dashboard: vault is open — register the provider and notify the tab switcher
         const providerId = await addProvider(instance, config);
+
+        // Persist the freshly-added provider to the per-device store so the
+        // next reload auto-hydrates it AND so DeviceEnrollment / other
+        // consumers that read from ProviderConfigStore see its full config
+        // (including SFTP credentials). Previously this row was only
+        // written by the first-run / unlock paths, so providers added from
+        // the dashboard were absent from the per-device store and on the
+        // sender side of device enrollment the receiver would have to
+        // re-enter SFTP credentials. Non-fatal on error — manifest
+        // already reflects the addition.
+        try {
+          const vaultId = get(vaultStore).vaultId;
+          if (vaultId) {
+            await saveProviderConfig(
+              {
+                provider_id: providerId,
+                vault_id: vaultId,
+                vault_label: instance.displayName,
+                type,
+                display_name: instance.displayName,
+                is_primary: false,
+                saved_at: new Date().toISOString(),
+              },
+              { ...config, providerId },
+            );
+          }
+        } catch (persistErr) {
+          console.warn('[AddProviderSheet] saveProviderConfig failed', persistErr);
+        }
+
         onAdded?.({ providerId });
       }
       return true;
@@ -285,6 +338,24 @@
       // the remote root — nudge the user toward the actionable fix.
       if (type === 'sftp' && /no such file/i.test(msg)) {
         msg += ' — your SFTP account may not have write access where Wattcloud wants to create the vault. Either create a "WattcloudVault" directory manually at the right location, or set a Base path above that points at a directory you can write to.';
+      }
+      // WebDAV: browsers block cross-origin WebDAV without CORS headers,
+      // and the failure surfaces as either an opaque "Unknown error" or
+      // a generic NetworkError because browser security rules hide the
+      // real status from JS. Rewrite the message into something the
+      // user can act on. Most operator-grade WebDAV servers (Nextcloud,
+      // ownCloud, Synology) DO send the right CORS headers; the
+      // pattern that triggers this is consumer file-storage products
+      // that don't (Hetzner Storage Box being the common one — they
+      // expose WebDAV but disable CORS, so use SFTP there instead).
+      if (type === 'webdav' && /unknown error|networkerror|failed to fetch|load failed/i.test(detail)) {
+        msg =
+          "Couldn't reach this WebDAV server from the browser. The server " +
+          "either rejected the connection or doesn't allow cross-origin " +
+          "requests (no CORS headers). If this is a Hetzner Storage Box, " +
+          'use SFTP instead — it works without CORS. For Nextcloud / ' +
+          'ownCloud / Synology, check that the URL is correct and that ' +
+          'the server config allows browser origins.';
       }
       showError(msg);
       // Clean up worker-side SFTP credential on connection failure.
@@ -324,7 +395,7 @@
       <div class="fr-how-sep" aria-hidden="true">›</div>
       <div class="fr-how-step" role="listitem">
         <span class="fr-how-icon" aria-hidden="true"><CloudCheck size={22} weight="regular" /></span>
-        <span class="fr-how-label">Only ciphertext leaves</span>
+        <span class="fr-how-label">Ciphertext stored</span>
       </div>
     </div>
 
@@ -334,16 +405,41 @@
           class="tile"
           class:active={activeInline === p.type}
           disabled={connecting}
-          onclick={() => { activeInline = p.type; error = ''; }}
-          aria-label={`Connect ${p.name}`}
+          onclick={() => {
+            if (p.comingSoon) {
+              // Click-to-explain via an inline notice below the grid —
+              // a corner toast was easy to miss next to a busy picker.
+              // The picker still won't progress to the form.
+              comingSoonNotice = p.name;
+              return;
+            }
+            activeInline = p.type;
+            error = '';
+          }}
+          aria-label={p.comingSoon ? `${p.name} — coming soon` : `Connect ${p.name}`}
         >
           <span class="tile-logo" aria-hidden="true">
             <p.icon size={32} weight="regular" />
           </span>
-          <span class="tile-name">{p.name}</span>
+          <span class="tile-name">{p.tileName ?? p.name}</span>
         </button>
       {/each}
     </div>
+
+    {#if comingSoonNotice}
+      <div class="coming-soon-notice" role="status">
+        <span class="coming-soon-pill">Coming soon</span>
+        <span class="coming-soon-msg">
+          <strong>{comingSoonNotice}</strong> support is on the roadmap. For now, pick WebDAV or SFTP.
+        </span>
+        <button
+          class="coming-soon-dismiss"
+          type="button"
+          onclick={() => { comingSoonNotice = null; }}
+          aria-label="Dismiss"
+        >×</button>
+      </div>
+    {/if}
 
     <!-- OAuth cloud accounts — deferred. Keep the block commented out
          (not deleted) so re-enabling is a markup toggle once the OAuth
@@ -412,18 +508,18 @@
     <ul class="fr-features" aria-label="Core guarantees">
       <li class="fr-feature">
         <span class="fr-feature-icon" aria-hidden="true">
-          <CloudBadge size={22} variant="solid" color="var(--accent-text, #5FDB8A)" />
+          <CloudBadge size={22} variant="solid" color="var(--text-primary, #EDEDED)" />
         </span>
         <span class="fr-feature-name">Zero-knowledge</span>
         <span class="fr-feature-desc">No server ever sees plaintext.</span>
       </li>
       <li class="fr-feature">
-        <span class="fr-feature-icon" aria-hidden="true"><Key size={22} weight="regular" color="var(--accent-text, #5FDB8A)" /></span>
+        <span class="fr-feature-icon" aria-hidden="true"><Key size={22} weight="regular" color="var(--text-primary, #EDEDED)" /></span>
         <span class="fr-feature-name">You own the keys</span>
         <span class="fr-feature-desc">Lose them, lose access — but so does everyone else.</span>
       </li>
       <li class="fr-feature">
-        <span class="fr-feature-icon" aria-hidden="true"><HardDrives size={22} weight="regular" color="var(--accent-text, #5FDB8A)" /></span>
+        <span class="fr-feature-icon" aria-hidden="true"><HardDrives size={22} weight="regular" color="var(--text-primary, #EDEDED)" /></span>
         <span class="fr-feature-name">Any storage</span>
         <span class="fr-feature-desc">Switch provider anytime without re-encrypting.</span>
       </li>
@@ -451,6 +547,10 @@
           <div class="sheet-header">
             <h2 class="sheet-title">WebDAV</h2>
             <p class="sheet-subtitle">Nextcloud, ownCloud, Synology, or any WebDAV-compatible server.</p>
+            <p class="sheet-note">
+              Browser-driven WebDAV needs CORS headers from the server.
+              Most self-hosted servers send them; <strong>Hetzner Storage Box does not</strong> — use SFTP for those.
+            </p>
           </div>
           <form class="inline-form borderless" onsubmit={(e) => { e.preventDefault(); submitWebDAV(); }}>
             <label class="field-label">Server URL
@@ -641,17 +741,26 @@
               <button
                 class="provider-btn"
                 class:active={activeInline === p.type}
-                disabled={connecting}
+                class:coming-soon={p.comingSoon}
+                disabled={connecting || p.comingSoon}
                 onclick={() => { activeInline = activeInline === p.type ? null : p.type; error = ''; }}
+                aria-label={p.comingSoon ? `${p.name} — coming soon` : `Connect ${p.name}`}
               >
                 <span class="provider-icon" aria-hidden="true">
                   <p.icon size={22} weight="regular" />
                 </span>
                 <span class="provider-name">{p.name}</span>
-                <span class="provider-desc">{p.description}</span>
-                <span class="trailing" class:rotated={activeInline === p.type} aria-hidden="true">
-                  <CaretDown size={14} weight="bold" />
-                </span>
+                {#if p.comingSoon}
+                  <!-- Pill replaces the description on disabled rows so it
+                       has room to render on a single line — the description
+                       is redundant when the row can't be tapped anyway. -->
+                  <span class="provider-pill">Coming soon</span>
+                {:else}
+                  <span class="provider-desc">{p.description}</span>
+                  <span class="trailing" class:rotated={activeInline === p.type} aria-hidden="true">
+                    <CaretDown size={14} weight="bold" />
+                  </span>
+                {/if}
               </button>
 
               {#if activeInline === 'webdav' && p.type === 'webdav'}
@@ -917,6 +1026,80 @@
   .tile:disabled { opacity: 0.5; cursor: not-allowed; }
   .tile.active { border-color: var(--accent, #2EB860); }
 
+  /* Coming-soon dimming was moved off .tile after the visual polish that
+     turned coming-soon into a banner-row affordance — keep the .provider-btn
+     variant below for the Settings list, but the .tile rules are dropped. */
+  .provider-pill {
+    font-size: 0.6875rem;
+    font-weight: 500;
+    line-height: 1;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: var(--accent-warm-muted, #3D2F10);
+    color: var(--accent-warm, #E0A320);
+    letter-spacing: 0.02em;
+  }
+  /* Same coming-soon dimming for the Settings → Add another provider
+     row layout. The button is already disabled; opacity tweaked so the
+     pill stays legible. */
+  .provider-btn.coming-soon { opacity: 0.7; }
+  .provider-btn.coming-soon:disabled { opacity: 0.7; }
+
+  /* Inline notice that fires when the user taps a coming-soon tile.
+     Lives directly under the picker grid so the explanation appears in
+     the same visual context as the click — corner toasts were easy to
+     miss next to a dense picker. Warm-accent palette echoes the pill
+     we used to render inside the tile. */
+  .coming-soon-notice {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-sm, 8px);
+    margin-top: var(--sp-sm, 8px);
+    padding: var(--sp-sm, 10px) var(--sp-md, 14px);
+    background: var(--accent-warm-muted, #3D2F10);
+    border: 1px solid var(--accent-warm, #E0A320);
+    border-radius: var(--r-input, 12px);
+    color: var(--text-primary, #EDEDED);
+    font-size: var(--t-body-sm-size, 0.8125rem);
+    line-height: 1.4;
+  }
+  .coming-soon-pill {
+    flex-shrink: 0;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: var(--accent-warm, #E0A320);
+    color: var(--text-inverse, #121212);
+    text-transform: uppercase;
+  }
+  .coming-soon-msg {
+    flex: 1;
+    min-width: 0;
+  }
+  .coming-soon-msg strong { color: var(--accent-warm, #E0A320); font-weight: 600; }
+  .coming-soon-dismiss {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 50%;
+    color: var(--text-secondary, #999);
+    font-size: 1.25rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .coming-soon-dismiss:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-primary, #EDEDED);
+  }
+
   .tile-logo {
     display: inline-flex;
     align-items: center;
@@ -1135,7 +1318,7 @@
   .fr-feature-name {
     font-size: var(--t-body-size, .9375rem);
     font-weight: 600;
-    color: var(--accent-text, #5FDB8A);
+    color: var(--text-primary, #EDEDED);
     line-height: 1.25;
   }
   .fr-feature-desc {
@@ -1213,6 +1396,18 @@
     margin: 0;
     font-size: var(--t-body-sm-size, .8125rem);
     color: var(--text-secondary, #999);
+  }
+  /* Inline caveat under sheet-subtitle — used for the WebDAV CORS
+     warning so users don't waste a connection attempt on Hetzner. */
+  .sheet-note {
+    margin: 6px 0 0;
+    padding: 6px 10px;
+    border: 1px solid color-mix(in srgb, var(--accent-warm, #E0A320) 30%, transparent);
+    background: var(--accent-warm-muted, #3D2F10);
+    border-radius: var(--r-input, 12px);
+    font-size: 0.6875rem;
+    line-height: 1.4;
+    color: var(--text-primary, #EDEDED);
   }
 
   /* Trust banner — cloud-badge green+amber pairing (§29.1, §29.2) */

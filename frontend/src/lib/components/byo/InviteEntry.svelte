@@ -135,6 +135,15 @@
       <ArrowRight size={18} weight="bold" />
     </button>
   </form>
+
+  <!-- Recovery escape hatch: if the operator has minted a fresh bootstrap
+       token via `wattcloud regenerate-claim-token` (e.g. to enroll a new
+       owner device when no other device is reachable to issue invites),
+       this link routes to BootstrapClaim. main.ts treats `?claim` as the
+       trigger when bootstrapped + no device cookie. -->
+  <p class="recovery">
+    <a class="recovery-link" href="?claim">Claim ownership instead →</a>
+  </p>
 </div>
 
 <style>
@@ -260,5 +269,22 @@
   .btn-primary:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .recovery {
+    margin: var(--sp-md, 16px) 0 0;
+    text-align: center;
+    font-size: var(--t-body-xs-size, 0.75rem);
+  }
+  .recovery-link {
+    color: var(--text-secondary, #999999);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--text-disabled, #5A5A5A);
+    transition: color 120ms ease, border-color 120ms ease;
+  }
+  .recovery-link:hover,
+  .recovery-link:focus-visible {
+    color: var(--text-primary, #EDEDED);
+    border-bottom-color: var(--text-primary, #EDEDED);
   }
 </style>

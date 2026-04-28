@@ -11,15 +11,20 @@
 
 import { writable, derived } from 'svelte/store';
 import type { DataProvider } from '../DataProvider';
-import type { FileEntry } from '../DataProvider';
+import type { FileEntry, FolderEntry } from '../DataProvider';
 
 // ── State ──────────────────────────────────────────────────────────────────
 
 export const byoSearchQuery = writable<string>('');
 export const byoSearchResults = writable<FileEntry[]>([]);
+/** Folder hits that match the current query — surfaced alongside file
+ *  results so users can navigate to folders by name from search. */
+export const byoSearchFolderResults = writable<FolderEntry[]>([]);
 export const isByoSearching = writable<boolean>(false);
 
 export const byoSearchFilters = writable<{
+  /** `null` → no type filter; `'folder'` → folders-only (files hidden);
+   *  `'document' | 'image' | …` → standard file-type filter. */
   fileType: string | null;
   dateFrom: string | null;
   dateTo: string | null;
@@ -28,6 +33,12 @@ export const byoSearchFilters = writable<{
   dateFrom: null,
   dateTo: null,
 });
+
+/** Documents chip should match anything a user thinks of as a doc.
+ *  Without this set, selecting "Documents" missed PDFs and spreadsheets
+ *  because inferFileType maps those to distinct categories for icon
+ *  colouring — that's a render concern, not a search-grouping concern. */
+const DOCUMENT_TYPES = new Set(['document', 'pdf', 'spreadsheet']);
 
 // ── DataProvider reference ─────────────────────────────────────────────────
 
@@ -53,18 +64,37 @@ export async function performByoSearch(): Promise<void> {
 
   if (!query.trim() && !filters.fileType && !filters.dateFrom && !filters.dateTo) {
     byoSearchResults.set([]);
+    byoSearchFolderResults.set([]);
     isByoSearching.set(false);
     return;
   }
 
   isByoSearching.set(true);
   try {
+    // Folders branch — when the user picks the Folders chip, file results
+    // are suppressed entirely so the screen reads cleanly as a folder
+    // picker. Empty query → list every folder so the chip behaves like
+    // a "show me all folders" toggle even without a search term.
+    if (filters.fileType === 'folder') {
+      const folderHits = query.trim()
+        ? await _dataProvider.searchFolders(query.trim())
+        : await _dataProvider.listAllFolders();
+      byoSearchResults.set([]);
+      byoSearchFolderResults.set(folderHits);
+      return;
+    }
+
+    // Free-text query → name-index search; type-only filter (no query) →
+    // every file in the active provider so the Documents/Videos/Audio/…
+    // chips work standalone. listImageFiles was the previous fallback,
+    // which silently emptied the result for any non-image type filter.
     let results = query.trim()
       ? await _dataProvider.searchFiles(query.trim())
-      : await _dataProvider.listImageFiles(); // fallback for type-only filter
+      : await _dataProvider.listAllFiles();
 
-    // Apply client-side filters
-    if (filters.fileType) {
+    if (filters.fileType === 'document') {
+      results = results.filter((f) => DOCUMENT_TYPES.has(f.file_type));
+    } else if (filters.fileType) {
       results = results.filter((f) => f.file_type === filters.fileType);
     }
     if (filters.dateFrom) {
@@ -78,9 +108,20 @@ export async function performByoSearch(): Promise<void> {
     }
 
     byoSearchResults.set(results);
+
+    // Surface folder matches alongside files when the user actually typed
+    // a query — type-only filters (Images / Documents / …) already imply
+    // "show me files" so folders would be noise.
+    if (query.trim()) {
+      const folderHits = await _dataProvider.searchFolders(query.trim());
+      byoSearchFolderResults.set(folderHits);
+    } else {
+      byoSearchFolderResults.set([]);
+    }
   } catch (e) {
     console.error('[byoSearch] search failed:', e);
     byoSearchResults.set([]);
+    byoSearchFolderResults.set([]);
   } finally {
     isByoSearching.set(false);
   }
@@ -107,6 +148,7 @@ export function clearByoSearch(): void {
   byoSearchQuery.set('');
   byoSearchFilters.set({ fileType: null, dateFrom: null, dateTo: null });
   byoSearchResults.set([]);
+  byoSearchFolderResults.set([]);
   isByoSearching.set(false);
 }
 

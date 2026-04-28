@@ -9,6 +9,37 @@
   import SignOut from 'phosphor-svelte/lib/SignOut';
   import LinkIcon from 'phosphor-svelte/lib/Link';
   import CloudBadge from './CloudBadge.svelte';
+  import HardDrives from 'phosphor-svelte/lib/HardDrives';
+  import Terminal from 'phosphor-svelte/lib/Terminal';
+  import Database from 'phosphor-svelte/lib/Database';
+  import GoogleDriveLogo from 'phosphor-svelte/lib/GoogleDriveLogo';
+  import DropboxLogo from 'phosphor-svelte/lib/DropboxLogo';
+  import Cloud from 'phosphor-svelte/lib/Cloud';
+  import Package from 'phosphor-svelte/lib/Package';
+  import CloudCheck from 'phosphor-svelte/lib/CloudCheck';
+  import type { ComponentType } from 'svelte';
+
+  /** Minimal shape of a provider entry for the switcher — kept loose so this
+   *  component doesn't reach into byo store types from the shared Drawer. */
+  interface DrawerProviderMeta {
+    providerId: string;
+    displayName: string;
+    type?: string;
+    isPrimary?: boolean;
+    status?: 'connected' | 'syncing' | 'offline' | 'offline_os' | 'error' | 'unauthorized' | string;
+  }
+
+  const PROVIDER_ICONS: Record<string, ComponentType> = {
+    sftp: Terminal,
+    webdav: HardDrives,
+    s3: Database,
+    gdrive: GoogleDriveLogo,
+    dropbox: DropboxLogo,
+    onedrive: Cloud,
+    box: Package,
+    pcloud: CloudCheck,
+  } as unknown as Record<string, ComponentType>;
+
 type NavId = 'files' | 'photos' | 'favorites' | 'settings';
 
   const navLinks: { id: NavId; label: string; icon: any }[] = [
@@ -76,6 +107,11 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     shareBytes?: number | null;
     /** Free bytes on the relay's share filesystem. `null` hides the headroom line. */
     relayHeadroomFreeBytes?: number | null;
+    /** All non-tombstoned providers for the open vault, manifest order.
+     *  Empty / single-element list hides the switcher entirely. */
+    providers?: DrawerProviderMeta[];
+    /** providerId currently driving the dashboard. */
+    activeProviderId?: string;
     onClose?: (() => void) | undefined;
     collapsed?: boolean;
     showLogout?: boolean;
@@ -84,6 +120,7 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
   onLogout?: (...args: any[]) => void;
   onLockVault?: (...args: any[]) => void;
   onSharesClick?: (...args: any[]) => void;
+  onSelectProvider?: (providerId: string) => void;
   }
 
   let {
@@ -96,6 +133,8 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     shareCount = null,
     shareBytes = null,
     relayHeadroomFreeBytes = null,
+    providers = [],
+    activeProviderId = '',
     onClose = undefined,
     collapsed = $bindable(false),
     showLogout = true,
@@ -103,7 +142,8 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     onAdmin,
     onLogout,
     onLockVault,
-    onSharesClick
+    onSharesClick,
+    onSelectProvider
   }: Props = $props();
 
   export function toggleCollapse() {
@@ -118,6 +158,29 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
       );
     }
   });
+
+  /** Map provider_id → "P" (primary) or sequential 1, 2, … (secondaries by manifest order).
+   *  Stable per render so collapsed labels match the per-provider tooltip. */
+  let providerLabels = $derived.by(() => {
+    const out = new Map<string, string>();
+    let n = 0;
+    for (const p of providers) {
+      if (p.isPrimary) out.set(p.providerId, 'P');
+      else out.set(p.providerId, String(++n));
+    }
+    return out;
+  });
+  function providerStatusColor(s?: string): string {
+    if (s === 'connected') return 'var(--accent, #2EB860)';
+    if (s === 'syncing') return 'var(--accent-warm, #E0A320)';
+    if (s === 'error' || s === 'unauthorized') return 'var(--danger, #D64545)';
+    return 'var(--text-disabled, #757575)';
+  }
+  function selectProvider(id: string) {
+    if (id === activeProviderId) return;
+    onSelectProvider?.(id);
+    close();
+  }
 
   let storagePercent = $derived(storageQuotaBytes > 0
     ? Math.min(100, (storageUsedBytes / storageQuotaBytes) * 100)
@@ -180,24 +243,71 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
       </div>
     {/if}
 
+    <!-- Providers — switcher for the active vault's storage backends.
+         Expanded mirrors the nav-link visual (type icon + name); collapsed
+         drops to a P / 1 / 2 / … badge so the active provider is still
+         identifiable at the narrow rail. Hidden when ≤1 provider. -->
+    {#if providers.length > 1}
+      <div class="drawer-section">
+        {#if !collapsed}
+          <span class="drawer-section-title">Providers</span>
+        {/if}
+        {#each providers as p (p.providerId)}
+          {@const TypeIcon = (p.type && PROVIDER_ICONS[p.type]) || Cloud}
+          <button
+            class="drawer-link"
+            class:active={p.providerId === activeProviderId}
+            type="button"
+            title={collapsed ? p.displayName : ''}
+            aria-label="Switch to {p.displayName}"
+            aria-pressed={p.providerId === activeProviderId}
+            onclick={() => selectProvider(p.providerId)}
+          >
+            {#if collapsed}
+              <span class="provider-badge" class:active={p.providerId === activeProviderId}>
+                {providerLabels.get(p.providerId) ?? '?'}
+              </span>
+              {#if p.status && p.status !== 'connected' && p.status !== 'syncing'}
+                <span class="provider-link-dot" style:background-color={providerStatusColor(p.status)} aria-hidden="true"></span>
+              {/if}
+            {:else}
+              <TypeIcon size={20} weight={p.providerId === activeProviderId ? 'fill' : 'regular'} />
+              <span class="provider-link-name">{p.displayName}</span>
+              {#if p.isPrimary}
+                <span class="provider-link-badge">Primary</span>
+              {/if}
+              {#if p.status && p.status !== 'connected' && p.status !== 'syncing'}
+                <span class="provider-link-dot" style:background-color={providerStatusColor(p.status)} title={p.status} aria-hidden="true"></span>
+              {/if}
+            {/if}
+          </button>
+        {/each}
+      </div>
+    {/if}
+
     <!-- Storage consumption — always visible on desktop (even at 0 bytes)
          so a fresh vault still reserves the section. For providers
          without a hard quota (e.g. SFTP) we drop the bar and just show
-         the usage figure. -->
+         the usage figure. Layout mirrors the shares row below: leading
+         icon + title/label/bar stack so the two info rows read as a
+         consistent pair. -->
     {#if !collapsed}
       <div class="drawer-section">
-        <div class="drawer-storage">
-          <span class="drawer-storage-title">Storage</span>
-          {#if storageQuotaBytes > 0}
-            <div class="storage-bar">
-              <div class="storage-bar-fill" style:width="{storagePercent}%" style:background-color={storageBarColor}></div>
-            </div>
-            <span class="drawer-storage-label">
-              {formatBytes(storageUsedBytes)} of {formatBytes(storageQuotaBytes)} used
-            </span>
-          {:else}
-            <span class="drawer-storage-label">{formatBytes(storageUsedBytes)} used</span>
-          {/if}
+        <div class="drawer-shares drawer-shares-static">
+          <span class="drawer-shares-icon" aria-hidden="true"><HardDrives size={16} weight="regular" /></span>
+          <span class="drawer-shares-body">
+            <span class="drawer-storage-title">Storage</span>
+            {#if storageQuotaBytes > 0}
+              <div class="storage-bar">
+                <div class="storage-bar-fill" style:width="{storagePercent}%" style:background-color={storageBarColor}></div>
+              </div>
+              <span class="drawer-storage-label">
+                {formatBytes(storageUsedBytes)} of {formatBytes(storageQuotaBytes)} used
+              </span>
+            {:else}
+              <span class="drawer-storage-label">{formatBytes(storageUsedBytes)} used</span>
+            {/if}
+          </span>
         </div>
       </div>
     {/if}
@@ -296,21 +406,52 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
         </div>
       {/if}
 
+      <!-- Providers (mobile overlay) — same layout as desktop expanded. -->
+      {#if providers.length > 1}
+        <div class="drawer-section">
+          <span class="drawer-section-title">Providers</span>
+          {#each providers as p (p.providerId)}
+            {@const TypeIcon = (p.type && PROVIDER_ICONS[p.type]) || Cloud}
+            <button
+              class="drawer-link"
+              class:active={p.providerId === activeProviderId}
+              type="button"
+              aria-label="Switch to {p.displayName}"
+              aria-pressed={p.providerId === activeProviderId}
+              onclick={() => selectProvider(p.providerId)}
+            >
+              <TypeIcon size={20} weight={p.providerId === activeProviderId ? 'fill' : 'regular'} />
+              <span class="provider-link-name">{p.displayName}</span>
+              {#if p.isPrimary}
+                <span class="provider-link-badge">Primary</span>
+              {/if}
+              {#if p.status && p.status !== 'connected' && p.status !== 'syncing'}
+                <span class="provider-link-dot" style:background-color={providerStatusColor(p.status)} title={p.status} aria-hidden="true"></span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
+
       <!-- Storage consumption (mobile overlay) — always rendered so the
-           section is present even on a fresh vault. -->
+           section is present even on a fresh vault. Same icon-leading
+           layout as the shares row to keep the two info entries aligned. -->
       <div class="drawer-section">
-        <div class="drawer-storage">
-          <span class="drawer-storage-title">Storage</span>
-          {#if storageQuotaBytes > 0}
-            <div class="storage-bar">
-              <div class="storage-bar-fill" style:width="{storagePercent}%" style:background-color={storageBarColor}></div>
-            </div>
-            <span class="drawer-storage-label">
-              {formatBytes(storageUsedBytes)} of {formatBytes(storageQuotaBytes)} used
-            </span>
-          {:else}
-            <span class="drawer-storage-label">{formatBytes(storageUsedBytes)} used</span>
-          {/if}
+        <div class="drawer-shares drawer-shares-static">
+          <span class="drawer-shares-icon" aria-hidden="true"><HardDrives size={16} weight="regular" /></span>
+          <span class="drawer-shares-body">
+            <span class="drawer-storage-title">Storage</span>
+            {#if storageQuotaBytes > 0}
+              <div class="storage-bar">
+                <div class="storage-bar-fill" style:width="{storagePercent}%" style:background-color={storageBarColor}></div>
+              </div>
+              <span class="drawer-storage-label">
+                {formatBytes(storageUsedBytes)} of {formatBytes(storageQuotaBytes)} used
+              </span>
+            {:else}
+              <span class="drawer-storage-label">{formatBytes(storageUsedBytes)} used</span>
+            {/if}
+          </span>
         </div>
       </div>
 
@@ -402,16 +543,8 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     white-space: nowrap;
   }
 
-  .drawer-storage {
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-xs);
-    padding: var(--sp-sm) var(--sp-sm);
-    border-radius: var(--r-input);
-    justify-content: center;
-  }
-
-  .drawer-storage-title {
+  .drawer-storage-title,
+  .drawer-section-title {
     font-size: var(--t-label-size, 0.75rem);
     font-weight: 500;
     text-transform: uppercase;
@@ -424,9 +557,66 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     color: var(--text-primary);
   }
 
+  /* ── Provider switcher (drawer) ───────────────────────────────────
+   * Reuses the .drawer-link visual so providers feel like nav targets
+   * (because they ARE — switching active provider re-routes the file
+   * list). Two minor adornments on top: a small "Primary" pill on the
+   * primary, and a status dot at the right edge when the provider is
+   * NOT 'connected' / 'syncing'.
+   * Collapsed mode swaps the type icon for a P / 1 / 2 / … badge so
+   * the active provider stays identifiable on the narrow rail. */
+  .provider-link-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    /* <button> defaults to text-align:center per UA stylesheet, and that
+       inherits into non-flex descendants (the span here is a flex item
+       but its text content is regular flow inside the span). Without this
+       override the inactive provider name renders horizontally centered
+       in the row while nav-link labels — which are bare text flex children,
+       not wrapped in a span — render left-aligned. */
+    text-align: left;
+  }
+  .provider-link-badge {
+    flex-shrink: 0;
+    font-size: var(--t-label-size, 0.75rem);
+    padding: 1px 6px;
+    border-radius: var(--r-pill, 9999px);
+    background: var(--accent-muted, #1B3627);
+    border: 1px solid var(--accent, #2EB860);
+    color: var(--accent-text, #5FDB8A);
+  }
+  .provider-link-dot {
+    flex-shrink: 0;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+  }
+  .provider-badge {
+    /* Collapsed (rail) badge — circular initial. Replaces the type
+       icon when there's no room for a name. */
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--bg-surface, rgba(255,255,255,0.06));
+    color: var(--text-secondary, #999);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+  .provider-badge.active {
+    background: var(--accent, #2EB860);
+    color: #0F0F0F;
+  }
+
   .drawer-shares {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: var(--sp-sm, 8px);
     width: 100%;
     padding: var(--sp-sm) var(--sp-sm);
@@ -439,7 +629,17 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     transition: background 150ms;
   }
 
-  .drawer-shares:hover {
+  /* Non-interactive variant — used by the Storage row, which shares the
+     icon+body layout but doesn't navigate anywhere. Drop the pointer
+     affordances and the hover so it doesn't look tappable. */
+  .drawer-shares.drawer-shares-static {
+    cursor: default;
+  }
+  .drawer-shares.drawer-shares-static:hover {
+    background: transparent;
+  }
+
+  .drawer-shares:not(.drawer-shares-static):hover {
     background: var(--hover-bg, rgba(255, 255, 255, 0.04));
   }
 
@@ -450,8 +650,11 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     display: flex;
     align-items: center;
     justify-content: center;
+    /* line-height:0 keeps the SVG from inheriting the surrounding
+       text line-box, which was padding the icon downward inside
+       the 24px square. */
+    line-height: 0;
     color: var(--accent, #2EB860);
-    margin-top: 2px;
   }
 
   .drawer-shares-body {

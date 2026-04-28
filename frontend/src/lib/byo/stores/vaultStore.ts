@@ -248,3 +248,18 @@ export const isVaultDirty: Readable<boolean> = derived(
   vaultStore,
   ($s) => $s.dirty,
 );
+
+/**
+ * Providers ordered for UI surfaces: primary always first, secondaries
+ * alphabetical by displayName. Manifest order isn't user-meaningful —
+ * the Drawer switcher and Settings → Providers list both want a stable,
+ * scannable layout regardless of when a given provider was added.
+ */
+export const sortedProviders: Readable<ProviderMeta[]> = derived(
+  vaultStore,
+  ($s) =>
+    [...$s.providers].sort((a, b) => {
+      if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+      return a.displayName.localeCompare(b.displayName);
+    }),
+);

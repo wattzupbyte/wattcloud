@@ -5,9 +5,13 @@
   interface Props {
     done?: boolean;
     memoryMb?: number;
+    /** Optional one-line status to show after Argon2 completes (e.g.
+     * "Writing device slot…"). When set, replaces the static sublabel
+     * so the user has a sense of which late-unlock phase is running. */
+    phase?: string;
   }
 
-  let { done = false, memoryMb = 128 }: Props = $props();
+  let { done = false, memoryMb = 128, phase = '' }: Props = $props();
 
   // No fake timer — show honest indeterminate shimmer until done.
   let label = $derived(done ? 'Vault unlocked' : 'Unlocking vault…');
@@ -31,7 +35,9 @@
   </div>
   <div class="content">
     <p class="label">{done ? 'Keys derived' : 'Deriving encryption keys…'}</p>
-    <p class="sublabel">Using {memoryMb} MB of memory · This takes a few seconds</p>
+    <p class="sublabel">
+      {#if done && phase}{phase}{:else}Using {memoryMb} MB of memory · This takes a few seconds{/if}
+    </p>
     <div class="bar-track" role="progressbar" aria-valuenow={done ? 100 : undefined} aria-valuemin={0} aria-valuemax={100}>
       {#if done}
         <div class="bar-fill done-fill"></div>
@@ -46,8 +52,9 @@
 <style>
   .argon2-progress {
     display: flex;
-    gap: var(--sp-md, 16px);
-    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--sp-sm, 8px);
+    align-items: center;
     padding: var(--sp-lg, 24px);
     background: var(--bg-surface-raised, #262626);
     border: 1px solid var(--border, #2E2E2E);
@@ -56,8 +63,8 @@
 
   .icon-wrap {
     flex-shrink: 0;
-    width: 40px;
-    height: 40px;
+    width: 48px;
+    height: 48px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -82,8 +89,9 @@
   }
 
   .content {
-    flex: 1;
+    width: 100%;
     min-width: 0;
+    text-align: center;
   }
 
   .label {
@@ -150,7 +158,7 @@
     margin: 0;
     font-size: var(--t-label-size, 0.75rem);
     color: var(--text-disabled, #616161);
-    text-align: right;
+    text-align: center;
     min-height: 1em;
   }
 </style>

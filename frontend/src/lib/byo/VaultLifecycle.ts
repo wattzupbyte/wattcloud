@@ -38,6 +38,7 @@ import {
   storeCachedManifest,
   loadCachedManifest,
 } from './VaultBodyCache';
+import { saveProviderConfig, updateProviderDisplayNameLocal } from './ProviderConfigStore';
 // Re-export for backwards compat (ByoRecovery, ByoSetup import from VaultLifecycle).
 export { bytesToBase64, base64ToBytes } from './base64';
 import { bytesToBase64, base64ToBytes } from './base64';
@@ -105,6 +106,15 @@ const _lastBodySizesPerProvider: Map<string, number> = new Map();
 
 /** Current manifest version (incremented on each save). */
 let _manifestVersion: number = 1;
+
+/**
+ * Cached manifest header bytes (1227 bytes) from unlock. Saving needs the
+ * header to recompute the HMAC + reassemble vault_manifest.sc; re-reading
+ * from the primary on every save is fragile (the underlying storage may
+ * have been wiped between sessions, or a fresh-secondary flow can race the
+ * first manifest write). Used as a fallback when the live read fails.
+ */
+let _manifestHeader: Uint8Array | null = null;
 
 /**
  * Resolver that releases the navigator.locks exclusive vault lock held by this tab.
@@ -272,32 +282,55 @@ export async function unlockVault(
   // ── Step 2b: Acquire exclusive vault lock (C6) ────────────────────────
   // Prevents two tabs from concurrently unlocking/saving the same vault,
   // which would produce duplicate manifest_version values or lost writes.
+  //
+  // The lock is held inside a navigator.locks.request callback whose
+  // resolution we control via _lockRelease. Because await on the request
+  // would block until the lock is released, we signal acquisition through
+  // a side-channel Promise and only the holder side keeps the request
+  // open.
+  //
+  // Real-world races we have to tolerate:
+  //   - Hard reload: the previous page context is still tearing down
+  //     when the new context tries to grab the lock. The OS releases
+  //     the old holder within a few hundred ms but the gap is visible.
+  //   - bfcache return: the prior document was paused with the lock
+  //     held; coming back in the same tab grants it immediately, but
+  //     opening the app in a *fresh* tab while the bfcache copy still
+  //     lives loses the race.
+  // ifAvailable:true gives up instantly, so a one-shot attempt was
+  // surfacing as a hard "Another tab is already managing this vault"
+  // for what's actually a sub-second handoff. Retry with backoff
+  // before declaring contention.
   if (typeof navigator !== 'undefined' && 'locks' in navigator) {
     const lockName = `byo-vault-${vaultIdFromHeader}`;
 
-    // We need a side-channel to know if the lock was granted, because we cannot
-    // await navigator.locks.request itself (that would block until the lock is
-    // released). Instead we signal via lockSignal and keep the lock alive by
-    // holding the inner Promise open.
-    const lockSignal = new Promise<boolean>((signalResolve) => {
-      navigator.locks.request(
-        lockName,
-        { mode: 'exclusive', ifAvailable: true },
-        async (lock) => {
-          if (!lock) {
-            // Another tab holds the vault lock.
-            signalResolve(false);
-            return;
-          }
-          // Signal that we have the lock before proceeding.
-          signalResolve(true);
-          // Hold the lock until _lockRelease() is called (on vault lock).
-          await new Promise<void>((hold) => { _lockRelease = hold; });
-        },
-      ).catch(() => {});
-    });
+    const tryAcquire = (): Promise<boolean> =>
+      new Promise<boolean>((signalResolve) => {
+        navigator.locks.request(
+          lockName,
+          { mode: 'exclusive', ifAvailable: true },
+          async (lock) => {
+            if (!lock) {
+              signalResolve(false);
+              return;
+            }
+            signalResolve(true);
+            // Hold the lock until _lockRelease() fires on vault lock.
+            await new Promise<void>((hold) => { _lockRelease = hold; });
+          },
+        ).catch(() => signalResolve(false));
+      });
 
-    const acquired = await lockSignal;
+    // 5 attempts with backoff: 0ms, 200ms, 400ms, 800ms, 1600ms — total
+    // budget ~3s, which covers the unload + bfcache races without
+    // hanging the unlock UI on a genuinely contested vault.
+    const BACKOFFS_MS = [0, 200, 400, 800, 1600];
+    let acquired = false;
+    for (const delay of BACKOFFS_MS) {
+      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+      acquired = await tryAcquire();
+      if (acquired) break;
+    }
     if (!acquired) {
       vaultStore.setStatus('idle');
       vaultStore.setTabOwnership('other');
@@ -432,9 +465,26 @@ export async function unlockVault(
   }
 
   const secondaryFetches = otherProviders.map(async (entry) => {
+    // Wrap the cache fallback in a helper so both "init returned null"
+    // and "live download failed" paths fall back consistently. Pre-fix,
+    // a null return from init silently dropped the secondary entirely —
+    // its body wasn't even loaded from the IDB cache, so its files
+    // disappeared on every reload where the secondary couldn't connect.
+    const fallbackToCache = async () => {
+      const cached = await loadCachedBody(vaultIdHex, entry.provider_id).catch(() => null);
+      if (cached) cachedProviderIds.push(entry.provider_id);
+    };
+    let secondaryProvider: StorageProvider | null = null;
     try {
-      const secondaryProvider = await initializeProviderFromConfig(entry);
-      if (!secondaryProvider) return;
+      secondaryProvider = await initializeProviderFromConfig(entry);
+    } catch {
+      /* init exceptions are already logged inside initializeProviderFromConfig */
+    }
+    if (!secondaryProvider) {
+      await fallbackToCache();
+      return;
+    }
+    try {
       const { data: secondaryManifestBytes, version: secManifestVersion } =
         await secondaryProvider.download(secondaryProvider.manifestRef());
       const secManifestBlob = secondaryManifestBytes.slice(VAULT_HEADER_SIZE);
@@ -452,12 +502,12 @@ export async function unlockVault(
         secManifestVersion,
         secManifest.manifest_version,
       ).catch(() => {});
-    } catch {
-      // Provider unreachable — check IDB cache.
-      const cached = await loadCachedBody(vaultIdHex, entry.provider_id).catch(() => null);
-      if (cached) {
-        cachedProviderIds.push(entry.provider_id);
-      }
+    } catch (err) {
+      console.warn(
+        `[VaultLifecycle] secondary manifest fetch failed for ${entry.provider_id}:`,
+        err,
+      );
+      await fallbackToCache();
     }
   });
   await Promise.allSettled(secondaryFetches);
@@ -570,8 +620,11 @@ export async function unlockVault(
     provDb.close();
   }
 
-  // Run migrations (no-op for R6 greenfield vaults).
-  runMigrations(masterDb);
+  // Run migrations. `primaryEntry?.provider_id` lets the migration
+  // backfill files/folders/favorites.provider_id for legacy vaults that
+  // pre-date the per-row provider stamping (otherwise downloads resolve
+  // to the wrong provider when secondaries exist).
+  runMigrations(masterDb, primaryEntry?.provider_id);
 
   // ── Step 9: Read vault metadata ────────────────────────────────────────
   const metaRows = queryRows(masterDb, "SELECT key, value FROM vault_meta WHERE key IN ('vault_version', 'vault_id')");
@@ -683,6 +736,7 @@ export async function unlockVault(
   _providers = providerInstances;
   _primaryProviderId = primaryEntry?.provider_id ?? '';
   _dirtyProviders.clear();
+  _manifestHeader = new Uint8Array(headerBytes);
 
   // ── Step 16: Populate vaultStore ──────────────────────────────────────
   const providerMetas: ProviderMeta[] = mergedManifest.providers
@@ -837,9 +891,20 @@ async function _doSave(): Promise<void> {
     );
     const manifestBlob = base64ToBytes(manifestBlobB64);
 
-    // Re-read header from primary provider to get the latest HMAC.
-    const { data: currentManifestFile } = await _provider.download(_provider.manifestRef());
-    const currentHeader = currentManifestFile.slice(0, VAULT_HEADER_SIZE);
+    // Re-read header from primary so cross-device slot updates land here. If
+    // the primary's manifest is unreadable (no-such-file from a wiped server,
+    // or any other I/O error), fall back to the header we cached at unlock —
+    // saving still produces a valid file, the user just won't pick up
+    // header-level changes from other devices until the next unlock.
+    let currentHeader: Uint8Array;
+    try {
+      const { data: currentManifestFile } = await _provider.download(_provider.manifestRef());
+      currentHeader = currentManifestFile.slice(0, VAULT_HEADER_SIZE);
+    } catch (readErr) {
+      if (!_manifestHeader) throw readErr;
+      console.warn('[saveVault] Primary manifest re-read failed; using cached header from unlock:', readErr);
+      currentHeader = _manifestHeader;
+    }
 
     // Recompute header HMAC.
     const headerPrefixB64 = bytesToBase64(currentHeader.slice(0, VAULT_HEADER_HMAC_OFFSET));
@@ -853,21 +918,47 @@ async function _doSave(): Promise<void> {
 
     // Upload manifest to all online providers.
     // C5: manifest must be confirmed before WAL/journal are cleared.
+    //
+    // The PRIMARY upload is mandatory — vault_manifest.sc on the primary is
+    // the unlock-time source of truth, so a failed primary upload means the
+    // next reload will read a stale manifest (e.g. without a freshly-added
+    // secondary). Secondary uploads remain best-effort: if one is offline
+    // the save still succeeds, the secondary will sync on reconnect via
+    // its WAL. We track primary success explicitly instead of just counting
+    // total successes — counting any-success would let the save "succeed"
+    // when the primary fails but a secondary works (the freshly-attached
+    // secondary on retryOrphan can hide a primary failure this way).
+    let primaryManifestUploaded = false;
     let manifestUploadedCount = 0;
+    let primaryUploadErr: unknown = null;
     for (const pid of savePlan.manifest_upload_targets) {
       const provInst = _providers.get(pid);
       if (!provInst) continue;
       try {
         const { version: uploadedManifestVersion } = await provInst.upload(provInst.manifestRef(), 'vault_manifest.sc', manifestFile, {});
         manifestUploadedCount++;
+        if (pid === _primaryProviderId) primaryManifestUploaded = true;
         await storeCachedManifest(_vaultId, manifestBlobB64, uploadedManifestVersion, nextVersion).catch(() => {});
-      } catch {
-        // Best-effort — offline providers will sync on reconnect.
+      } catch (err) {
+        if (pid === _primaryProviderId) {
+          primaryUploadErr = err;
+          console.error('[saveVault] primary manifest upload failed:', err);
+        } else {
+          // Secondary failures are non-fatal — the secondary will catch up
+          // on reconnect — but still log so silent regressions don't hide.
+          console.warn('[saveVault] secondary manifest upload failed for', pid, err);
+        }
       }
     }
 
-    // At least one manifest upload must succeed (the primary). If zero succeed, the
-    // vault bodies are ahead of the manifest — leave dirty state for retry.
+    // Primary must succeed. If it didn't, the vault bodies are ahead of the
+    // primary's manifest — abort the save so dirty state stays set for retry
+    // and the caller surfaces a real error rather than a misleading success.
+    if (!primaryManifestUploaded) {
+      throw new Error(
+        `Manifest upload to primary failed — save aborted; dirty state preserved. Reason: ${describeErr(primaryUploadErr)}`,
+      );
+    }
     if (manifestUploadedCount === 0) {
       throw new Error('Manifest upload failed on all providers — save aborted; dirty state preserved');
     }
@@ -1042,6 +1133,7 @@ export function lockVault(): void {
   _lastBodySizesPerProvider.clear();
   _vaultId = '';
   _manifestVersion = 1;
+  _manifestHeader = null;
   _mutationCountInWindow = 0;
   _batchMode = false;
 
@@ -1054,6 +1146,87 @@ export function lockVault(): void {
 export function getDb(): import('sql.js').Database | null { return _db; }
 export function getVaultSessionId(): number | null { return _vaultSessionId; }
 export function getVaultId(): string { return _vaultId; }
+
+/**
+ * Pull the primary provider's vault body fresh from the backend, decrypt
+ * it with the current vault session, and union its `vault_meta.enrolled_devices`
+ * with the local `_db`. Lets the Settings → Devices view pick up entries
+ * other devices added (e.g. after a remote enrollment) without a full
+ * lock+unlock cycle. Best-effort: on any failure (no live primary, decrypt
+ * fails, malformed JSON) we log and leave the local `_db` untouched.
+ *
+ * Returns true iff the local list changed (caller can trigger a re-render).
+ */
+export async function refreshEnrolledDevicesFromRemote(): Promise<boolean> {
+  if (!_db || _vaultSessionId === null || !_provider || !_primaryProviderId) return false;
+
+  let remoteDb: import('sql.js').Database | null = null;
+  try {
+    const bodyRef = _provider.bodyRef(_primaryProviderId);
+    const { data: bodyBytes } = await _provider.download(bodyRef);
+    const { data: sqliteB64 } = await byoWorker.Worker.byoVaultBodyDecrypt(
+      _vaultSessionId,
+      _primaryProviderId,
+      bytesToBase64(bodyBytes),
+    );
+    const sqliteBytes = base64ToBytes(sqliteB64);
+
+    const SQL = await loadSqlJs();
+    remoteDb = new SQL.Database(sqliteBytes);
+
+    const remoteRows = queryRows(remoteDb, "SELECT value FROM vault_meta WHERE key = 'enrolled_devices'");
+    if (remoteRows.length === 0) return false;
+
+    type Entry = { device_id: string; device_name: string; enrolled_at: string };
+    let remoteList: Entry[];
+    try {
+      remoteList = JSON.parse(remoteRows[0]['value'] as string) as Entry[];
+    } catch {
+      return false;
+    }
+
+    const localRows = queryRows(_db, "SELECT value FROM vault_meta WHERE key = 'enrolled_devices'");
+    let localList: Entry[] = [];
+    if (localRows.length > 0) {
+      try { localList = JSON.parse(localRows[0]['value'] as string) as Entry[]; }
+      catch { localList = []; }
+    }
+
+    // Union by device_id. Prefer the entry with the earlier `enrolled_at`
+    // when both sides have one — first enrollment wins and we don't churn
+    // the timestamp on every refresh.
+    const merged = new Map<string, Entry>();
+    for (const e of remoteList) merged.set(e.device_id, e);
+    for (const e of localList) {
+      const existing = merged.get(e.device_id);
+      if (!existing || e.enrolled_at < existing.enrolled_at) {
+        merged.set(e.device_id, e);
+      }
+    }
+    const mergedList = Array.from(merged.values());
+
+    const changed =
+      mergedList.length !== localList.length ||
+      JSON.stringify(mergedList) !== JSON.stringify(localList);
+    if (changed) {
+      _db.run(
+        "INSERT OR REPLACE INTO vault_meta (key, value) VALUES ('enrolled_devices', ?)",
+        [JSON.stringify(mergedList)],
+      );
+      // markDirty so the union propagates back to the backend on the next
+      // save; otherwise this device's local copy would diverge silently.
+      markDirty();
+    }
+    return changed;
+  } catch (e) {
+    console.warn('[VaultLifecycle] refreshEnrolledDevicesFromRemote failed', e);
+    return false;
+  } finally {
+    if (remoteDb) {
+      try { remoteDb.close(); } catch { /* best-effort */ }
+    }
+  }
+}
 
 /**
  * Re-decrypt this device's shard from the current primary manifest header so
@@ -1113,6 +1286,7 @@ export function getProviders(): Map<string, StorageProvider> { return _providers
 export function getPrimaryProviderId(): string { return _primaryProviderId; }
 export function getManifest(): ManifestJson | null { return _manifest; }
 
+/** Get the VaultJournal for a provider. */
 export function getJournalForProvider(providerId: string): VaultJournal | null {
   return _journals.get(providerId) ?? null;
 }
@@ -1263,10 +1437,22 @@ export async function addProvider(
   vaultStore.setProviders([...currentProviders, newMeta]);
 
   markDirty(_primaryProviderId);
+  // Force-save inline so the new provider's manifest entry survives an
+  // immediate reload (see renameProvider for rationale). Saving failures
+  // propagate so the caller can surface "couldn't persist" rather than
+  // returning a providerId that won't be there on next unlock.
+  await saveVault();
   return providerId;
 }
 
-/** Rename a provider's display name in the manifest. */
+/** Rename a provider's display name in the manifest.
+ *
+ * Force-saves inline rather than relying on the 3 s debounce so the rename
+ * survives an immediate reload. Without the inline save, the manifest entry
+ * lives only in memory until debounce fires; if the user reloads before
+ * that, the rename is lost and they'd see the old name re-appear with no
+ * indication anything went wrong.
+ */
 export async function renameProvider(providerId: string, newName: string): Promise<void> {
   if (!_manifest) throw new Error('Vault not unlocked');
   const trimmed = newName.trim();
@@ -1280,10 +1466,121 @@ export async function renameProvider(providerId: string, newName: string): Promi
   const unsub = vaultStore.subscribe((s) => { current = s.providers; });
   unsub();
   vaultStore.setProviders(current.map((p) => p.providerId === providerId ? { ...p, displayName: trimmed } : p));
+  // Mirror the rename onto the per-device IDB row so the vault-list landing
+  // page (which reads display_name from IDB pre-unlock) reflects it on next
+  // reload. Best-effort — the manifest write above is the source of truth.
+  try {
+    await updateProviderDisplayNameLocal(providerId, trimmed);
+  } catch (e) {
+    console.warn('[VaultLifecycle] renameProvider: local IDB update failed', e);
+  }
   markDirty(_primaryProviderId);
+  await saveVault();
 }
 
-/** Set a provider as the primary. */
+/**
+ * Replace a provider's stored config (host, port, credentials, …) and reconnect.
+ *
+ * Always test-connects before committing: hydrates a fresh provider with the
+ * proposed config, and only mutates state if `init()` succeeds. This makes
+ * it safe to edit the primary — a typo in the host can't lock the user out
+ * because the bad config never reaches the manifest.
+ *
+ * On success:
+ *  - rewrites the manifest entry's `config_json` (peer devices pick up host
+ *    changes on their next merge);
+ *  - upserts the per-device IDB row via `saveProviderConfig` so reload
+ *    auto-hydrates with the new values;
+ *  - swaps the live `_providers` instance and clears the old WS;
+ *  - markDirty + save.
+ *
+ * `newDisplayName` is optional — pass null to keep the existing name.
+ */
+export async function updateProviderConfig(
+  providerId: string,
+  newConfig: ProviderConfig,
+  newDisplayName?: string | null,
+): Promise<void> {
+  if (!_manifest || _vaultSessionId === null) throw new Error('Vault not unlocked');
+  const entry = _manifest.providers.find((p) => p.provider_id === providerId && !p.tombstone);
+  if (!entry) throw new Error('Provider not found in manifest');
+
+  // Test-connect: hydrate a fresh provider against the new config. Throws on
+  // bad host / wrong credentials / TOFU mismatch / etc. Old live instance is
+  // untouched at this point.
+  const candidate = await hydrateProviderForUpdate({ ...newConfig, providerId });
+
+  try {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const newConfigJson = JSON.stringify({ ...newConfig, providerId });
+    const { manifestJson: updatedManifestJson } = await byoWorker.Worker.byoManifestUpdateProviderConfig(
+      JSON.stringify(_manifest), providerId, newConfigJson, nowSec,
+    );
+    _manifest = JSON.parse(updatedManifestJson) as ManifestJson;
+
+    // Persist to per-device IDB so reload picks up the new config too.
+    if (_vaultId) {
+      try {
+        await saveProviderConfig(
+          {
+            provider_id: providerId,
+            vault_id: _vaultId,
+            vault_label: entry.display_name,
+            type: candidate.type,
+            display_name: newDisplayName?.trim() || entry.display_name,
+            is_primary: entry.is_primary,
+            saved_at: new Date().toISOString(),
+          },
+          { ...newConfig, providerId },
+        );
+      } catch (persistErr) {
+        console.warn('[VaultLifecycle] saveProviderConfig during update failed', persistErr);
+      }
+    }
+
+    // Swap the live instance: disconnect the old session before we lose the
+    // reference (so the WebSocket closes cleanly), then install the candidate.
+    const old = _providers.get(providerId);
+    if (old) {
+      await old.disconnect().catch(() => {});
+    }
+    _providers.set(providerId, candidate);
+    if (providerId === _primaryProviderId) {
+      _provider = candidate;
+    }
+
+    let current: ProviderMeta[] = [];
+    const unsub = vaultStore.subscribe((s) => { current = s.providers; });
+    unsub();
+    vaultStore.setProviders(current.map((p) => p.providerId === providerId
+      ? { ...p, status: 'connected', failCount: 0, lastPingTs: Date.now() }
+      : p));
+
+    markDirty(_primaryProviderId);
+    // Force-save so the manifest_json change reaches the primary before any
+    // reload (see renameProvider for rationale).
+    await saveVault();
+  } catch (e) {
+    // Commit failed after a successful test-connect. Drop the candidate
+    // session so we don't leak the WebSocket.
+    await candidate.disconnect().catch(() => {});
+    throw e;
+  }
+}
+
+/** Local wrapper around hydrateProvider that defers the import (the function
+ *  pulls in provider factory code that the byo worker bundle must not load
+ *  eagerly via VaultLifecycle's static graph). */
+async function hydrateProviderForUpdate(config: ProviderConfig): Promise<StorageProvider> {
+  const { hydrateProvider } = await import('./ProviderHydrate');
+  return hydrateProvider(config);
+}
+
+/** Set a provider as the primary.
+ *
+ * Force-saves inline so primary-swap survives an immediate reload (see
+ * renameProvider for rationale).
+ */
 export async function setAsPrimaryProvider(providerId: string): Promise<void> {
   if (!_manifest) throw new Error('Vault not unlocked');
   const nowSec = Math.floor(Date.now() / 1000);
@@ -1298,6 +1595,7 @@ export async function setAsPrimaryProvider(providerId: string): Promise<void> {
   vaultStore.setProviders(current.map((p) => ({ ...p, isPrimary: p.providerId === providerId })));
   vaultStore.setPrimaryProviderId(providerId);
   markDirty(_primaryProviderId);
+  await saveVault();
 }
 
 /** Remove a non-primary provider (tombstones the manifest entry). */
@@ -1331,6 +1629,9 @@ export async function removeProvider(providerId: string): Promise<void> {
   vaultStore.setProviders(current.filter((p) => p.providerId !== providerId));
   vaultStore.setActiveProviderId(_primaryProviderId);
   markDirty(_primaryProviderId);
+  // Force-save inline so removal persists across an immediate reload (see
+  // renameProvider for rationale).
+  await saveVault();
 }
 
 // ── Before-unload handler ──────────────────────────────────────────────────
@@ -1352,15 +1653,28 @@ function findPrimaryEntry(manifest: ManifestJson): ManifestProviderEntry | undef
 
 /**
  * Initialize a StorageProvider instance from a manifest entry's config_json.
+ *
+ * Routes through `hydrateProvider` so SFTP secondaries get their credential
+ * handle set up before init() (the bare `initializeProvider` factory creates
+ * an empty SftpProvider and init() throws "credHandle + credUsername must be
+ * set before init()" — which is why pre-fix unlocks left every SFTP
+ * secondary "offline" until the user manually re-entered creds).
+ *
+ * Errors are logged to the console so connection failures don't silently
+ * vanish — the unlock UI shows the provider as "offline" but no clue why.
  */
 async function initializeProviderFromConfig(
   entry: ManifestProviderEntry,
 ): Promise<StorageProvider | null> {
   try {
     const config = JSON.parse(entry.config_json) as ProviderConfig;
-    const { initializeProvider } = await import('@wattcloud/sdk');
-    return await initializeProvider(entry.provider_type as any, { ...config, providerId: entry.provider_id } as any);
-  } catch {
+    const { hydrateProvider } = await import('./ProviderHydrate');
+    return await hydrateProvider({ ...config, providerId: entry.provider_id });
+  } catch (err) {
+    console.warn(
+      `[VaultLifecycle] initializeProviderFromConfig failed for ${entry.provider_id} (${entry.provider_type}):`,
+      err,
+    );
     return null;
   }
 }
@@ -1629,7 +1943,28 @@ function getVaultSchema(): string {
       total_bytes INTEGER,
       blob_count INTEGER,
       created_at INTEGER NOT NULL,
-      revoked INTEGER NOT NULL DEFAULT 0
+      revoked INTEGER NOT NULL DEFAULT 0,
+      -- URL fragment carrying the bundle/content key. Stored locally so
+      -- the user can recover the share link from Settings → Active shares
+      -- after the create-flow modal is dismissed. The fragment is the
+      -- decryption key + (optional) bundle name; never sent to the relay.
+      -- Vault SQLite is wrapped under vault_key (SECURITY.md §4), same
+      -- threat model as every other secret in the vault.
+      fragment TEXT,
+      -- Finer-grained classification than 'kind' for the Settings UI.
+      -- The relay schema is closed at file/folder/collection so multi-
+      -- file and mixed bundles ride 'folder' there; this column lets the
+      -- creator UI show the right badges (e.g. Folder + Files for a
+      -- mixed bundle) without changing the wire protocol. Values:
+      -- 'file' | 'folder' | 'collection' | 'multi-files' | 'mixed'.
+      -- Vault-only; never sent anywhere.
+      bundle_kind TEXT,
+      -- Optional user-supplied display name for this share. Surfaces
+      -- both in Settings → Active shares AND on the recipient's landing
+      -- page (carried in the fragment as &n=<percent-encoded>) so the
+      -- two ends agree. NULL → both ends fall back to the inferred
+      -- name (folder name, "N items", filename, etc.).
+      label TEXT
     );
     CREATE TABLE IF NOT EXISTS collections (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
