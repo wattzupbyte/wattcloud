@@ -23,7 +23,7 @@ path = "src/lib.rs"
 [dependencies]
 # Web framework — same version as /backend
 axum = { version = "0.7", features = ["ws", "macros"] }
-axum-extra = { version = "0.9", features = ["typed-header"] }
+axum-extra = { version = "0.12", features = ["typed-header"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
