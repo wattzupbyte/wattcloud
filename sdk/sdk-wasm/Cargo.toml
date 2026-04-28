@@ -12,7 +12,7 @@ default = []
 
 [dependencies]
 sdk-core = { path = "../sdk-core", default-features = false, features = ["crypto", "byo", "providers"] }
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 wasm-bindgen-futures = "0.4"
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
