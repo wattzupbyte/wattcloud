@@ -37,7 +37,7 @@ use axum::{
 };
 use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
-use rand::RngCore;
+use rand::Rng;
 use serde::Deserialize;
 use serde::Serialize;
 use sha2::Sha256;
@@ -142,7 +142,7 @@ fn is_valid_share_id(id: &str) -> bool {
 
 fn generate_token_nonce() -> [u8; 16] {
     let mut nonce = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     nonce
 }
 
@@ -741,7 +741,7 @@ pub async fn init_bundle(
 
     // Mint + persist a 32-byte bundle token.
     let mut bundle_token_bytes = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut bundle_token_bytes);
+    rand::rng().fill_bytes(&mut bundle_token_bytes);
     if state
         .share_store
         .set_bundle_token(&share_id, &bundle_token_bytes)
