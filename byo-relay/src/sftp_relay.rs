@@ -15,7 +15,7 @@
 
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
-use rand::RngCore;
+use rand::Rng;
 use russh::client::{self, Config as SshConfig, Handle};
 use russh::keys::{HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey};
 use russh_sftp::client::SftpSession;
@@ -838,7 +838,7 @@ async fn handle_text_command(
             // a random 128-bit handle is effectively unguessable and carries
             // no cross-session information.
             let mut rand_bytes = [0u8; 16];
-            rand::rngs::OsRng.fill_bytes(&mut rand_bytes);
+            rand::rng().fill_bytes(&mut rand_bytes);
             let handle = format!(
                 "wh-{}",
                 rand_bytes
@@ -977,7 +977,7 @@ async fn handle_text_command(
             // Random 128-bit handle ID — same rationale as write handles
             // (D13): unguessable, no cross-session information leak.
             let mut rand_bytes = [0u8; 16];
-            rand::rngs::OsRng.fill_bytes(&mut rand_bytes);
+            rand::rng().fill_bytes(&mut rand_bytes);
             let handle = format!(
                 "rh-{}",
                 rand_bytes
