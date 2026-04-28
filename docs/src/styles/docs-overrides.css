@@ -1,0 +1,256 @@
+/* ============================================
+   Starlight theme bindings → Wattcloud tokens.
+   This is the only file that touches Starlight CSS variables;
+   design-system.css owns the source-of-truth tokens.
+   ============================================ */
+
+:root,
+:root[data-theme='dark'] {
+  /* Surfaces */
+  --sl-color-bg:                var(--bg-base);
+  --sl-color-bg-nav:            var(--bg-surface);
+  --sl-color-bg-sidebar:        var(--bg-surface);
+  --sl-color-bg-inline-code:    var(--bg-input);
+  --sl-color-bg-accent:         var(--accent);
+
+  /* Text */
+  --sl-color-white:             var(--text-primary);
+  --sl-color-gray-1:            var(--text-primary);
+  --sl-color-gray-2:            hsl(0, 0%, 80%);
+  --sl-color-gray-3:            var(--text-secondary);
+  --sl-color-gray-4:            hsl(0, 0%, 45%);
+  --sl-color-gray-5:            var(--text-disabled);
+  --sl-color-gray-6:            var(--bg-surface-raised);
+  --sl-color-gray-7:            var(--bg-surface);
+  --sl-color-text:              var(--text-primary);
+  --sl-color-text-accent:       var(--accent-text);
+  --sl-color-text-invert:       var(--text-inverse);
+
+  /* Accent ramp — Starlight uses several stops; bind them all to green */
+  --sl-color-accent-low:        var(--accent-muted);
+  --sl-color-accent:            var(--accent);
+  --sl-color-accent-high:       var(--accent-text);
+  --sl-color-black:              var(--bg-base);
+
+  /* Borders */
+  --sl-color-hairline:          var(--border);
+  --sl-color-hairline-light:    var(--border);
+  --sl-color-hairline-shade:    var(--border);
+
+  /* Fonts */
+  --sl-font:                    var(--font-sans);
+  --sl-font-mono:               var(--font-mono);
+
+  /* Layout polish */
+  --sl-content-width:           48rem;
+  --sl-sidebar-width:           18.5rem;
+
+  /* Asides (callouts) */
+  --sl-color-asides-text-accent: var(--accent-text);
+  --sl-color-asides-border:      var(--accent);
+}
+
+/* Force dark — Wattcloud is dark-only by design (DESIGN.md §1).
+   Hide the theme toggle so we don't pretend otherwise. */
+:root { color-scheme: dark; }
+starlight-theme-select { display: none !important; }
+
+/* Encryption status strip (DESIGN.md §29.4) — 2px accent line at the bottom
+   edge of the sticky top bar, --accent at 30% opacity. Quotes the SPA's
+   ambient signature into the docs without animation. */
+header.header {
+  border-bottom: 2px solid hsla(142, 60%, 45%, 0.30);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+}
+@supports not (backdrop-filter: blur(1px)) {
+  header.header { background: var(--bg-surface); }
+}
+
+/* Site title — cloud motif + wordmark, mirrors the SPA drawer header */
+.site-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sl-nav-gap, 0.5rem);
+  font-family: var(--font-sans);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  text-decoration: none;
+}
+.site-title svg {
+  width: 28px;
+  height: 28px;
+  flex: none;
+}
+
+/* Code blocks — match SPA input radius and surface */
+.expressive-code,
+pre.astro-code,
+:not(pre) > code {
+  font-family: var(--font-mono);
+}
+.expressive-code .frame {
+  border-radius: var(--r-input) !important;
+  border: 1px solid var(--border) !important;
+}
+:not(pre) > code {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.1em 0.4em;
+  font-size: 0.9em;
+}
+
+/* Asides — bind to Wattcloud accents
+   tip   → green, caution → amber, danger → red */
+.starlight-aside {
+  border-radius: var(--r-input);
+  border-left-width: 3px;
+}
+.starlight-aside--note,
+.starlight-aside--tip {
+  background: hsla(142, 60%, 45%, 0.08);
+  border-color: var(--accent);
+}
+.starlight-aside--note .starlight-aside__title,
+.starlight-aside--tip .starlight-aside__title {
+  color: var(--accent-text);
+}
+.starlight-aside--caution {
+  background: hsla(36, 85%, 55%, 0.08);
+  border-color: var(--accent-warm);
+}
+.starlight-aside--caution .starlight-aside__title {
+  color: var(--accent-warm-text);
+}
+.starlight-aside--danger {
+  background: hsla(0, 65%, 55%, 0.08);
+  border-color: var(--danger);
+}
+.starlight-aside--danger .starlight-aside__title {
+  color: hsl(0, 70%, 70%);
+}
+
+/* Headings — match SPA H1/H2 letter-spacing */
+.sl-markdown-content h1 { letter-spacing: -0.02em; }
+.sl-markdown-content h2 { letter-spacing: -0.01em; }
+
+/* Sidebar group labels — uppercase label, like SPA section headers */
+.sidebar-content summary,
+.sidebar-content [aria-label] > .group-label,
+.large {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* Search — pill radius, matches SPA search bar */
+button[data-open-modal],
+dialog[data-pagefind-search] input {
+  border-radius: var(--r-pill);
+}
+
+/* Landing-page card grid — used by the hero on /docs */
+.wc-cards {
+  display: grid;
+  gap: var(--sl-content-pad, 1rem);
+  grid-template-columns: 1fr;
+  margin: 2rem 0;
+}
+@media (min-width: 50rem) {
+  .wc-cards { grid-template-columns: 1fr 1fr; }
+}
+.wc-card {
+  display: block;
+  padding: 1.25rem 1.5rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  color: var(--text-primary);
+  text-decoration: none;
+  transition: background 200ms cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.wc-card:hover {
+  background: var(--bg-surface-hover);
+  border-color: hsla(142, 60%, 45%, 0.35);
+}
+.wc-card h3 {
+  margin: 0 0 0.4rem 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.wc-card p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* "Why Wattcloud" — non-interactive cards with an accent edge.
+   Each card is a single argument, not a navigation target. */
+.wc-why-list {
+  display: grid;
+  gap: var(--sl-content-pad, 1rem);
+  grid-template-columns: 1fr;
+  margin: 1.5rem 0;
+}
+@media (min-width: 50rem) {
+  .wc-why-list { grid-template-columns: 1fr 1fr; }
+}
+.wc-why-card {
+  padding: 1.25rem 1.5rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-card);
+}
+.wc-why-card h3 {
+  margin: 0 0 0.4rem 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+.wc-why-card p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+.wc-why-card a {
+  color: var(--accent-text);
+}
+.wc-why-card strong {
+  color: var(--text-primary);
+}
+
+/* Hero cloud + tagline on landing page */
+.wc-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1.5rem 0 0.5rem;
+}
+.wc-hero svg {
+  width: 64px;
+  height: 64px;
+}
+.wc-hero h1 {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.wc-hero p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 1rem;
+  max-width: 42ch;
+}

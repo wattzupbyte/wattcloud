@@ -1,0 +1,150 @@
+---
+title: Self-hosting handbook
+description: Operator handbook for self-hosting Wattcloud — a zero-knowledge, bring-your-own-storage cloud file manager.
+template: splash
+hero:
+  tagline: Self-host an end-to-end-encrypted cloud drive on storage you already own. The relay never sees plaintext, key material, or anything that identifies you beyond a per-device cookie.
+  image:
+    file: ../../../public/favicon.svg
+  actions:
+    - text: Quickstart
+      link: /wattcloud/quickstart/
+      icon: right-arrow
+      variant: primary
+    - text: GitHub
+      link: https://github.com/wattzupbyte/wattcloud
+      icon: external
+      variant: minimal
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Personal project, no third-party audit">
+  Production-shaped packaging, but the code has not had a third-party security audit.
+  Run it on data you could afford to lose, or keep an independent backup.
+  See [Licensing & status](https://github.com/wattzupbyte/wattcloud#licensing--status).
+</Aside>
+
+## Where to go from here
+
+<div class="wc-cards">
+  <a class="wc-card" href="/wattcloud/quickstart/">
+    <h3>Quickstart</h3>
+    <p>Five minutes from a fresh VPS to a running vault. Walks the install one-liner, ownership claim, and first unlock.</p>
+  </a>
+  <a class="wc-card" href="/wattcloud/install/one-command-install/">
+    <h3>Install &amp; access control</h3>
+    <p>What <code>install.sh</code> actually does, restricted vs. open enrollment, claim-token and invite flow, upgrades and rollback.</p>
+  </a>
+  <a class="wc-card" href="/wattcloud/providers/webdav/">
+    <h3>Connect storage</h3>
+    <p>WebDAV, SFTP, or any S3-compatible bucket. One vault, opaque V7 ciphertext on the backend, no plaintext ever leaves the browser.</p>
+  </a>
+  <a class="wc-card" href="https://github.com/wattzupbyte/wattcloud/blob/main/SPEC.md">
+    <h3>Protocol &amp; threat model</h3>
+    <p><code>SPEC.md</code> for the BYO wire format and vault layout, <code>SECURITY.md</code> for the threat model and zero-knowledge invariants.</p>
+  </a>
+</div>
+
+## What you can do with Wattcloud
+
+End-user surface, once a vault is open. Everything below runs end-to-end
+encrypted; the relay sees only V7 ciphertext.
+
+### Files
+- Drag-and-drop upload of files **and folders**, queued and resumable across
+  reconnects and tab navigations.
+- Streaming, range-based downloads — large files start saving without
+  buffering the whole thing in memory.
+- Move, rename, copy, trash with restore. **Cross-provider move** decrypts in
+  the browser and re-uploads to the new backend without round-tripping
+  plaintext through the relay.
+- Search by filename with type filters: documents, images, videos, audio,
+  archives, code.
+
+### Photos
+- Chronological timeline grouped from EXIF metadata.
+- Per-folder gallery view.
+- Encrypted **Collections** — albums you build by hand, reorder, rename, and
+  share as a single bundle.
+
+### Sharing
+- Single-file shares and folder/collection bundle shares. Time-bound: 1 hour
+  / 1 day / 7 days / 30 days.
+- Optional Argon2id-protected password as a second factor on top of the URL
+  key.
+- Recipients open the link in any browser. **No account, no install
+  required.**
+
+### Multi-device
+- QR-based pairing with a short SAS verification code shown on both screens
+  — confirms there is no relay-in-the-middle.
+- Owner / member roles. Owner mints time-bound invite codes and revokes
+  individual devices.
+- Per-device sign-out invalidates the cookie server-side; a captured cookie
+  is unusable after sign-out.
+
+### Identity & recovery
+- Passphrase + Argon2id (64 MB / 3 iter / 4-way parallel), stretched in the
+  browser before contributing to a key.
+- One-time **recovery key** displayed once at vault creation. Last-resort
+  path; the relay never sees it.
+- Optional **passkey unlock** — *presence* (passkey adds a possession
+  factor) or *PRF* (Face ID / Touch ID / Windows Hello derives the
+  device-key wrapping secret). A further opt-in lets the passkey replace
+  the passphrase entirely on a trusted device.
+
+### On-device privacy
+- **Forget on this device** drops cached provider credentials without
+  touching the remote vault. Other enrolled devices keep working.
+- Save-reminder before vault save, so closing the tab mid-save can't
+  surprise you with a partial vault file on the storage backend.
+- Optional vault sound cues (seal thunk on save, soft click on unlock) —
+  off by default.
+
+## Why Wattcloud
+
+There is no shortage of "secure cloud" products. Most of them lock you into
+their storage, store your data in a vendor's database, and ask you to trust
+a privacy policy. Wattcloud's design choices are about making those trust
+asks structural rather than contractual.
+
+<div class="wc-why-list">
+  <div class="wc-why-card">
+    <h3>Bring your own storage</h3>
+    <p>Wattcloud sits on storage you already run or already pay for — your NAS, a Hetzner Storage Box, a Cloudflare R2 bucket, MinIO. There is no per-gigabyte storage tax and no vendor to extract data from. Migrating away is a file copy.</p>
+  </div>
+  <div class="wc-why-card">
+    <h3>Multiple providers, one vault</h3>
+    <p>Connect WebDAV, SFTP, and S3-compatible backends side by side under a single passphrase, device list, and keyspace. <strong>Cross-provider moves</strong> decrypt in the browser and re-upload to the new backend — the relay never sees plaintext during migration.</p>
+  </div>
+  <div class="wc-why-card">
+    <h3>A thin relay, not a back-end</h3>
+    <p>The relay handles enrollment cookies, ephemeral share blobs, and the SFTP transport. That is the entire surface. It holds no user database, no plaintext, no key material, and no client IPs. There is no large datastore to compromise because there isn't one.</p>
+  </div>
+  <div class="wc-why-card">
+    <h3>Sharing without exposing your storage</h3>
+    <p>When you create a share, the relay parks an opaque V7 ciphertext copy for the share's lifetime. Recipients fetch from the relay — never from your storage backend, never with provider-level credentials. Expiry is server-enforced; the sweeper purges. Optional Argon2id password adds a factor on top of the URL key.</p>
+  </div>
+  <div class="wc-why-card">
+    <h3>Post-quantum where it matters</h3>
+    <p>"Harvest now, decrypt later" is the realistic threat — adversaries record encrypted traffic today and wait for quantum hardware. Every Wattcloud session derives keys from a hybrid of X25519 and <strong>ML-KEM-1024</strong> (NIST-standardized PQ KEM). Both have to fail for a break. There is no classical-only downgrade path.</p>
+  </div>
+  <div class="wc-why-card">
+    <h3>Browser-only, no agent to trust</h3>
+    <p>No desktop sync app, no mobile binary. The crypto kernel is a sandboxed WebAssembly module loaded into a Web Worker — same surface every time you open the tab. Update the relay; the SPA refreshes from the same domain. There is no separate client update channel.</p>
+  </div>
+  <div class="wc-why-card">
+    <h3>Privacy by structure, not by policy</h3>
+    <p>Most "encrypted" cloud services rely on you trusting their privacy policy. Wattcloud's privacy guarantees are enforced by browser-side cryptography — not admin policy on a server you do not control. The seven zero-knowledge invariants (ZK-1 … ZK-7) are enumerated in <a href="https://github.com/wattzupbyte/wattcloud/blob/main/SECURITY.md"><code>SECURITY.md</code></a> for auditors who want to trace them through the code. AGPL-3.0, sigstore-signed releases, no telemetry, no analytics, GDPR-bounded logging by default.</p>
+  </div>
+</div>
+
+## What this site is
+
+Operator-facing documentation for self-hosters: install, access control,
+provider connection, upgrades. Protocol details and the cryptographic
+threat model live in
+[`SPEC.md`](https://github.com/wattzupbyte/wattcloud/blob/main/SPEC.md)
+and [`SECURITY.md`](https://github.com/wattzupbyte/wattcloud/blob/main/SECURITY.md) —
+those are the source of truth.

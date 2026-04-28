@@ -1,0 +1,119 @@
+---
+title: Access control
+description: Restricted vs. open enrollment, claim tokens, invite codes, device revocation, and the lockout-recovery flow.
+sidebar:
+  order: 2
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Wattcloud's relay has no concept of "users" — it only knows enrolled
+**devices**. Every operational endpoint is gated by a per-device JWT cookie,
+and there are exactly two flows that mint one: a one-time **claim token**
+(first owner) and a TTL-bounded **invite code** (everyone else).
+
+## Restricted vs. open mode
+
+`WATTCLOUD_ENROLLMENT_MODE` in `/etc/wattcloud/wattcloud.env` controls the
+posture:
+
+| Value | Behaviour |
+|---|---|
+| `restricted` (fresh-install default) | Every relay path requires a `wattcloud_device` cookie. Strangers land on the invite-entry screen and cannot probe further. |
+| `open` (default on upgrades from old installs) | No gate. Anyone with the URL can use the relay. |
+| Anything else | Treated as `open` with a warning in the log — fail-open so a typo cannot lock you out. Pin the value if you need strict behaviour. |
+
+Upgrades from pre-existing installs are **not silently flipped** to
+`restricted`. To lock down an existing host:
+
+```bash
+echo 'WATTCLOUD_ENROLLMENT_MODE=restricted' \
+  | sudo tee -a /etc/wattcloud/wattcloud.env
+sudo systemctl restart wattcloud
+```
+
+## Claiming ownership (first run)
+
+When restricted mode is on and the relay has zero owners, it writes a
+single-use 32-byte bootstrap token under `/var/lib/wattcloud/state/` with
+mode `0700`. The token expires after 24 hours.
+
+```bash
+sudo wattcloud claim-token        # prints the token + unlinks the file
+```
+
+Open `https://<your-domain>`, paste the token into the claim screen, name
+this device, and that device becomes the first owner.
+
+The CLI is a thin wrapper around `cat` + `unlink` that runs as the relay's
+user — there is no other path to read the token.
+
+## Inviting additional devices
+
+From the SPA: **Settings → Access Control → Invites**.
+
+1. Tap **Generate invite**, set a label and a TTL (1 h / 24 h / 7 d).
+2. The 11-character code is shown **once** in a reveal modal, formatted as
+   `AAAA-BBBB-CCC` (e.g. `A7KB-X9MQ-R4S`). After you close the modal, only
+   its HMAC hash remains on the server — you can revoke but not re-display.
+3. Hand the code to the invitee over a secure channel of your choice.
+4. Invitee opens `https://<your-domain>`, enters the code on the
+   invite-entry screen, names their device, and is enrolled.
+
+Invite codes are single-use, TTL-bounded, and HMAC-hashed at rest. The
+brute-force ceiling is 5 attempts / 5 min plus 10 / hour per IP, with
+counters held only in memory — no IP is persisted to disk. With 31¹¹ ≈
+3×10¹⁶ entropy the cap is effectively a memory-bound guard.
+
+## Revoking a device
+
+**Settings → Access Control → Enrolled devices** lists every enrolled device
+(owner and member alike) with a last-seen bucket rounded to the hour.
+
+- **Revoke** flips the row server-side; the cookie clears on that device's
+  next request.
+- **Sign out on this device** (under *This session*) revokes the current
+  browser's cookie server-side, so a captured cookie cannot be replayed
+  after sign-out. To come back on that browser you need a fresh invite.
+- The **sole owner cannot revoke themselves** from the web path — the
+  backend returns `409 last_owner`. Use the recovery flow below.
+
+## Recovery: "I've locked myself out"
+
+Scenario: you were the sole owner, lost access (lost device, cleared
+browser, hardware died), and no one can mint you an invite.
+
+```bash
+sudo wattcloud regenerate-claim-token
+sudo wattcloud claim-token
+```
+
+`regenerate-claim-token` mints a fresh 24-hour bootstrap token. **Existing
+owners stay enrolled** — the new device joins as an *additional* owner.
+Open the bootstrap screen, paste the token, name the new device, and revoke
+the stale one from *Access Control* afterwards.
+
+<Aside type="caution" title="Last-resort, not routine">
+  `regenerate-claim-token` is meant to recover from genuine lockouts, not as
+  a substitute for the invite flow. Anyone who can run sudo on the VPS can
+  enrol themselves as an owner via this path — protect SSH access
+  accordingly. The `sudo wattcloud harden` script covers SSH lockdown.
+</Aside>
+
+## Session lifecycle
+
+- Successful claim or invite → 90-day cookie.
+- Any relay action within 7 days of expiry triggers a sliding refresh; the
+  server mints a new 90-day cookie in the same response. Active users never
+  re-enrol.
+- 90 days of silence → cookie expires. The SPA shows a dedicated
+  **session expired** screen explaining how to come back (fresh invite).
+  Vault data on the storage provider is untouched.
+- **Sign out on this device** revokes server-side immediately and wipes the
+  local hint.
+
+## Adjacent docs
+
+- The matching upgrade flow → [Upgrade & rollback](/wattcloud/install/upgrades/).
+- For the cryptographic threat model behind the cookie and challenge flow,
+  see [`SECURITY.md` §15](https://github.com/wattzupbyte/wattcloud/blob/main/SECURITY.md).

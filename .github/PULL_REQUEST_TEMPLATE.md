@@ -32,6 +32,7 @@ For non-trivial changes, please link an issue you've already discussed.
 - [ ] No new code paths send plaintext, key material, or user-identifying data to the relay.
 - [ ] No frozen protocol identifier (HKDF info string, vault root path, manifest field name, AES-GCM nonce derivation) was renamed; if one was, this PR is a protocol version bump with a migration plan.
 - [ ] Frontend changes were verified in a browser (not just `tsc` / `vitest`).
+- [ ] If install scripts, packaging, the BYO protocol, or operator-facing behaviour changed, `docs/` was updated to match.
 
 ## Linked issues
 

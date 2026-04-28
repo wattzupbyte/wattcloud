@@ -1,0 +1,127 @@
+---
+title: S3-compatible
+description: Connect AWS S3, Cloudflare R2, Backblaze B2, Wasabi, MinIO, Storj, or any S3-API bucket to a Wattcloud vault.
+sidebar:
+  order: 3
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+
+The S3 provider talks to anything that speaks the S3 REST API — AWS S3,
+Cloudflare R2, Backblaze B2, Wasabi, MinIO, Storj, custom self-hosted
+endpoints. The SPA detects the major dialects and adjusts a couple of
+defaults automatically.
+
+## Connection fields
+
+| Field | Example | Notes |
+|---|---|---|
+| Endpoint URL | `https://s3.eu-west-1.amazonaws.com` | Full URL of the S3-compatible endpoint. For R2: `https://<account>.r2.cloudflarestorage.com`. |
+| Region | `us-east-1` | Some endpoints accept `auto`; others require an exact region (AWS, Wasabi). |
+| Bucket | `my-bucket` | Must already exist; the SPA does not create buckets. |
+| Bucket path prefix | `wattcloud` | Optional. Vault root becomes `s3://<bucket>/<prefix>/WattcloudVault/`. Leave empty to place the vault at the bucket root. |
+| Access Key ID | `AKIA…` | Stored on device, AES-GCM-wrapped, never sent to the relay. |
+| Secret Access Key | … | Same. Never logged, never persisted server-side. |
+| Force path-style URLs | toggle | On for MinIO and Backblaze B2; off for AWS, R2, Wasabi (auto-detected — override only when the detection guesses wrong). |
+
+## Auto-detection
+
+When you paste an endpoint, the SPA checks the hostname and, if it
+matches, applies sensible defaults:
+
+| Endpoint shape | Detected | Path-style |
+|---|---|---|
+| `*.r2.cloudflarestorage.com` | Cloudflare R2 | off |
+| `s3.<region>.wasabisys.com` | Wasabi | on |
+| `*.<your-host>` (anything not above and matching MinIO patterns) | MinIO | on |
+
+## CORS — set this before connecting
+
+Browsers refuse cross-origin S3 calls without an explicit CORS allowance
+on the bucket. If the connect step fails with a generic network error or
+"Unknown error", the SPA flags this and shows a *Copy CORS JSON* button.
+The minimal rule is:
+
+```json
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": ["*"],
+      "AllowedMethods": ["GET", "PUT", "HEAD", "DELETE"],
+      "AllowedHeaders": ["*"],
+      "ExposeHeaders": ["ETag"],
+      "MaxAgeSeconds": 3600
+    }
+  ]
+}
+```
+
+Tighten `AllowedOrigins` to your actual SPA origin in production
+(`https://cloud.example.com`).
+
+### Where to paste it
+
+- **AWS S3**: bucket → *Permissions* → *Cross-origin resource sharing*.
+- **Cloudflare R2**: bucket → *Settings* → *CORS Policy*.
+- **MinIO**: `mc admin config set` for the server, or front a reverse
+  proxy that injects CORS headers.
+- **Backblaze B2**: Application Key UI → CORS rules attached to the bucket.
+- **Wasabi**: bucket → *Properties* → *Permissions* → *CORS*.
+
+## IAM — least privilege
+
+The SPA only needs object-level access to the bucket (or the prefix you
+chose). For AWS, an inline policy looks like:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::my-bucket",
+      "Condition": { "StringLike": { "s3:prefix": "wattcloud/*" } }
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::my-bucket/wattcloud/*"
+    }
+  ]
+}
+```
+
+Drop the `Condition` and shorten the prefix if the vault sits at the
+bucket root. Cloudflare R2 and the other vendors expose equivalent
+controls; tune for the same surface.
+
+## Encryption posture
+
+The bucket's own encryption settings (SSE-S3, SSE-KMS, R2 default
+encryption) are independent of Wattcloud's. They do not weaken or
+strengthen Wattcloud's V7 encryption — the bytes the SPA writes to the
+bucket are already AES-256-GCM ciphertext with a hybrid X25519 +
+ML-KEM-1024 key wrap. Server-side encryption on top is fine; turning it
+off doesn't make anything readable to the bucket operator.
+
+## Cost notes
+
+The vault writes V7 ciphertext objects sized to your file chunking
+(default chunk size around 1 MiB). Object listing happens on each
+folder-level navigation. For very large vaults on per-request-priced
+backends (B2, R2 free tier, Wasabi minimum object durations), this can
+add up — keep an eye on monthly object counts and request rates if you
+have hundreds of thousands of files.
+
+<Aside type="caution" title="Region pinning matters">
+  Once the vault is on a region, moving it requires a cross-provider move
+  (the SPA decrypts in the browser and re-uploads to the new region —
+  never round-tripping plaintext through the relay). That works, but
+  it's a full data migration in real time. Pick the region thoughtfully.
+</Aside>
+
+## Adjacent docs
+
+- [WebDAV](/wattcloud/providers/webdav/) for file-level backends.
+- [SFTP](/wattcloud/providers/sftp/) for SSH-reachable hosts.

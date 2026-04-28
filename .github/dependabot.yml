@@ -52,6 +52,14 @@ updates:
       - "deps"
       - "typescript"
 
+  - package-ecosystem: "npm"
+    directory: "/docs"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "deps"
+      - "docs"
+
   - package-ecosystem: "docker"
     directory: "/"
     schedule:

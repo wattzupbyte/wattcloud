@@ -1,0 +1,138 @@
+---
+title: One-command install
+description: What install.sh and deploy-vps.sh actually do on the VPS, and how to run them non-interactively.
+sidebar:
+  order: 1
+---
+
+import { Aside, FileTree } from '@astrojs/starlight/components';
+
+The recommended install path is a single script downloaded from the GitHub
+release, verified with `cosign`, and handed off to a deploy script that lives
+inside the signed tarball. Two scripts, one trust boundary.
+
+## Prerequisites
+
+| What | Why |
+|---|---|
+| Fresh Ubuntu 22.04 / 24.04 VPS | Tested OS. Debian stable likely works; other distros at your own risk. |
+| Public IPv4 (and ideally IPv6) | Caddy needs to reach Let's Encrypt for ACME. |
+| DNS A/AAAA record pointing at the VPS | The hostname is locked into the systemd env on first run. |
+| Ports 80 + 443 open inbound | 80 for ACME, 443 for the SPA. |
+| Root or sudo | The script writes to `/opt`, `/etc`, and the systemd unit dir. |
+
+`install.sh` does **not** open ports, edit SSH config, change the firewall, or
+install anything other than Caddy and the relay. Those decisions are yours;
+the optional `sudo wattcloud harden` covers them.
+
+## What the install does, step by step
+
+```bash
+curl -sSLO https://github.com/wattzupbyte/wattcloud/releases/latest/download/install.sh
+less install.sh                       # ~150 lines — read before running
+sudo bash install.sh cloud.example.com
+```
+
+Under the hood:
+
+1. **Resolve the latest stable release** via the GitHub API. Prerelease tags
+   (`-rc`, `-beta`) are skipped so you can't accidentally land on one.
+2. **Download the per-arch tarball, signature, and certificate** to a temp
+   dir.
+3. **Verify with `cosign verify-blob`** against `TRUSTED_SIGNER_IDENTITY` —
+   the project's pinned Sigstore identity regex. Forks override this in
+   `/etc/wattcloud/wattcloud.env`; no script patching required.
+4. **Extract to `/opt/wattcloud/releases/vX.Y.Z/`** and atomically symlink
+   `/opt/wattcloud/current` → that directory.
+5. **Hand off to `deploy-vps.sh`** from inside the verified tarball. The
+   outer `install.sh` is now done.
+
+`deploy-vps.sh` then:
+
+1. Installs Caddy from its official APT repo if it is not already present.
+2. Renders `packaging/Caddyfile.tmpl` into `/etc/caddy/Caddyfile` with the
+   hostname and a fresh ACME email, and reloads Caddy.
+3. Generates 32-byte JWT and HMAC signing keys into
+   `/etc/wattcloud/wattcloud.env` if it does not exist. **Existing env files
+   are not overwritten** — re-running the install on an already-claimed host
+   is safe.
+4. Renders `packaging/config.json.tmpl` into `/var/lib/wattcloud/config.json`
+   for the SPA's runtime config (`Cache-Control: no-store`).
+5. Installs `packaging/wattcloud.service` (sandboxed systemd unit:
+   `DynamicUser=yes`, `ProtectSystem=strict`, `MemoryDenyWriteExecute=yes`,
+   capabilities dropped, seccomp filter on) into `/etc/systemd/system/`.
+6. `daemon-reload`, enable, start.
+7. Polls `https://cloud.example.com/health` for up to 30 s. If the service
+   does not come back green, the install aborts and the unit is rolled back.
+
+## After install — what landed on disk
+
+<FileTree>
+
+- /opt/wattcloud/
+  - current → releases/vX.Y.Z/    [symlink]
+  - releases/
+    - vX.Y.Z/
+      - bin/
+        - byo-relay
+      - web/
+        - (built SPA assets)
+      - scripts/
+        - deploy-vps.sh
+        - update.sh
+        - harden-vps.sh
+        - …
+      - packaging/
+- /etc/wattcloud/
+  - wattcloud.env    [0600 — generated signing keys + config]
+- /var/lib/wattcloud/
+  - config.json      [SPA runtime config]
+  - state/           [enrollment journal, share blobs, claim tokens]
+- /etc/systemd/system/wattcloud.service
+- /etc/caddy/Caddyfile
+
+</FileTree>
+
+`/var/lib/wattcloud/state/` is the only directory the relay writes to at
+runtime. It holds enrollment cookies, ephemeral share blobs (sweeper-purged
+on expiry), and one-time claim tokens. **No client IPs**, no plaintext, no
+filenames.
+
+## Non-interactive install
+
+For Ansible / cloud-init / scripted setup:
+
+```bash
+sudo bash install.sh cloud.example.com --yes
+```
+
+`--yes` accepts the cosign-verified-then-extract step without a prompt.
+Everything else is already non-interactive.
+
+## Forks: replacing the trusted signer
+
+The default identity regex is hard-coded for the upstream project. If you
+publish your own signed releases:
+
+```bash
+echo 'TRUSTED_SIGNER_IDENTITY=^https://github\.com/your-fork/wattcloud/' \
+  | sudo tee -a /etc/wattcloud/wattcloud.env
+```
+
+`install.sh` and `wattcloud-update` honour the env override before doing
+anything else. There is no "skip verification" flag and there will not be
+one — if `cosign verify-blob` fails, the install aborts.
+
+<Aside type="caution" title="If verification fails">
+  A failed `cosign verify-blob` is **always** a stop condition. It usually
+  means one of: the GitHub release was tampered with, your signer identity
+  regex is wrong for the source repo, or your machine clock is far enough off
+  that the certificate looks invalid. Investigate before retrying.
+</Aside>
+
+## Adjacent docs
+
+- The full recipe to claim ownership and lock the instance down →
+  [Access control](/wattcloud/install/access-control/).
+- The matching update path with auto-rollback →
+  [Upgrade & rollback](/wattcloud/install/upgrades/).

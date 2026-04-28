@@ -19,6 +19,7 @@ on:
       - '.gitignore'
       - '.github/dependabot.yml'
       - '.github/ISSUE_TEMPLATE/**'
+      - 'docs/**'
   pull_request:
     branches: [main]
     paths-ignore:
@@ -28,6 +29,7 @@ on:
       - '.gitignore'
       - '.github/dependabot.yml'
       - '.github/ISSUE_TEMPLATE/**'
+      - 'docs/**'
 
 permissions:
   contents: read

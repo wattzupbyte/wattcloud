@@ -1,0 +1,109 @@
+---
+title: Quickstart
+description: Five minutes from a fresh VPS to a running, claimed Wattcloud vault.
+sidebar:
+  order: 1
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+This page gets you from "fresh Ubuntu VPS" to "vault unlocked in a browser" in
+about five minutes. If something feels under-explained, the
+[install reference](/wattcloud/install/one-command-install/) is the long form.
+
+## Prerequisites
+
+- A fresh Ubuntu 22.04+ VPS reachable on ports 80 and 443.
+- A DNS A (or AAAA) record pointing your chosen hostname at the VPS — for
+  example `cloud.example.com`. Caddy needs this to issue the TLS certificate.
+- Root or sudo access on the VPS.
+- An existing storage backend you can reach over WebDAV, SFTP, or an
+  S3-compatible API (NAS share, Hetzner Storage Box, MinIO, R2, B2, …).
+
+<Aside type="note" title="Sizing">
+  The relay binary is around 60&nbsp;MB on disk and idles in single-digit
+  megabytes of RAM. The smallest VPS tier from any reputable provider is
+  enough — disk and bandwidth are the only things that scale with use, and
+  encrypted blobs live on **your** storage backend, not the VPS.
+</Aside>
+
+## Install
+
+<Steps>
+
+1. **SSH into the VPS** and download the install script directly from the
+   GitHub release. Read it before running — it is short.
+
+   ```bash
+   curl -sSLO https://github.com/wattzupbyte/wattcloud/releases/latest/download/install.sh
+   less install.sh
+   ```
+
+2. **Run it** with your hostname.
+
+   ```bash
+   sudo bash install.sh cloud.example.com
+   ```
+
+   The script downloads the latest signed release tarball, verifies it with
+   `cosign verify-blob` against the pinned Sigstore signer identity, extracts
+   to `/opt/wattcloud/releases/vX.Y.Z/`, and hands off to the bundled
+   `deploy-vps.sh`. That step provisions Caddy for TLS, generates fresh
+   signing keys into `/etc/wattcloud/wattcloud.env`, installs the sandboxed
+   systemd unit, starts `wattcloud.service`, and waits for `/health` to come
+   back green.
+
+   No prompts, no firewall changes, no SSH edits.
+
+3. **Claim ownership** of the new instance.
+
+   ```bash
+   sudo wattcloud status          # service + install-tree state
+   sudo wattcloud claim-token     # one-time bootstrap token
+   ```
+
+   `claim-token` prints a 32-byte hex token from the relay's state directory
+   and unlinks the file. The token is single-use and expires after 24 hours.
+
+4. **Open the SPA** at `https://cloud.example.com`. Paste the bootstrap token
+   into the claim screen, name this device, and you become the first owner.
+
+5. **Connect a storage backend** from *Add storage*. Pick the one that
+   matches what you already run:
+
+   - WebDAV → [`Connect WebDAV`](/wattcloud/providers/webdav/)
+   - SFTP → [`Connect SFTP`](/wattcloud/providers/sftp/)
+   - S3-compatible → [`Connect S3`](/wattcloud/providers/s3/)
+
+6. **Set a passphrase** when the SPA prompts. Argon2id will stretch it in the
+   browser (this is deliberately heavy — about 1&nbsp;s on a laptop). The SPA
+   then displays the **recovery key** once. Copy it somewhere durable; the
+   relay never sees it and there is no recovery flow if you lose both the
+   passphrase and the key.
+
+</Steps>
+
+## Verify it actually works
+
+The encryption strip at the top of the SPA is the live posture indicator
+(see [DESIGN.md §29.4](https://github.com/wattzupbyte/wattcloud/blob/main/DESIGN.md#294-encryption-status-strip)).
+If it pulses, ciphertext is being written. If it goes red, expand the
+banner — the message points at which provider failed.
+
+A healthy server returns:
+
+```bash
+curl -s https://cloud.example.com/health
+# {"ok":true,"version":"vX.Y.Z","build":"<sha>"}
+```
+
+## Next steps
+
+- Lock the instance down so only your invited devices can use it →
+  [Access control](/wattcloud/install/access-control/).
+- Stay current and learn the rollback flow →
+  [Upgrade & rollback](/wattcloud/install/upgrades/).
+- Optional: harden the host (UFW, fail2ban, SSH lockdown, AIDE) with
+  `sudo wattcloud harden`. Documented in the
+  [README's "VPS hardening"](https://github.com/wattzupbyte/wattcloud#vps-hardening-optional)
+  section until the dedicated docs page lands.

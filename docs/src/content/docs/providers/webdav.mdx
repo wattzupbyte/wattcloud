@@ -1,0 +1,107 @@
+---
+title: WebDAV
+description: Connect Synology, QNAP, TrueNAS, Unraid, Nextcloud, ownCloud, or any spec-compliant WebDAV server to a Wattcloud vault.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+WebDAV is the path of least resistance for most NAS owners. Point Wattcloud
+at the same `https://your-nas/dav/...` endpoint your file manager uses, and
+the SPA writes V7 ciphertext into a `WattcloudVault/` directory at that
+location.
+
+## Connection fields
+
+| Field | Example | Notes |
+|---|---|---|
+| Server URL | `https://nas.example.com/remote.php/dav/files/alice/` | Full URL up to (and including) the directory the vault should live under. |
+| Username | `alice` | Whatever the WebDAV server expects for HTTP Basic auth. |
+| Password | … | Stored locally, AES-GCM-wrapped by a non-extractable per-vault `CryptoKey`. Never sent to the relay. |
+
+The vault root inside that URL is always `WattcloudVault/`. The SPA creates
+it on first use via `MKCOL` (treating both `201 Created` and
+`405 Method Not Allowed` as success).
+
+## Tested servers
+
+- Nextcloud (uses optimised v2 chunked uploads — see below)
+- ownCloud (same)
+- Synology DSM (WebDAV Server package)
+- QNAP QTS / QuTS hero (WebDAV Server)
+- TrueNAS SCALE (WebDAV via apps catalogue or share config)
+- Unraid (WebDAV plugin)
+- Anything tus.io–capable (uses tus when advertised)
+
+Anything spec-compliant should work via the generic streaming PUT path; the
+items above just hit a faster code path because the SPA detects their
+capability headers.
+
+## Upload strategy (auto-detected)
+
+The SPA probes the server once at connect time and picks the best fit:
+
+1. **Nextcloud / ownCloud v2 chunking.** Detected via `PROPFIND` on
+   `/remote.php/dav/`. Uploads write numbered chunks (5 MiB minimum,
+   except possibly the final one) to a transaction directory, then a
+   single `MOVE` flips the assembled file into place.
+2. **tus.io resumable uploads.** Detected via the `Tus-Resumable` header
+   on an `OPTIONS` request. `POST` to mint an upload URL, then `PATCH`
+   chunks.
+3. **Streaming PUT.** Generic WebDAV with a streamed request body
+   (`fetch(..., body: stream)` plus `duplex: 'half'`). Used when the
+   browser supports it.
+4. **Buffer-then-PUT.** Last-resort fallback for browsers without
+   streaming request bodies (Safari < 17, very old Firefox). Works, but
+   memory scales with file size — practical cap is whatever the tab can
+   allocate. Putting Nextcloud, ownCloud, or a tus.io front-end in front
+   of a vanilla server eliminates this codepath.
+
+For uploads larger than 100 MiB the SPA also runs a
+`DAV:quota-available-bytes` preflight so a quota-exhausted server fails
+fast rather than 90 % of the way through.
+
+## CORS — the most common failure
+
+Browsers refuse cross-origin WebDAV without explicit CORS allowance. If
+the SPA runs on `cloud.example.com` and the WebDAV server is at
+`nas.example.com`, the WebDAV server has to allow it.
+
+A failed connection that surfaces as "Unknown error" or a generic
+network failure is almost always CORS. Common fixes:
+
+- **Nextcloud / ownCloud:** add the SPA origin to
+  `'cors.allowed-origins'` in `config/config.php`, or front-end via a
+  reverse proxy that injects the headers.
+- **Synology / QNAP / Unraid:** WebDAV servers behind these usually
+  surface a CORS option in the share or service config; otherwise put a
+  small reverse proxy (Caddy, nginx) in front and let it inject the
+  headers.
+- **Self-built WebDAV:** add `Access-Control-Allow-Origin`,
+  `-Methods` (`GET, PUT, PROPFIND, MKCOL, MOVE, DELETE, OPTIONS`), and
+  `-Headers` (`*` is fine for a private server).
+
+## Capability matrix at a glance
+
+| Capability | Generic WebDAV | NC v2 | tus.io |
+|---|---|---|---|
+| Resumable uploads | No (single PUT) | Yes (per-chunk) | Yes (per-chunk) |
+| Streaming download | Yes (HTTP `Range`) | Yes | Yes |
+| Concurrent reads | Yes | Yes | Yes |
+| Cross-provider move | Yes — re-encrypts in browser, re-uploads | Yes | Yes |
+
+<Aside type="caution" title="Don't disable HTTP Basic auth">
+  WebDAV uses HTTP Basic. The SPA pairs that with HTTPS (you should
+  too) and AES-GCM-wraps the password locally before storing it on
+  device. There is no OAuth, no token refresh, and no way to plug a
+  different auth scheme in without editing
+  `sdk/sdk-core/src/byo/providers/webdav.rs`.
+</Aside>
+
+## Adjacent docs
+
+- [SFTP](/wattcloud/providers/sftp/) — same NAS, different transport.
+  Faster for large files on home uplinks.
+- [S3-compatible](/wattcloud/providers/s3/) — Cloudflare R2, Backblaze
+  B2, MinIO, etc.

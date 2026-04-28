@@ -1,0 +1,112 @@
+---
+title: SFTP
+description: Connect any SSH-reachable host (NAS, Hetzner Storage Box, VPS, …) to a Wattcloud vault.
+sidebar:
+  order: 2
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+SFTP is the right pick when WebDAV is unavailable or awkward — a NAS that
+only exposes SSH, a Hetzner Storage Box, an SSH-only VPS. Browsers cannot
+speak SSH directly, so the relay performs the SSH transport on the SPA's
+behalf. The SPA still does all the cryptography; the relay only sees V7
+ciphertext crossing the SSH session.
+
+## Connection fields
+
+| Field | Example | Notes |
+|---|---|---|
+| Hostname | `nas.example.com` | DNS or IP. |
+| Port | `22` | Defaults to 22. Override for non-standard SSH ports. |
+| Username | `alice` | Whatever the SFTP server expects. |
+| Base path | `/data` | Optional. Vault root becomes `<base path>/WattcloudVault/`. Empty places the vault at the SFTP session root. |
+| Password **or** Private key (PEM) | … | Either is sufficient. Both are AES-GCM-wrapped on device and forwarded to the relay only at session start. |
+
+On first connect the SPA shows the host's SSH key fingerprint for **TOFU**
+(trust-on-first-use) confirmation. After accept, a fingerprint mismatch on a
+later connect blocks the session — the same way `ssh` itself behaves.
+
+## Tested servers
+
+- Synology, QNAP, TrueNAS, Unraid (built-in SSH)
+- Hetzner Storage Box (SFTP-only access plan)
+- Plain Linux hosts running OpenSSH
+- Any `russh_sftp`-compatible server
+
+## How the relay handles SFTP
+
+```
+┌──────────────┐  V7 ciphertext over WSS  ┌──────────────┐  SSH (SFTP)  ┌──────────────┐
+│   Browser    │ ───────────────────────▶ │  byo-relay   │ ───────────▶ │ SFTP server  │
+│  (SPA + WW)  │ ◀─────────────────────── │  (proxy)     │ ◀─────────── │ (your NAS)   │
+└──────────────┘                          └──────────────┘              └──────────────┘
+```
+
+- Credentials reach the relay per session **over TLS**, are held only in
+  memory, and are dropped when the session ends or the browser tab closes.
+  Relay disk never sees them.
+- The relay's SFTP gateway has two protocols: **v3** for streaming reads
+  (256 KiB chunks straight from `ssh2::File`, bounded at 8 concurrent open
+  reads per session) and **v2** for resumable writes (≤ 200 MiB
+  server-side buffer, never persisted beyond the upload session).
+- File **content** the relay forwards is V7 ciphertext — encrypted in the
+  browser before it ever enters the WebSocket. Filenames are AES-GCM-SIV
+  ciphertext, deterministic so the SFTP server doesn't see plaintext.
+
+## Per-IP limits
+
+The relay caps concurrent SFTP sessions to keep the gateway from being
+abused as a generic SSH proxy:
+
+| Var | Default | Meaning |
+|---|---|---|
+| `SFTP_MAX_CONCURRENT_PER_IP` | `3` | Concurrent SFTP sessions per source IP. Returns `429` at handshake when exceeded. |
+
+The default is comfortable for two-device-per-user households. Bump it in
+`/etc/wattcloud/wattcloud.env` if you need more parallelism.
+
+## Choosing key vs. password auth
+
+- **Key auth** is recommended. Generate a dedicated key, paste the PEM into
+  the *Private key* field, and put the public half in the SFTP server's
+  `authorized_keys`. The PEM is encrypted at rest on device and never
+  written to relay disk.
+- **Password auth** works and is fine for low-stakes or quick setups.
+  Hetzner Storage Boxes accept either.
+
+If a key has a passphrase, the SPA holds it in memory only for the
+duration of the connect; it is not persisted alongside the key.
+
+## Common gotchas
+
+- **"Permission denied" on a fresh key.** OpenSSH refuses keys whose
+  `authorized_keys` line is on a `0644` file inside a `0755` `~/.ssh/`.
+  Check `chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys` on the
+  server.
+- **Hetzner Storage Box paths.** The SSH session lands in your account's
+  home directory. The vault wants to live somewhere stable — set *Base
+  path* to `/home/wattcloud` (or similar) so the vault root doesn't drift
+  if your home dir changes.
+- **Relay's IP appearing in the SFTP server's logs.** Connections come
+  from your VPS, not from your home IP — that's expected. If the SFTP
+  server is on the same LAN as the SPA browser and you'd rather skip the
+  relay round-trip, [WebDAV](/wattcloud/providers/webdav/) is the
+  alternative.
+
+<Aside type="note" title="The relay sees ciphertext, but it does see the SFTP layer">
+  The cryptographic invariant is that the relay never sees plaintext file
+  bodies, plaintext filenames, or vault key material. SFTP credentials
+  reach the relay per session because the relay performs the SSH
+  transport on your behalf — they are held in memory only and dropped
+  when the session closes. See
+  [`SECURITY.md` §BYO Credential Handling](https://github.com/wattzupbyte/wattcloud/blob/main/SECURITY.md#credential-handling-byo)
+  for the long form.
+</Aside>
+
+## Adjacent docs
+
+- [WebDAV](/wattcloud/providers/webdav/) — usually faster for small-file
+  workloads.
+- [S3-compatible](/wattcloud/providers/s3/) — when storage is object
+  rather than filesystem.
