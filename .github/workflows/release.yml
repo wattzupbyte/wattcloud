@@ -202,7 +202,15 @@ jobs:
     needs: build-tarball
     runs-on: ubuntu-22.04
     steps:
+      # Full history + all tags so the "Write release notes" step can
+      # `git log $PREV_TAG..$REF_NAME` against the previous release.
+      # With the default shallow checkout, only the tagged commit is
+      # fetched and PREV_TAG resolves to empty, collapsing the changelog
+      # to a single line.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
