@@ -91,15 +91,19 @@ const fileTypes = [
 <header class="header-wrapper" class:hidden={!headerVisible}>
   <!-- ===== DESKTOP: Top Nav Bar (>= 600px) ===== -->
   <div class="top-nav">
-    <!-- The drawer auto-collapses to rail mode at viewport widths
-         ≤1023px (Drawer.svelte's `effectiveCollapsed`). Manual toggling
-         is only meaningful when the user actually has the choice
-         between expanded and rail; below that breakpoint the toggle
-         flipped the chevron icon but the drawer width stayed pinned
-         at rail, which read as a broken control. Hide the button in
-         that band so the affordance only appears when it works. -->
+    <!-- Wide desktop (≥1024px): collapse/expand toggle. The drawer
+         auto-rails at ≤1023px so this control is only meaningful
+         above that breakpoint — below it the chevron flipped but the
+         drawer stayed put, which read as a broken control.
+         Narrow desktop (600-1023px): hamburger that opens the drawer
+         as a mobile-style overlay, mirroring the mobile-top-bar's
+         "Open menu" button verbatim so the rail-band UX matches the
+         mobile UX exactly. -->
     <button class="btn-icon drawer-toggle-btn" onclick={handleToggleDrawer} aria-label="Toggle sidebar">
       {#if $drawerCollapsed}<ArrowLineRight size={20} weight="regular" />{:else}<ArrowLineLeft size={20} weight="regular" />{/if}
+    </button>
+    <button class="btn-icon drawer-rail-open-btn" onclick={handleOpenDrawer} aria-label="Open menu">
+      <List size={24} weight="regular" />
     </button>
     <div class="top-nav-spacer"></div>
     {#if $vaultStore.status === 'saving'}
@@ -211,14 +215,22 @@ const fileTypes = [
     opacity: 0;
   }
 
-  /* Hide the manual drawer toggle in the band where the drawer is
-     auto-collapsed (≤1023px). The toggle is only meaningful at widths
-     where the user can actually switch between expanded and rail —
-     keeping it visible inside the auto-rail band would re-introduce
-     the "chevron flips, drawer stays" regression. Mirrors Drawer.svelte's
-     viewportNarrow breakpoint exactly so the two pieces stay in sync. */
+  /* Two-button swap at the rail breakpoint:
+     - At ≤1023px the drawer auto-rails (Drawer.svelte's viewportNarrow),
+       so the collapse/expand toggle is meaningless and gets hidden in
+       favor of an "Open menu" hamburger that pops the drawer as a
+       mobile-style overlay.
+     - At ≥1024px the toggle drives a real expand/collapse and the
+       hamburger is hidden.
+     Both buttons stay in the same slot so the header layout is stable
+     across the breakpoint. */
   @media (max-width: 1023px) {
     .drawer-toggle-btn {
+      display: none;
+    }
+  }
+  @media (min-width: 1024px) {
+    .drawer-rail-open-btn {
       display: none;
     }
   }
