@@ -11,7 +11,7 @@
   import { onMount, onDestroy, getContext } from 'svelte';
   import { get } from 'svelte/store';
   import type { DataProvider, FileEntry, FolderEntry, CollectionEntry } from '../../byo/DataProvider';
-  import { byoFolders, byoSelectedFiles, byoSelectedFolders, byoSelectionMode, toggleByoFileSelection, toggleByoFolderSelection, clearByoSelection, resetByoFileStores } from '../../byo/stores/byoFileStore';
+  import { byoFiles, byoFolders, byoSelectedFiles, byoSelectedFolders, byoSelectionMode, toggleByoFileSelection, toggleByoFolderSelection, clearByoSelection, resetByoFileStores } from '../../byo/stores/byoFileStore';
   import { byoUploadQueue } from '../../byo/stores/byoUploadQueue';
   import { byoDownloadQueue } from '../../byo/stores/byoDownloadQueue';
   import { setByoSearchDataProvider, clearByoSearch, byoSearchQuery, byoSearchResults, byoSearchFolderResults, hasByoActiveFilters, setByoSearchQuery, setByoFileTypeFilter } from '../../byo/stores/byoSearch';
@@ -1572,6 +1572,17 @@
     {@const selIds = [...$byoSelectedFiles]}
     {@const favCount = selIds.filter((id) => favoriteFileIds.has(id)).length + [...$byoSelectedFolders].filter((id) => favoriteFolderIds.has(id)).length}
     {@const totalSel = $byoSelectedFiles.size + $byoSelectedFolders.size}
+    {@const selFiles = $byoFiles.filter((f) => $byoSelectedFiles.has(f.id))}
+    {@const selFolders = $byoFolders.filter((f) => $byoSelectedFolders.has(f.id))}
+    {@const selectionSummary = {
+      preview: [
+        ...selFolders.slice(0, 4).map((f) => ({ name: f.decrypted_name, kind: 'folder' as const })),
+        ...selFiles.slice(0, Math.max(0, 4 - selFolders.length)).map((f) => ({ name: f.decrypted_name, kind: 'file' as const, fileType: f.file_type })),
+      ],
+      fileCount: selFiles.length,
+      folderCount: selFolders.length,
+      totalBytes: selFiles.reduce((acc, f) => acc + f.size, 0),
+    }}
     <!-- canShare: anything except an empty selection. Single-file/single-
          folder still go through their dedicated flows for clearer
          recipient titles; everything else funnels through the mixed
@@ -1585,6 +1596,7 @@
       $byoSelectedFolders.size === 0}
     <SelectionToolbar
       selectedCount={totalSel}
+      summary={selectionSummary}
       canDetails={true}
       canShare={canShareSelection}
       canSendToOS={canSendToOSSelection}

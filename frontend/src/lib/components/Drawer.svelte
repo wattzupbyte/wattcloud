@@ -150,11 +150,30 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     collapsed = !collapsed;
   }
 
+  // Auto-collapse: at viewport widths below ~1024px the 280px expanded
+  // drawer crowds the file list (folder/file names get truncated to
+  // single letters). We force rail mode at ≤1023px regardless of the
+  // user's explicit `collapsed` choice; their preference is preserved
+  // and re-applied once the viewport widens past the threshold.
+  // 600px and below is mobile-overlay territory and uses a separate
+  // .drawer-mobile element, so this auto-rail only matters between
+  // 600px and 1023px.
+  let viewportNarrow = $state(false);
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(max-width: 1023px)');
+    const sync = () => { viewportNarrow = mq.matches; };
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  });
+  let effectiveCollapsed = $derived(collapsed || viewportNarrow);
+
   $effect(() => {
     if (typeof document !== 'undefined') {
       document.documentElement.style.setProperty(
         '--drawer-current-width',
-        collapsed ? 'var(--drawer-collapsed-width)' : 'var(--drawer-width)'
+        effectiveCollapsed ? 'var(--drawer-collapsed-width)' : 'var(--drawer-width)'
       );
     }
   });
@@ -196,7 +215,7 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
 <!-- Desktop: always-visible sidebar -->
 <aside
   class="drawer drawer-desktop"
-  class:collapsed
+  class:collapsed={effectiveCollapsed}
   role="navigation"
   aria-label="App navigation"
 >
@@ -204,14 +223,14 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     <!-- Header: Logo + app name -->
     <div class="drawer-header">
       <CloudBadge size={28} variant="outline" />
-      {#if !collapsed}<span class="drawer-app-name">Secure Cloud</span>{/if}
+      {#if !effectiveCollapsed}<span class="drawer-app-name">Secure Cloud</span>{/if}
     </div>
 
     <!-- User info -->
     {#if userName}
       <div class="drawer-user">
         <div class="drawer-avatar">{userInitial}</div>
-        {#if !collapsed}<span class="drawer-username">{userName}</span>{/if}
+        {#if !effectiveCollapsed}<span class="drawer-username">{userName}</span>{/if}
       </div>
     {/if}
 
@@ -222,13 +241,13 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
           class="drawer-link"
           class:active={currentView === link.id}
           onclick={() => handleNav(link.id)}
-          title={collapsed ? link.label : ''}
+          title={effectiveCollapsed ? link.label : ''}
         >
           <link.icon
             size={20}
             weight={currentView === link.id ? 'fill' : 'regular'}
           />
-          {#if !collapsed}{link.label}{/if}
+          {#if !effectiveCollapsed}{link.label}{/if}
         </button>
       {/each}
     </div>
@@ -236,9 +255,9 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     <!-- Admin link -->
     {#if isAdmin}
       <div class="drawer-section">
-        <button class="drawer-link" onclick={handleAdmin} title={collapsed ? 'Admin Settings' : ''}>
+        <button class="drawer-link" onclick={handleAdmin} title={effectiveCollapsed ? 'Admin Settings' : ''}>
           <Shield size={20} weight="regular" />
-          {#if !collapsed}Admin Settings{/if}
+          {#if !effectiveCollapsed}Admin Settings{/if}
         </button>
       </div>
     {/if}
@@ -249,7 +268,7 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
          identifiable at the narrow rail. Hidden when ≤1 provider. -->
     {#if providers.length > 1}
       <div class="drawer-section">
-        {#if !collapsed}
+        {#if !effectiveCollapsed}
           <span class="drawer-section-title">Providers</span>
         {/if}
         {#each providers as p (p.providerId)}
@@ -258,12 +277,12 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
             class="drawer-link"
             class:active={p.providerId === activeProviderId}
             type="button"
-            title={collapsed ? p.displayName : ''}
+            title={effectiveCollapsed ? p.displayName : ''}
             aria-label="Switch to {p.displayName}"
             aria-pressed={p.providerId === activeProviderId}
             onclick={() => selectProvider(p.providerId)}
           >
-            {#if collapsed}
+            {#if effectiveCollapsed}
               <span class="provider-badge" class:active={p.providerId === activeProviderId}>
                 {providerLabels.get(p.providerId) ?? '?'}
               </span>
@@ -291,7 +310,7 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
          the usage figure. Layout mirrors the shares row below: leading
          icon + title/label/bar stack so the two info rows read as a
          consistent pair. -->
-    {#if !collapsed}
+    {#if !effectiveCollapsed}
       <div class="drawer-section">
         <div class="drawer-shares drawer-shares-static">
           <span class="drawer-shares-icon" aria-hidden="true"><HardDrives size={16} weight="regular" /></span>
@@ -313,7 +332,7 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
     {/if}
 
     <!-- Shares (desktop) — tappable, opens Settings → Active shares. -->
-    {#if !collapsed && shareCount !== null}
+    {#if !effectiveCollapsed && shareCount !== null}
       <div class="drawer-section">
         <button class="drawer-shares" onclick={handleSharesClick} title="Manage active shares">
           <span class="drawer-shares-icon" aria-hidden="true"><LinkIcon size={16} weight="regular" /></span>
@@ -332,14 +351,14 @@ type NavId = 'files' | 'photos' | 'favorites' | 'settings';
 
     <!-- Bottom links -->
     <div class="drawer-section drawer-bottom-links">
-      <button class="drawer-link" onclick={handleLockVault} title={collapsed ? 'Lock Vault' : ''}>
+      <button class="drawer-link" onclick={handleLockVault} title={effectiveCollapsed ? 'Lock Vault' : ''}>
         <Lock size={20} weight="regular" />
-        {#if !collapsed}Lock Vault{/if}
+        {#if !effectiveCollapsed}Lock Vault{/if}
       </button>
       {#if showLogout}
-        <button class="drawer-link danger" onclick={handleLogout} title={collapsed ? 'Log out' : ''}>
+        <button class="drawer-link danger" onclick={handleLogout} title={effectiveCollapsed ? 'Log out' : ''}>
           <SignOut size={20} weight="regular" />
-          {#if !collapsed}Log out{/if}
+          {#if !effectiveCollapsed}Log out{/if}
         </button>
       {/if}
     </div>
