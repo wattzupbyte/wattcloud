@@ -9,9 +9,8 @@
 # Otherwise both setups race and every alert gets refiled by Default.
 #
 # Workflow inputs are restricted to push/pull_request/schedule events on
-# the main branch, with no untrusted-context substitution into run:
-# commands (matrix values are repo-controlled enums; the build step
-# uses static cargo paths only). No injection surface.
+# the main branch. Matrix values are repo-controlled enums; no run:
+# command interpolates untrusted context. No injection surface.
 name: CodeQL
 
 on:
@@ -33,16 +32,15 @@ jobs:
       contents: read
       security-events: write
 
+    # All three languages use `build-mode: none`. CodeQL 2.25's Rust
+    # extractor rejects `manual` mode and walks the .rs sources directly
+    # without a cargo build, same as the JS/TS and Actions extractors.
+    # Net effect: no toolchain or build step needed in this workflow,
+    # which also keeps it well under the 30-minute timeout.
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - language: rust
-            build-mode: manual
-          - language: javascript-typescript
-            build-mode: none
-          - language: actions
-            build-mode: none
+        language: [rust, javascript-typescript, actions]
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -51,28 +49,12 @@ jobs:
         uses: github/codeql-action/init@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a
         with:
           languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
+          build-mode: none
           config-file: ./.github/codeql-config.yml
           # The `security-extended` suite matches the prior Default-setup
           # configuration ("extended"). Going back to the default suite
           # would silently drop detections we previously had.
           queries: security-extended
-
-      - name: Set up Rust toolchain
-        if: matrix.language == 'rust'
-        uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        if: matrix.language == 'rust'
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
-
-      - name: Build Rust workspaces (manual mode)
-        if: matrix.language == 'rust'
-        run: |
-          cargo build --manifest-path sdk/sdk-core/Cargo.toml --all-targets
-          cargo build --manifest-path byo-relay/Cargo.toml --all-targets
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a
