@@ -188,6 +188,18 @@ export interface DataProvider {
   downloadFile(fileId: number): Promise<ReadableStream<Uint8Array>>;
 
   /**
+   * Append a row to the per-vault `share_audit` table.
+   * Used by OS share-sheet flows (outbound `navigator.share`, inbound
+   * Web Share Target). Goes through the standard mutation path so the
+   * change is captured in the WAL + cloud journal.
+   */
+  recordShareAudit(
+    direction: 'outbound' | 'inbound',
+    fileRef: string,
+    counterpartyHint?: string | null,
+  ): Promise<void>;
+
+  /**
    * Returns a ReadableStream of zip bytes containing the folder and all
    * its descendants (files + nested subfolders), with each entry's path
    * preserved relative to the root folder so the zip restores the tree.

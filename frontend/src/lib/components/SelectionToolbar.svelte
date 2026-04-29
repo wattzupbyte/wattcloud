@@ -4,6 +4,7 @@
   // Phosphor icons (v2.x imports)
   import X from 'phosphor-svelte/lib/X';
   import ShareNetwork from 'phosphor-svelte/lib/ShareNetwork';
+  import PaperPlaneTilt from 'phosphor-svelte/lib/PaperPlaneTilt';
   import ArrowRight from 'phosphor-svelte/lib/ArrowRight';
   import ArrowsLeftRight from 'phosphor-svelte/lib/ArrowsLeftRight';
   import Trash from 'phosphor-svelte/lib/Trash';
@@ -29,6 +30,9 @@
     canDetails?: boolean;
     /** Show share link button — only active when exactly one file is selected. */
     canShare?: boolean;
+    /** Show "Send to..." (OS share-sheet) button. Files-only; folder
+     *  selections hide it. Available for both single and multi-select. */
+    canSendToOS?: boolean;
     /** Show "Add to collection" button (Photos view). */
     canAddToCollection?: boolean;
     /** Show "Move to another provider" — only when the open vault has
@@ -39,6 +43,7 @@
     onClear?: () => void;
     onDetails?: () => void;
     onShare?: () => void;
+    onSendToOS?: () => void;
     onRename?: () => void;
     onDownload?: () => void;
     onMove?: () => void;
@@ -60,12 +65,14 @@
     canDownload = true,
     canDetails = false,
     canShare = false,
+    canSendToOS = false,
     canAddToCollection = false,
     canMoveToProvider = false,
     favoriteState = 'none',
     onClear,
     onDetails,
     onShare,
+    onSendToOS,
     onRename,
     onDownload,
     onMove,
@@ -86,6 +93,7 @@ let showSheet = $state(false);
       case 'clear':            onClear?.(); break;
       case 'details':          onDetails?.(); break;
       case 'share':            onShare?.(); break;
+      case 'sendToOS':         onSendToOS?.(); break;
       case 'rename':           onRename?.(); break;
       case 'download':         onDownload?.(); break;
       case 'move':             onMove?.(); break;
@@ -136,6 +144,11 @@ let showSheet = $state(false);
         <ShareNetwork size={20} />
       </button>
     {/if}
+    {#if canSendToOS}
+      <button class="btn-icon" onclick={() => emit('sendToOS')} aria-label="Send to..." title="Send to...">
+        <PaperPlaneTilt size={20} />
+      </button>
+    {/if}
     {#if canRename && singleSelection}
       <button class="btn-icon" onclick={() => emit('rename')} aria-label="Rename" title="Rename">
         <PencilSimple size={20} />
@@ -180,6 +193,11 @@ let showSheet = $state(false);
 </div>
 
 <div class="mobile-action-bar" role="toolbar" aria-label="Selection actions">
+  {#if canSendToOS}
+    <button class="btn-icon" onclick={() => emit('sendToOS')} aria-label="Send to..." title="Send to...">
+      <PaperPlaneTilt size={20} />
+    </button>
+  {/if}
   {#if canDownload}
     <button class="btn-icon" onclick={() => emit('download')} aria-label="Download" title="Download">
       <DownloadSimple size={20} />
@@ -244,6 +262,12 @@ let showSheet = $state(false);
           <button class="sheet-option" onclick={() => emit('share')}>
             <span class="sheet-option-icon"><ShareNetwork size={20} /></span>
             <span>Share link</span>
+          </button>
+        {/if}
+        {#if canSendToOS}
+          <button class="sheet-option" onclick={() => emit('sendToOS')}>
+            <span class="sheet-option-icon"><PaperPlaneTilt size={20} /></span>
+            <span>Send to...</span>
           </button>
         {/if}
         {#if canRename && singleSelection}

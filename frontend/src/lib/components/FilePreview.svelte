@@ -3,6 +3,7 @@
 	import { fade } from 'svelte/transition';
 	import { triggerDownload } from '../utils';
 	import Icon from './Icons.svelte';
+	import PaperPlaneTilt from 'phosphor-svelte/lib/PaperPlaneTilt';
 	import type { FileRecord } from '../stores/files';
 	import { parseExif, type PhotoExif } from '../byo/ExifExtractor';
 
@@ -92,6 +93,8 @@
 		// ArrowRight flip through siblings and chevron arrows appear on hover.
 		onPrev?: (() => void) | null;
 		onNext?: (() => void) | null;
+		// Optional "Send to..." callback (OS share-sheet). Hidden when null.
+		onSendToOS?: (() => void) | null;
 	}
 
 	let {
@@ -100,7 +103,8 @@
 		onClose,
 		loadFileData = null,
 		onPrev = null,
-		onNext = null
+		onNext = null,
+		onSendToOS = null
 	}: Props = $props();
 
 	// Metadata side-panel toggle — opened by the info button or 'I' key.
@@ -307,6 +311,11 @@
 					<button class="preview-btn" class:active={showInfo} onclick={() => (showInfo = !showInfo)} title="Info (I)" aria-label="Toggle info panel">
 						<Icon name="info" size={20} />
 					</button>
+					{#if onSendToOS}
+						<button class="preview-btn" onclick={() => onSendToOS?.()} title="Send to..." aria-label="Send to...">
+							<PaperPlaneTilt size={20} />
+						</button>
+					{/if}
 					<button class="preview-btn" onclick={download} title="Download" aria-label="Download file">
 						<Icon name="download" size={20} />
 					</button>

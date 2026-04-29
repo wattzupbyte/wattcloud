@@ -1982,6 +1982,14 @@ function getVaultSchema(): string {
       PRIMARY KEY (collection_id, file_id)
     );
     CREATE INDEX IF NOT EXISTS idx_collection_files_file ON collection_files(file_id);
+    CREATE TABLE IF NOT EXISTS share_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      direction TEXT NOT NULL CHECK (direction IN ('outbound','inbound')),
+      file_ref TEXT NOT NULL,
+      counterparty_hint TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_share_audit_ts ON share_audit(ts);
     CREATE TRIGGER IF NOT EXISTS folders_parent_provider_check
       BEFORE INSERT ON folders WHEN NEW.parent_id IS NOT NULL
       BEGIN

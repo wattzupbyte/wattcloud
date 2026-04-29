@@ -13,6 +13,7 @@ import BootstrapClaim from './lib/components/byo/BootstrapClaim.svelte';
 import InviteEntry from './lib/components/byo/InviteEntry.svelte';
 import ShareRecipient from './lib/components/share/ShareRecipient.svelte';
 import { prewarmDownloadServiceWorker, sweepOPFSPending } from './lib/byo/streamToDisk';
+import { detectByoCapabilities } from './lib/byo/stores/byoCapabilities';
 import { fetchMe, fetchRelayInfo, hasEnrolledHint } from './lib/byo/accessControl';
 import { mount } from "svelte";
 
@@ -97,6 +98,7 @@ async function boot(): Promise<void> {
     if (gated) return;
 
     mount(ByoApp, { target: appElement });
+    detectByoCapabilities();
     void prewarmDownloadServiceWorker();
     void sweepOPFSPending();
   } catch (e) {

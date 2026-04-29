@@ -36,7 +36,13 @@
   import Rows from 'phosphor-svelte/lib/Rows';
   import SquaresFour from 'phosphor-svelte/lib/SquaresFour';
   import OfflineBanner from './OfflineBanner.svelte';
-  import { streamToDisk } from '../../byo/streamToDisk';
+  import {
+    streamToDisk,
+    bufferStreamToFile,
+    shareFilesViaOS,
+    WebShareUnsupportedError,
+    WebShareUnsupportedForFilesError,
+  } from '../../byo/streamToDisk';
   import {
     isIOSDevice,
     bufferForIOSSave,
@@ -46,6 +52,7 @@
     type IOSPathDecision,
   } from '../../byo/iosSave';
   import { byoToast } from '../../byo/stores/byoToasts';
+  import { byoCapabilities } from '../../byo/stores/byoCapabilities';
 
   // Reused managed components
   import DashboardHeader from '../DashboardHeader.svelte';
@@ -936,6 +943,103 @@
     }
   }
 
+  /** Outbound OS share-sheet invocation. Single ceiling enforced before
+   *  any decrypt: 20 files OR 200 MB total plaintext. Folder selections
+   *  are rejected (use the share-link flow for those). On success, an
+   *  `outbound` row is recorded in `share_audit` per file. The OS does
+   *  not disclose the receiving app, so `counterparty_hint` stays null. */
+  const SHARE_OS_FILE_CEILING = 20;
+  const SHARE_OS_BYTES_CEILING = 200 * 1024 * 1024;
+
+  async function handleSendToOS(explicitFileIds?: number[]) {
+    const folderIds = [...get(byoSelectedFolders)];
+    if (folderIds.length > 0 && !explicitFileIds) {
+      byoToast.show('Folder shares use the link option, not the OS share sheet.', { icon: 'warn' });
+      return;
+    }
+    const fileIds = explicitFileIds ?? [...get(byoSelectedFiles)];
+    if (fileIds.length === 0) return;
+
+    if (!get(byoCapabilities).webShareFiles) {
+      byoToast.show('OS share is not supported in this browser.', { icon: 'warn' });
+      return;
+    }
+
+    const rows = fileIds
+      .map((id) => currentFiles.find((x) => x.id === id) ?? sortedFiles.find((x) => x.id === id))
+      .filter((r): r is FileEntry => !!r);
+    if (rows.length === 0) return;
+
+    if (rows.length > SHARE_OS_FILE_CEILING) {
+      byoToast.show(`Send up to ${SHARE_OS_FILE_CEILING} files or 200 MB at a time.`, { icon: 'warn' });
+      return;
+    }
+    const totalBytes = rows.reduce((acc, f) => acc + (f.size ?? 0), 0);
+    if (totalBytes > SHARE_OS_BYTES_CEILING) {
+      byoToast.show(`Send up to ${SHARE_OS_FILE_CEILING} files or 200 MB at a time.`, { icon: 'warn' });
+      return;
+    }
+
+    let files: File[] = [];
+    try {
+      for (const row of rows) {
+        const stream = await dataProvider.downloadFile(row.id);
+        const filename = (row as any).decrypted_name || row.name || `file_${row.id}`;
+        const mime = (row as any).mime_type || 'application/octet-stream';
+        const file = await bufferStreamToFile(stream, filename, mime);
+        files.push(file);
+      }
+    } catch (err: any) {
+      console.warn('[share-os] decrypt failed', err);
+      byoToast.show(`Couldn’t prepare files to share: ${err?.message ?? 'unknown error'}`, { icon: 'danger' });
+      files = [];
+      return;
+    }
+
+    const title = files.length === 1 ? files[0].name : `${files.length} files from Wattcloud`;
+    let shared = false;
+    try {
+      await shareFilesViaOS(files, { title, text: '' });
+      shared = true;
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        // User dismissed the OS sheet — silent.
+        return;
+      }
+      if (err instanceof WebShareUnsupportedForFilesError) {
+        byoToast.show('Browser refused to share these files.', { icon: 'warn' });
+        return;
+      }
+      if (err instanceof WebShareUnsupportedError) {
+        byoToast.show('OS share is not supported in this browser.', { icon: 'warn' });
+        return;
+      }
+      console.warn('[share-os] share failed', err);
+      byoToast.show(`Share failed: ${err?.message ?? 'unknown error'}`, { icon: 'danger' });
+      return;
+    } finally {
+      // Drop our refs to the buffered Files so the GC can reclaim the
+      // plaintext. The OS sheet has already taken its own reference.
+      files.length = 0;
+    }
+
+    if (shared) {
+      // Audit each share, fire-and-forget. A failure here doesn't
+      // affect the user-visible outcome — the share already happened.
+      void recordOutboundAudit(rows.map((r) => r.id));
+    }
+  }
+
+  async function recordOutboundAudit(fileIds: number[]) {
+    try {
+      for (const id of fileIds) {
+        await dataProvider.recordShareAudit('outbound', String(id), null);
+      }
+    } catch (err) {
+      console.warn('[share-os] audit emit failed', err);
+    }
+  }
+
   /**
    * Pipe a pre-built zip ReadableStream to disk through the download
    * queue, so pause / cancel / progress stay consistent with the
@@ -1410,10 +1514,15 @@
     {@const canRenameSelection =
       ($byoSelectedFiles.size === 1 && $byoSelectedFolders.size === 0) ||
       ($byoSelectedFolders.size === 1 && $byoSelectedFiles.size === 0)}
+    {@const canSendToOSSelection =
+      $byoCapabilities.webShareFiles &&
+      $byoSelectedFiles.size > 0 &&
+      $byoSelectedFolders.size === 0}
     <SelectionToolbar
       selectedCount={totalSel}
       canDetails={true}
       canShare={canShareSelection}
+      canSendToOS={canSendToOSSelection}
       canRename={canRenameSelection}
       canAddToCollection={view === 'photos' && $byoSelectedFiles.size > 0}
       canMoveToProvider={$vaultStore.providers.length > 1 && $byoSelectedFiles.size > 0 && $byoSelectedFolders.size === 0}
@@ -1452,6 +1561,7 @@
           openMixedShareSheet(folderIds, fileIds);
         }
       }}
+      onSendToOS={() => handleSendToOS()}
       onDelete={() => {
         const ids = [...get(byoSelectedFiles)];
         if (ids.length > 0) promptDelete('file', ids[0], `${ids.length} file${ids.length !== 1 ? 's' : ''}`);
@@ -1877,6 +1987,9 @@
       isOpen={previewOpen}
       {loadFileData}
       onClose={() => { previewOpen = false; previewFile = null; }}
+      onSendToOS={$byoCapabilities.webShareFiles && previewFile
+        ? () => handleSendToOS([previewFile!.id])
+        : null}
     />
   {/if}
 

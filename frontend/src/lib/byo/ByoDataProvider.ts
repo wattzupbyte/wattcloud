@@ -219,6 +219,33 @@ export class ByoDataProvider implements DataProvider {
     return entry;
   }
 
+  /**
+   * Record an OS share-sheet event in the per-vault `share_audit` table.
+   *
+   * Outbound entries record that the user invoked `navigator.share` for
+   * a given file row; the OS does not disclose the receiving app, so
+   * `counterpartyHint` is left empty. Inbound entries (reserved for the
+   * Web Share Target flow) may carry the share-target `url` form field.
+   *
+   * Uses the standard onMutate path so the change is captured by the
+   * crash-recovery WAL and the cloud journal alongside other vault
+   * mutations. Caller schedules a save via the usual debounce.
+   */
+  async recordShareAudit(
+    direction: 'outbound' | 'inbound',
+    fileRef: string,
+    counterpartyHint: string | null = null,
+  ): Promise<void> {
+    this.checkOperational();
+
+    const sql =
+      'INSERT INTO share_audit (ts, direction, file_ref, counterparty_hint) VALUES (?, ?, ?, ?)';
+    const params: unknown[] = [Date.now(), direction, fileRef, counterpartyHint];
+    await this.onMutate(sql, params);
+    this.db.run(sql, params as import('sql.js').BindParams);
+    markDirty(this.activeProviderId);
+  }
+
   async downloadFile(fileId: number): Promise<ReadableStream<Uint8Array>> {
     this.checkOperational();
 
