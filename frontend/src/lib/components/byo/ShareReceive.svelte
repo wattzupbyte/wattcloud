@@ -9,9 +9,10 @@
    * (title/text/url + filenames + sizes), and gives them two paths:
    *
    *   - Open Wattcloud to upload — leaves the staging directory intact
-   *     and navigates to the main app. The full destination-picker +
-   *     auto-upload flow ships in a follow-up PR; for now the user
-   *     uploads manually.
+   *     and navigates to the main app at `/?share-session=<id>`. ByoApp
+   *     reads that param, runs the normal vault-unlock flow if needed,
+   *     then ByoDashboard pops a destination-picker sheet that drains
+   *     the staged files into the standard upload pipeline.
    *   - Discard — sends the share-cleanup message to the SW, which
    *     deletes the entire staging directory, then returns home.
    *
@@ -87,10 +88,16 @@
   }
 
   function openWattcloud() {
-    // Leave the staging session intact so a follow-up PR can pick it
-    // up and complete the upload. For now the main app doesn't read
-    // /share-staging, so this effectively just leaves the user at
-    // their dashboard.
+    // Hand the session id to ByoApp via the URL — its boot reads
+    // `?share-session=<id>` and once the vault unlocks ByoDashboard
+    // pops a destination-picker sheet that drains OPFS staging into
+    // the upload queue.
+    if (session) {
+      const u = new URL('/', window.location.origin);
+      u.searchParams.set('share-session', session);
+      window.location.href = u.pathname + u.search;
+      return;
+    }
     window.location.href = '/';
   }
 
@@ -146,9 +153,8 @@
     </section>
 
     <p class="note">
-      The full upload flow (pick a provider, pick a folder, encrypt and
-      upload) ships in a follow-up. For now you can open Wattcloud and
-      upload manually, or discard the staged copy.
+      Open Wattcloud to pick a destination folder and upload these
+      files end-to-end encrypted, or discard the staged copy.
     </p>
 
     <div class="actions">

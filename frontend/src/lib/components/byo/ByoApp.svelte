@@ -130,6 +130,16 @@
    *  sharing section pre-expanded. */
   let openSharesOnSettings = $state(false);
 
+  // /share-receive bounces here as `?share-session=<id>` once the user
+  // taps "Open Wattcloud" on the receive landing page. The id stays
+  // populated through the unlock flow; ByoDashboard reads it once the
+  // vault is open and pops the inbound share sheet, then clears it.
+  let pendingShareSessionId = $state<string | null>(
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('share-session')
+      : null,
+  );
+
   // Dashboard's current subview — owned here so the shared Drawer
   // (hoisted out of ByoDashboard to avoid unmounting on every appState
   // change) can highlight the active link, and so routing from Settings
@@ -948,6 +958,17 @@
   {:else if appState === 'dashboard'}
     <ByoDashboard
       bind:view={dashboardView}
+      shareReceiveSessionId={pendingShareSessionId}
+      onShareReceiveConsumed={() => {
+        pendingShareSessionId = null;
+        // Clean the URL so a subsequent reload doesn't re-trigger the
+        // sheet for a session we've either uploaded or discarded.
+        if (typeof window !== 'undefined') {
+          const u = new URL(window.location.href);
+          u.searchParams.delete('share-session');
+          window.history.replaceState({}, '', u.pathname + (u.search || ''));
+        }
+      }}
     />
     <ByoCredProtectionOffer
       vaultId={getVaultId()}

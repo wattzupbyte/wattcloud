@@ -64,6 +64,7 @@
   import FolderTile from '../FolderTile.svelte';
   import ConfirmModal from '../ConfirmModal.svelte';
   import MoveCopyDialog from '../MoveCopyDialog.svelte';
+  import ShareReceiveSheet from './ShareReceiveSheet.svelte';
 
   // Components with BYO callbacks
   import FileListSvelte from '../FileList.svelte';
@@ -84,9 +85,19 @@
     /** Bound by ByoApp so the shared Drawer can highlight the right link
       and navigation from Settings → Dashboard lands on the chosen tab. */
     view?: 'files' | 'photos' | 'favorites';
+    /** Set when the user landed on /share-receive and tapped "Open
+     *  Wattcloud". The dashboard pops a destination-picker sheet on
+     *  mount, then notifies the parent via `onShareReceiveConsumed`
+     *  so the URL is cleaned up. */
+    shareReceiveSessionId?: string | null;
+    onShareReceiveConsumed?: (() => void) | null;
   }
 
-  let { view = $bindable('files') }: Props = $props();
+  let {
+    view = $bindable('files'),
+    shareReceiveSessionId = null,
+    onShareReceiveConsumed = null,
+  }: Props = $props();
 
 
   const dataProvider = getContext<{ current: DataProvider }>('byo:dataProvider').current;
@@ -176,6 +187,27 @@
 
   let showMoveCopyDialog = $state(false);
   let moveCopyMode: 'move' | 'copy' = $state('move');
+
+  // Inbound Web Share Target sheet — opened automatically when ByoApp
+  // hands us a `shareReceiveSessionId` after the vault has unlocked.
+  // The reactive open trigger flips once we observe a non-null id; the
+  // `onShareReceiveConsumed` callback fires when the sheet closes so
+  // ByoApp can clear the URL param and not re-open on a future mount.
+  let shareReceiveSheetOpen = $state(false);
+  $effect(() => {
+    if (shareReceiveSessionId && !shareReceiveSheetOpen) {
+      shareReceiveSheetOpen = true;
+    }
+  });
+  function handleShareReceiveClosed() {
+    shareReceiveSheetOpen = false;
+    onShareReceiveConsumed?.();
+    // The sheet drops uploaded files into byoUploadQueue, which may
+    // already have completed by now if the share was small. Refresh the
+    // current folder either way so freshly-uploaded inbound files
+    // appear if the user happened to land on the matching folder.
+    void loadCurrentFolder();
+  }
   /** Flat list of every folder in the active provider — sourced from
       listAllFolders() and refreshed before opening the MoveCopyDialog so
       the tree isn't empty (the $byoFolders store only holds the *current*
@@ -1997,6 +2029,16 @@
         : null}
     />
   {/if}
+
+  <!-- Web Share Target inbound sheet — opens once per inbound session
+       after the vault is unlocked, reads the OPFS staging, lets the
+       user pick a destination, and drops uploads into byoUploadQueue. -->
+  <ShareReceiveSheet
+    open={shareReceiveSheetOpen}
+    sessionId={shareReceiveSessionId}
+    dataProvider={dataProvider}
+    onClose={handleShareReceiveClosed}
+  />
 
   <!-- Move/copy dialog (scoped to active provider's folders only) -->
   <MoveCopyDialog
