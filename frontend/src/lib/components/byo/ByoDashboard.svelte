@@ -65,6 +65,7 @@
   import ConfirmModal from '../ConfirmModal.svelte';
   import MoveCopyDialog from '../MoveCopyDialog.svelte';
   import ShareReceiveSheet from './ShareReceiveSheet.svelte';
+  import ShareUnsupportedSheet from './ShareUnsupportedSheet.svelte';
 
   // Components with BYO callbacks
   import FileListSvelte from '../FileList.svelte';
@@ -199,6 +200,13 @@
       shareReceiveSheetOpen = true;
     }
   });
+
+  // OS-share unsupported explainer — opened from handleSendToOS when
+  // navigator.share is missing or canShare({files}) refuses the payload.
+  // The "Send to..." button is shown unconditionally; this sheet does
+  // the educating instead of hiding the affordance.
+  let shareUnsupportedOpen = $state(false);
+  let shareUnsupportedReason = $state<'missing-api' | 'files-rejected'>('missing-api');
   function handleShareReceiveClosed() {
     shareReceiveSheetOpen = false;
     onShareReceiveConsumed?.();
@@ -994,7 +1002,12 @@
     if (fileIds.length === 0) return;
 
     if (!get(byoCapabilities).webShareFiles) {
-      byoToast.show('OS share is not supported in this browser.', { icon: 'warn' });
+      // Button is shown unconditionally so self-hosters with hardened
+      // browsers (RFP, fingerprint protection, ad-blocker overrides) get
+      // a discoverable affordance — open the explainer sheet instead of
+      // a one-line toast that points nowhere.
+      shareUnsupportedReason = 'missing-api';
+      shareUnsupportedOpen = true;
       return;
     }
 
@@ -1054,11 +1067,13 @@
         return;
       }
       if (err instanceof WebShareUnsupportedForFilesError) {
-        byoToast.show('Browser refused to share these files.', { icon: 'warn' });
+        shareUnsupportedReason = 'files-rejected';
+        shareUnsupportedOpen = true;
         return;
       }
       if (err instanceof WebShareUnsupportedError) {
-        byoToast.show('OS share is not supported in this browser.', { icon: 'warn' });
+        shareUnsupportedReason = 'missing-api';
+        shareUnsupportedOpen = true;
         return;
       }
       console.warn('[share-os] share failed', err);
@@ -1566,7 +1581,6 @@
       ($byoSelectedFiles.size === 1 && $byoSelectedFolders.size === 0) ||
       ($byoSelectedFolders.size === 1 && $byoSelectedFiles.size === 0)}
     {@const canSendToOSSelection =
-      $byoCapabilities.webShareFiles &&
       $byoSelectedFiles.size > 0 &&
       $byoSelectedFolders.size === 0}
     <SelectionToolbar
@@ -2038,7 +2052,7 @@
       isOpen={previewOpen}
       {loadFileData}
       onClose={() => { previewOpen = false; previewFile = null; }}
-      onSendToOS={$byoCapabilities.webShareFiles && previewFile
+      onSendToOS={previewFile
         ? () => handleSendToOS([previewFile!.id])
         : null}
     />
@@ -2052,6 +2066,16 @@
     sessionId={shareReceiveSessionId}
     dataProvider={dataProvider}
     onClose={handleShareReceiveClosed}
+  />
+
+  <!-- "Send to…" failure explainer (Web Share API missing or
+       canShare({files}) refused the selection). Shown instead of a
+       toast so self-hosters with hardened browsers get actionable
+       remediation steps rather than a dead-end message. -->
+  <ShareUnsupportedSheet
+    open={shareUnsupportedOpen}
+    reason={shareUnsupportedReason}
+    onClose={() => { shareUnsupportedOpen = false; }}
   />
 
   <!-- Move/copy dialog (scoped to active provider's folders only) -->
