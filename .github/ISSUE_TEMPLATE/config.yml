@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/wattzupbyte/wattcloud/security/advisories/new
+    url: https://github.com/thewattlabs/wattcloud/security/advisories/new
     about: Do NOT file security issues publicly. Use GitHub private vulnerability reporting; see SECURITY.md for the threat model and zero-knowledge invariants.
   - name: Question or discussion
-    url: https://github.com/wattzupbyte/wattcloud/discussions
+    url: https://github.com/thewattlabs/wattcloud/discussions
     about: General questions, deployment help, or design discussion belong in Discussions, not Issues.

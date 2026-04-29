@@ -148,7 +148,7 @@ Everything else on the relay is ephemeral or in-memory:
 
 Share storage is the deliberate exception: ciphertext blobs sit on
 disk for up to 30 days. This is documented in
-[`SECURITY.md` §12 "Share relay storage surface"](https://github.com/wattzupbyte/wattcloud/blob/main/SECURITY.md#share-relay-storage-surface)
+[`SECURITY.md` §12 "Share relay storage surface"](https://github.com/thewattlabs/wattcloud/blob/main/SECURITY.md#share-relay-storage-surface)
 and any new feature that would widen this surface (server-side user
 state, plaintext metadata, unbounded retention) requires a
 threat-model update before landing.

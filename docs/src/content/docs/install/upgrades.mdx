@@ -75,7 +75,7 @@ it:
 
 ```bash
 TAG=vX.Y.Z
-gh release download "$TAG" --repo wattzupbyte/wattcloud
+gh release download "$TAG" --repo thewattlabs/wattcloud
 make verify-tarball \
   TARBALL=wattcloud-${TAG}-x86_64-unknown-linux-gnu.tar.gz \
   SIG=…sig CERT=…cert

@@ -40,7 +40,7 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/wattzupbyte/wattcloud',
+          href: 'https://github.com/thewattlabs/wattcloud',
         },
       ],
       lastUpdated: true,

@@ -35,7 +35,7 @@ about five minutes. If something feels under-explained, the
    GitHub release. Read it before running — it is short.
 
    ```bash
-   curl -sSLO https://github.com/wattzupbyte/wattcloud/releases/latest/download/install.sh
+   curl -sSLO https://github.com/thewattlabs/wattcloud/releases/latest/download/install.sh
    less install.sh
    ```
 
@@ -86,7 +86,7 @@ about five minutes. If something feels under-explained, the
 ## Verify it actually works
 
 The encryption strip at the top of the SPA is the live posture indicator
-(see [DESIGN.md §29.4](https://github.com/wattzupbyte/wattcloud/blob/main/DESIGN.md#294-encryption-status-strip)).
+(see [DESIGN.md §29.4](https://github.com/thewattlabs/wattcloud/blob/main/DESIGN.md#294-encryption-status-strip)).
 If it pulses, ciphertext is being written. If it goes red, expand the
 banner — the message points at which provider failed.
 
@@ -105,5 +105,5 @@ curl -s https://cloud.example.com/health
   [Upgrade & rollback](/install/upgrades/).
 - Optional: harden the host (UFW, fail2ban, SSH lockdown, AIDE) with
   `sudo wattcloud harden`. Documented in the
-  [README's "VPS hardening"](https://github.com/wattzupbyte/wattcloud#vps-hardening-optional)
+  [README's "VPS hardening"](https://github.com/thewattlabs/wattcloud#vps-hardening-optional)
   section until the dedicated docs page lands.

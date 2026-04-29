@@ -11,9 +11,9 @@
 
 <p align="center">
   <a href="https://docs.wattcloud.de"><img src="https://img.shields.io/badge/docs-docs.wattcloud.de-2EB860?style=flat" alt="Documentation" /></a>
-  <a href="https://github.com/wattzupbyte/wattcloud/releases/latest"><img src="https://img.shields.io/github/v/release/wattzupbyte/wattcloud?display_name=tag&sort=semver" alt="Latest release" /></a>
-  <a href="https://github.com/wattzupbyte/wattcloud/actions/workflows/ci.yml"><img src="https://github.com/wattzupbyte/wattcloud/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/wattzupbyte/wattcloud?color=2EB860" alt="AGPL-3.0-or-later" /></a>
+  <a href="https://github.com/thewattlabs/wattcloud/releases/latest"><img src="https://img.shields.io/github/v/release/thewattlabs/wattcloud?display_name=tag&sort=semver" alt="Latest release" /></a>
+  <a href="https://github.com/thewattlabs/wattcloud/actions/workflows/ci.yml"><img src="https://github.com/thewattlabs/wattcloud/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/thewattlabs/wattcloud?color=2EB860" alt="AGPL-3.0-or-later" /></a>
 </p>
 
 <p align="center">
@@ -111,7 +111,7 @@ Try it on your laptop before touching a VPS. Requires Rust 1.80+, Node
 20+, wasm-pack, pnpm 9+.
 
 ```bash
-git clone https://github.com/wattzupbyte/wattcloud
+git clone https://github.com/thewattlabs/wattcloud
 cd wattcloud
 make dev
 ```
@@ -127,7 +127,7 @@ you have a working vault. `make dev-stop` tears the stack down.
 One command, on a fresh Ubuntu 22.04+ VPS with DNS pointing at it:
 
 ```bash
-curl -sSLO https://github.com/wattzupbyte/wattcloud/releases/latest/download/install.sh
+curl -sSLO https://github.com/thewattlabs/wattcloud/releases/latest/download/install.sh
 less install.sh                       # ~150 lines — read before running
 sudo bash install.sh cloud.example.com
 ```

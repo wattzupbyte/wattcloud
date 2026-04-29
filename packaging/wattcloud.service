@@ -1,6 +1,6 @@
 [Unit]
 Description=Wattcloud BYO relay (zero-knowledge, stateless)
-Documentation=https://github.com/wattzupbyte/wattcloud
+Documentation=https://github.com/thewattlabs/wattcloud
 After=network-online.target
 Wants=network-online.target
 

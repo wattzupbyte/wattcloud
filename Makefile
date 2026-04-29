@@ -190,7 +190,7 @@ verify-tarball:
 	cosign verify-blob \
 	  --certificate "$$CERT" \
 	  --signature   "$$SIG" \
-	  --certificate-identity-regexp "$${SIGNER:-^https://github\\.com/wattzupbyte/wattcloud/\\.github/workflows/release\\.yml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+.*$$}" \
+	  --certificate-identity-regexp "$${SIGNER:-^https://github\\.com/thewattlabs/wattcloud/\\.github/workflows/release\\.yml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+.*$$}" \
 	  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
 	  "$$TARBALL"
 	@echo "Signature verified ✓"

@@ -2,7 +2,7 @@
 # install.sh — one-shot bootstrap for a Wattcloud VPS install.
 #
 # Usage:
-#   curl -sSLO https://github.com/wattzupbyte/wattcloud/releases/latest/download/install.sh
+#   curl -sSLO https://github.com/thewattlabs/wattcloud/releases/latest/download/install.sh
 #   less install.sh      # audit before running
 #   sudo bash install.sh cloud.example.com
 #
@@ -39,7 +39,7 @@ die()  { err "$*"; exit 1; }
 # ---------------------------------------------------------------------------
 # Constants — forks override via --trusted-signer + WC_GH_OWNER / WC_GH_REPO.
 # ---------------------------------------------------------------------------
-WC_GH_OWNER="${WC_GH_OWNER:-wattzupbyte}"
+WC_GH_OWNER="${WC_GH_OWNER:-thewattlabs}"
 WC_GH_REPO="${WC_GH_REPO:-wattcloud}"
 WC_GH_API="https://api.github.com/repos/${WC_GH_OWNER}/${WC_GH_REPO}"
 WC_GH_RELEASES="https://github.com/${WC_GH_OWNER}/${WC_GH_REPO}/releases"
@@ -68,7 +68,7 @@ PASSTHROUGH_ARGS=()
 usage() {
   cat <<'USAGE'
 Usage:
-  curl -sSLO https://github.com/wattzupbyte/wattcloud/releases/latest/download/install.sh
+  curl -sSLO https://github.com/thewattlabs/wattcloud/releases/latest/download/install.sh
   less install.sh      # audit before running
   sudo bash install.sh DOMAIN [flags]
 

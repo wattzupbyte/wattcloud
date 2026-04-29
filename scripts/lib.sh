@@ -24,7 +24,7 @@ WC_UPDATE_LOCK="/var/run/wattcloud-update.lock"
 WC_KEEP_RELEASES="${WC_KEEP_RELEASES:-3}"
 
 # GitHub repo coordinates (overridable for forks)
-WC_GH_OWNER="${WC_GH_OWNER:-wattzupbyte}"
+WC_GH_OWNER="${WC_GH_OWNER:-thewattlabs}"
 WC_GH_REPO="${WC_GH_REPO:-wattcloud}"
 WC_GH_API="https://api.github.com/repos/${WC_GH_OWNER}/${WC_GH_REPO}"
 WC_GH_RELEASES="https://github.com/${WC_GH_OWNER}/${WC_GH_REPO}/releases"

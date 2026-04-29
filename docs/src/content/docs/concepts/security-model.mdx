@@ -8,7 +8,7 @@ sidebar:
 import { Aside } from '@astrojs/starlight/components';
 
 The full threat model with every invariant cross-referenced to source is
-in [`SECURITY.md`](https://github.com/wattzupbyte/wattcloud/blob/main/SECURITY.md).
+in [`SECURITY.md`](https://github.com/thewattlabs/wattcloud/blob/main/SECURITY.md).
 This page is the operator-facing companion: the shape of the system, the
 parts you can rely on, and what an attacker with X capability can or
 can't do.
@@ -117,7 +117,7 @@ Wattcloud's hybrid construction:
 Session keys are derived from a hybrid of both. An attacker has to break
 **both** to break the session — not either-or. There is no "downgrade
 to classical-only" path on the wire; the protocol does not negotiate it.
-Full discussion in [`SECURITY.md` §5](https://github.com/wattzupbyte/wattcloud/blob/main/SECURITY.md#5-post-quantum-strategy).
+Full discussion in [`SECURITY.md` §5](https://github.com/thewattlabs/wattcloud/blob/main/SECURITY.md#5-post-quantum-strategy).
 
 ## What an attacker with X capability can do
 
@@ -157,7 +157,7 @@ relevant sandbox directives:
 For a zero-state relay, this is roughly equivalent to a minimal
 container — without the runtime trust boundary or container-daemon
 attack surface. Full table in
-[`SECURITY.md` §13.1](https://github.com/wattzupbyte/wattcloud/blob/main/SECURITY.md#131-systemd-sandboxing).
+[`SECURITY.md` §13.1](https://github.com/thewattlabs/wattcloud/blob/main/SECURITY.md#131-systemd-sandboxing).
 
 ## Release integrity
 

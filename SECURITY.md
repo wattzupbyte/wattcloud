@@ -543,7 +543,7 @@ No `unsafe` blocks allowed in `sdk-core` unless:
 
 ### Accepted advisories (deferred upgrades)
 
-Dependabot tracks security alerts at <https://github.com/wattzupbyte/wattcloud/security/dependabot>.
+Dependabot tracks security alerts at <https://github.com/thewattlabs/wattcloud/security/dependabot>.
 Some of them are intentionally deferred because the vulnerability surface
 does not apply to how Wattcloud uses the dependency. Each entry here
 explains why, and is revisited at every release.
@@ -945,7 +945,7 @@ VPS-side trust chain is:
   signing via the workflow's OIDC identity — no long-lived signing key
   exists, and every signature is logged to the Rekor transparency log.
   The signer identity pinned on the VPS is the full workflow path:
-  `https://github.com/wattzupbyte/wattcloud/.github/workflows/release.yml@refs/tags/v*.*.*`
+  `https://github.com/thewattlabs/wattcloud/.github/workflows/release.yml@refs/tags/v*.*.*`
   with issuer `https://token.actions.githubusercontent.com`.
 - **Verification happens before extraction.** `install.sh` (for first
   install) and `wattcloud-update` (for every roll) run

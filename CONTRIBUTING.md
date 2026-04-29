@@ -8,7 +8,7 @@ and what isn't.
 ## Before you start
 
 - **Security vulnerabilities go through private reporting.** Open a
-  [GitHub Security Advisory](https://github.com/wattzupbyte/wattcloud/security/advisories/new),
+  [GitHub Security Advisory](https://github.com/thewattlabs/wattcloud/security/advisories/new),
   not a public issue. See `SECURITY.md` for the threat model.
 - **Read the canonical docs first.** `SPEC.md` (BYO protocol, vault
   format), `SECURITY.md` (threat model, key hierarchy), `DESIGN.md`
