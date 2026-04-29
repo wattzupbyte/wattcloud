@@ -126,14 +126,12 @@ let showSheet = $state(false);
 <svelte:window onkeydown={handleSheetKeydown} />
 
 <!-- Desktop: top bar (DESIGN.md 15)
-     Header carries only the high-frequency primary actions
-     (Share / Send to… / Download) plus a clearly-separated Delete and
-     the More button. Everything else (Details, Rename, Move, Copy,
-     Favorite, Add to collection, Transfer to another provider) lives
-     in the More sheet below. This eliminates the prior duplication
-     where every header icon also appeared in the sheet, and it gives
-     destructive Delete its own zone instead of sitting flush against
-     neutral icons. -->
+     Header carries only the high-frequency actions (Share, Favorite,
+     Download) plus a divider-fenced Delete and the More button.
+     Send to…, Details, Rename, Move, Copy, Add to collection, and
+     Transfer to another provider live in the More sheet below.
+     Destructive Delete sits in its own zone past the divider so it
+     doesn't share a row with neutral icons. -->
 <div class="selection-top-bar top-bar top-bar-selection desktop-bar" role="toolbar" aria-label="Selection actions">
   <button class="btn-icon" onclick={() => emit('clear')} aria-label="Exit selection">
     <X size={20} />
@@ -143,25 +141,38 @@ let showSheet = $state(false);
 
   <div class="selection-actions">
     {#if canShare}
-      <button class="btn-icon btn-icon-labeled" onclick={() => emit('share')} aria-label="Share link" title="Share link">
-        <ShareNetwork size={20} /><span class="btn-label">Share</span>
+      <button class="btn-icon" onclick={() => emit('share')} aria-label="Share link" title="Share link">
+        <ShareNetwork size={20} />
       </button>
     {/if}
-    {#if canSendToOS}
-      <button class="btn-icon btn-icon-labeled" onclick={() => emit('sendToOS')} aria-label="Send to..." title="Send to...">
-        <PaperPlaneTilt size={20} /><span class="btn-label">Send</span>
+    {#if canFavorite}
+      <button
+        class="btn-icon"
+        class:action-favorited={favoriteState === 'all'}
+        onclick={handleFavorite}
+        aria-label={favoriteLabel}
+        title={favoriteLabel}
+      >
+        <span class="star-wrap" class:bursting={favBurstActive}>
+          <Star size={20} weight={favoriteState === 'all' ? 'fill' : 'regular'} />
+          {#if favBurstActive}
+            {#each [0, 60, 120, 180, 240, 300] as angle}
+              <span class="burst-dot" style="--angle: {angle}deg"></span>
+            {/each}
+          {/if}
+        </span>
       </button>
     {/if}
     {#if canDownload}
-      <button class="btn-icon btn-icon-labeled" onclick={() => emit('download')} aria-label="Download" title="Download">
-        <DownloadSimple size={20} /><span class="btn-label">Download</span>
+      <button class="btn-icon" onclick={() => emit('download')} aria-label="Download" title="Download">
+        <DownloadSimple size={20} />
       </button>
     {/if}
 
     {#if canDelete}
       <span class="action-divider" aria-hidden="true"></span>
-      <button class="btn-icon btn-icon-labeled action-danger" onclick={() => emit('delete')} aria-label="Delete" title="Delete">
-        <Trash size={20} /><span class="btn-label">Delete</span>
+      <button class="btn-icon action-danger" onclick={() => emit('delete')} aria-label="Delete" title="Delete">
+        <Trash size={20} />
       </button>
     {/if}
 
@@ -318,34 +329,27 @@ let showSheet = $state(false);
     color: var(--danger) !important;
   }
 
-  /* Vertical separator that fences Delete off from the neutral
-     actions. Keeps destructive intent distinct without exiling
-     Delete to a second tap inside More. */
-  .action-divider {
-    width: 1px;
-    height: 20px;
-    background-color: var(--border, #30363d);
-    margin: 0 var(--sp-xs);
+  /* Favorited state on the header star: warm color so the toggled
+     "favorited" look reads at a glance against the otherwise-neutral
+     icon row. The sheet entry uses its own warm pill treatment via
+     .sheet-option-icon.star, so this is desktop-header-only. */
+  .action-favorited {
+    color: var(--accent-warm) !important;
   }
 
-  /* Labeled icon button — icon-only by default (touch-target square),
-     expands to icon + text on wide desktop (≥900px) for discoverability.
-     Mirrors how Files/Photos/Mail surface primary actions on desktop. */
-  .btn-icon-labeled .btn-label {
-    display: none;
-  }
-  @media (min-width: 900px) {
-    .btn-icon-labeled {
-      width: auto;
-      padding: 0 12px;
-      gap: 6px;
-      border-radius: var(--r-md, 6px);
-      font-size: var(--t-body-sm-size);
-      font-weight: 600;
-    }
-    .btn-icon-labeled .btn-label {
-      display: inline;
-    }
+  /* Vertical separator that fences Delete off from the neutral
+     actions. The 1px border-color line was too quiet against the
+     toolbar background; bumped to 2px and using --text-secondary
+     so the boundary is legible without becoming a visual noise.
+     Vertical padding gives the hit-row a breath of space around the
+     line so it doesn't crowd the adjacent icons. */
+  .action-divider {
+    width: 2px;
+    height: 24px;
+    background-color: var(--text-secondary);
+    opacity: 0.35;
+    margin: 0 var(--sp-sm);
+    border-radius: 1px;
   }
 
   /* ── Desktop: full top bar with inline actions ─────────── */
