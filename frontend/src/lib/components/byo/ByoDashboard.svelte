@@ -1013,9 +1013,20 @@
       return;
     }
 
+    // Preparing the payload (download + decrypt + buffer) takes O(seconds)
+    // for non-trivial files; without a cue the user is staring at a frozen
+    // toolbar between the click and the OS sheet popping. Persist a toast
+    // for the duration and update its body per file for multi-selects.
+    const total = rows.length;
+    const prepLabel = (idx: number) =>
+      total === 1 ? 'Preparing file…' : `Preparing ${idx + 1} of ${total}…`;
+    byoToast.show(prepLabel(0), { icon: 'info', durationMs: Infinity });
+
     let files: File[] = [];
     try {
-      for (const row of rows) {
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (i > 0) byoToast.show(prepLabel(i), { icon: 'info', durationMs: Infinity });
         const stream = await dataProvider.downloadFile(row.id);
         const filename = (row as any).decrypted_name || row.name || `file_${row.id}`;
         const mime = (row as any).mime_type || 'application/octet-stream';
@@ -1028,6 +1039,9 @@
       files = [];
       return;
     }
+    // Hand off to the OS — dismiss the prep toast; the native share sheet
+    // is the visual feedback from here on.
+    byoToast.dismiss();
 
     const title = files.length === 1 ? files[0].name : `${files.length} files from Wattcloud`;
     let shared = false;
