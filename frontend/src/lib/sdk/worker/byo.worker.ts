@@ -168,6 +168,7 @@ let byo_solve_relay_pow_wasm: any;
 // Journal codec WASM functions (P3.1)
 let byo_journal_append: any;
 let byo_journal_parse: any;
+let byo_share_audit_payload: any;
 
 // Row-merge WASM function (P3.2)
 let byo_merge_rows: any;
@@ -557,6 +558,7 @@ async function initWasm(): Promise<void> {
     // Journal codec (P3.1)
     byo_journal_append = wasmModule.byo_journal_append;
     byo_journal_parse = wasmModule.byo_journal_parse;
+    byo_share_audit_payload = wasmModule.byo_share_audit_payload;
 
     // Row-merge (P3.2)
     byo_merge_rows = wasmModule.byo_merge_rows;
@@ -1441,6 +1443,14 @@ interface ByoJournalParseRequest {
   journalB64: string;
 }
 
+interface ByoShareAuditPayloadRequest {
+  type: 'byoShareAuditPayload';
+  direction: 'outbound' | 'inbound';
+  fileRef: string;
+  counterpartyHint: string;
+  tsMs: number;
+}
+
 // Relay auth / PoW
 interface ByoDeriveSftpPurposeRequest {
   type: 'byoDeriveSftpPurpose';
@@ -1589,6 +1599,7 @@ type WorkerRequest =
   | ByoCrossProviderMovePlanReconcileRequest
   | ByoJournalAppendRequest
   | ByoJournalParseRequest
+  | ByoShareAuditPayloadRequest
   | ByoMergeRowsRequest
   | ByoManifestAddProviderRequest
   | ByoManifestRenameProviderRequest
@@ -1691,6 +1702,7 @@ const CRYPTO_OPS = new Set([
   'byoDerivePerVaultJournalKeys',
   'byoJournalAppend',
   'byoJournalParse',
+  'byoShareAuditPayload',
   'byoMergeRows',
   'byoManifestAddProvider',
   'byoManifestRenameProvider',
@@ -3048,6 +3060,13 @@ async function handleMessage(request: WorkerRequest): Promise<any> {
       const result = byo_journal_parse(req.sessionId, req.providerId, req.journalB64);
       if (result && result.error) throw new Error(result.error);
       return { entries: result.entries };
+    }
+
+    case 'byoShareAuditPayload': {
+      const req = request as ByoShareAuditPayloadRequest;
+      const result = byo_share_audit_payload(req.direction, req.fileRef, req.counterpartyHint, req.tsMs);
+      if (result && result.error) throw new Error(result.error);
+      return { data_json: result.data_json as string };
     }
 
     // ── Row-merge (P3.2) ────────────────────────────────────────────────

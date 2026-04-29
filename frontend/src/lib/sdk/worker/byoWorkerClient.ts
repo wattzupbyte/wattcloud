@@ -67,6 +67,7 @@ const ENCRYPT_DECRYPT_OPS = new Set([
   'byoVaultBodyEncrypt', 'byoVaultBodyDecrypt',
   'byoDerivePerVaultWalKey', 'byoDerivePerVaultJournalKeys',
   'byoJournalAppend', 'byoJournalParse',
+  'byoShareAuditPayload',
   'byoMergeRows',
   'byoManifestAddProvider', 'byoManifestRenameProvider', 'byoManifestSetPrimary', 'byoManifestTombstone', 'byoManifestUpdateProviderConfig',
   'byoPlanUnlock', 'byoPlanSave', 'byoPlanCrossProviderMove', 'byoDeriveManifestAeadKey',
@@ -1876,6 +1877,27 @@ export async function byoJournalParse(
   journalB64: string,
 ): Promise<{ entries: Array<{ entry_type: string; table: string; row_id: number; data: string }> }> {
   return sendRequest({ type: 'byoJournalParse', sessionId, providerId, journalB64 });
+}
+
+/**
+ * Build the JSON payload for a share-audit journal entry. The result is the
+ * `dataJson` argument for a follow-up `byoJournalAppend` call against table
+ * `share_audit`. Pure data construction — no vault session needed.
+ *
+ * @param direction "outbound" (user invoked OS share) or "inbound" (PWA
+ *   received a Web Share Target POST)
+ * @param fileRef opaque vault row id (string form)
+ * @param counterpartyHint optional hint (e.g. inbound `url` form field).
+ *   Pass `''` for none.
+ * @param tsMs unix milliseconds of the event
+ */
+export async function byoShareAuditPayload(
+  direction: 'outbound' | 'inbound',
+  fileRef: string,
+  counterpartyHint: string,
+  tsMs: number,
+): Promise<{ data_json: string }> {
+  return sendRequest({ type: 'byoShareAuditPayload', direction, fileRef, counterpartyHint, tsMs });
 }
 
 // ── Manifest mutation helpers (P3.3) ──────────────────────────────────────────

@@ -704,6 +704,145 @@ async function saveViaOPFS(
   return { file, bytes: total, save, cleanup: doCleanup };
 }
 
+// ── OS share-sheet path (Web Share API) ────────────────────────────────────
+
+export interface WebSharePrompt {
+  title: string;
+  /** Optional caption / body text. Receiving apps render this inconsistently;
+   *  empty string is fine and often the right choice. */
+  text: string;
+}
+
+export interface BufferStreamToFileOptions {
+  /** Upper bound on plaintext bytes the helper will buffer. Defaults to
+   *  WEB_SHARE_RAM_LIMIT. Above this the stream is aborted and the helper
+   *  throws — protects mobile tabs from OOM. */
+  maxBytes?: number;
+  signal?: AbortSignal;
+  onProgress?: (bytesSoFar: number) => void;
+}
+
+/** Default per-file buffering ceiling for OS-share assembly (200 MiB). The
+ *  outbound multi-file ceiling (also 200 MB total) is enforced separately
+ *  at the call site before any decrypt starts. */
+export const WEB_SHARE_RAM_LIMIT = 200 * 1024 * 1024;
+
+export class WebShareUnsupportedError extends Error {
+  constructor() {
+    super('Web Share API with files not supported in this browser');
+    this.name = 'WebShareUnsupportedError';
+  }
+}
+
+export class WebShareUnsupportedForFilesError extends Error {
+  constructor() {
+    super('Browser refused to share these files (canShare returned false)');
+    this.name = 'WebShareUnsupportedForFilesError';
+  }
+}
+
+/** Drain a ReadableStream into a File, buffering up to `maxBytes` in
+ *  main-thread RAM. Used by the OS-share path; not for download-to-disk
+ *  (which has its own tiered fallbacks in `streamToDisk`). */
+export async function bufferStreamToFile(
+  stream: ReadableStream<Uint8Array>,
+  filename: string,
+  mime: string,
+  options: BufferStreamToFileOptions = {},
+): Promise<File> {
+  const ceiling = options.maxBytes ?? WEB_SHARE_RAM_LIMIT;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = stream.getReader();
+  try {
+    for (;;) {
+      if (options.signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      if (total + value.byteLength > ceiling) {
+        throw new Error(
+          `File too large to buffer for sharing (>${ceiling} bytes)`,
+        );
+      }
+      chunks.push(value);
+      total += value.byteLength;
+      options.onProgress?.(total);
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* already detached */ }
+  }
+  const blob = new Blob(chunks as BlobPart[], { type: mime });
+  return new File([blob], filename, { type: mime });
+}
+
+/**
+ * Hand an array of Files to the OS share sheet via the Web Share API.
+ *
+ * MUST be called from inside a synchronous user-gesture handler — the
+ * browser refuses share() invocations not tied to a live click/touchend.
+ *
+ * The helper drops its references to the input Files immediately after
+ * `navigator.share` resolves or rejects so the GC can reclaim the
+ * buffered plaintext promptly (BYO-ZK-OS-1: no retention outside the
+ * share call). Callers should not hold their own references either.
+ *
+ * Errors:
+ *   - `WebShareUnsupportedError` — the API itself is missing. Caller
+ *     should hide the affordance via `byoCapabilities` rather than
+ *     reach this path.
+ *   - `WebShareUnsupportedForFilesError` — `canShare({files})` returned
+ *     false (Safari MIME gate, Firefox Linux, etc.). Caller surfaces a
+ *     toast explaining the feature is unavailable for this file.
+ *   - `DOMException('AbortError')` — user dismissed the OS sheet. Caller
+ *     treats as silent no-op (no toast).
+ *   - Any other Error — unexpected failure; surface a generic error toast.
+ */
+export async function shareFilesViaOS(
+  files: File[],
+  prompt: WebSharePrompt,
+): Promise<void> {
+  if (
+    typeof navigator === 'undefined' ||
+    typeof navigator.share !== 'function' ||
+    typeof navigator.canShare !== 'function'
+  ) {
+    throw new WebShareUnsupportedError();
+  }
+  // Reference held on the stack for the duration of the share() call only.
+  const payload: ShareData = { files, title: prompt.title, text: prompt.text };
+  if (!navigator.canShare(payload)) {
+    throw new WebShareUnsupportedForFilesError();
+  }
+  try {
+    await navigator.share(payload);
+  } finally {
+    // Ensure no closure retains the array after we return.
+    payload.files = undefined;
+  }
+}
+
+/**
+ * Convenience: drain a single stream + share its File via the OS share
+ * sheet. Mirrors the bufferForIOSSave → IOSSaveHandle.save() chain but
+ * for the dedicated "Send to..." affordance (not the iOS download
+ * fallback). Multi-file callers should drain each stream into a File
+ * via `bufferStreamToFile` then call `shareFilesViaOS` once with the
+ * full array — invoking the OS sheet per-file would pop it N times.
+ */
+export async function bufferForWebShare(
+  stream: ReadableStream<Uint8Array>,
+  filename: string,
+  mime: string,
+  prompt: WebSharePrompt,
+  options: BufferStreamToFileOptions = {},
+): Promise<void> {
+  const file = await bufferStreamToFile(stream, filename, mime, options);
+  await shareFilesViaOS([file], prompt);
+}
+
 /**
  * Boot-time sweep: remove OPFS pending-* entries older than the TTL.
  * Covers tabs that crashed or closed mid-download before their
