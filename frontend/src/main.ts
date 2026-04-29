@@ -14,8 +14,50 @@ import InviteEntry from './lib/components/byo/InviteEntry.svelte';
 import ShareRecipient from './lib/components/share/ShareRecipient.svelte';
 import { prewarmDownloadServiceWorker, sweepOPFSPending } from './lib/byo/streamToDisk';
 import { detectByoCapabilities } from './lib/byo/stores/byoCapabilities';
+import {
+  registerShareReceiveSW,
+  shareReceiveSweepStale,
+  shareReceiveCleanupSession,
+} from './lib/byo/shareReceiveSW';
 import { fetchMe, fetchRelayInfo, hasEnrolledHint } from './lib/byo/accessControl';
 import { mount } from "svelte";
+
+/** Stand-in /share-receive view rendered while the full inbound-share
+ *  flow ships in a follow-up PR. The Web Share Target SW already stages
+ *  the payload into OPFS; this view acknowledges receipt and offers to
+ *  discard it so nothing lingers on the device. PR 5 replaces this with
+ *  ShareReceive.svelte (unlock prompt → destination picker → upload). */
+function mountShareReceivePlaceholder(target: HTMLElement, session: string): void {
+  target.replaceChildren();
+  const wrap = document.createElement('div');
+  wrap.style.cssText =
+    'max-width: 480px; margin: 64px auto; padding: 24px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #c9d1d9;';
+  const h = document.createElement('h1');
+  h.textContent = 'Wattcloud received your share';
+  h.style.cssText = 'font-size: 20px; margin: 0 0 12px; font-weight: 600;';
+  const p = document.createElement('p');
+  p.textContent =
+    'The receive flow is still being built — the file(s) you sent are queued in this browser only. Discard them or come back when the upload UI ships.';
+  p.style.cssText = 'font-size: 14px; line-height: 1.5; color: #8b949e; margin: 0 0 16px;';
+  const meta = document.createElement('p');
+  meta.textContent = session ? `session: ${session}` : 'no session id present';
+  meta.style.cssText = 'font-size: 12px; color: #6e7681; font-family: monospace; margin: 0 0 24px;';
+  const btn = document.createElement('button');
+  btn.textContent = 'Discard and go home';
+  btn.style.cssText =
+    'padding: 10px 16px; background: #238636; color: white; border: 0; border-radius: 6px; font-size: 14px; cursor: pointer;';
+  btn.onclick = async () => {
+    if (session) {
+      try { await shareReceiveCleanupSession(session); } catch { /* best-effort */ }
+    }
+    window.location.href = '/';
+  };
+  wrap.appendChild(h);
+  wrap.appendChild(p);
+  wrap.appendChild(meta);
+  wrap.appendChild(btn);
+  target.appendChild(wrap);
+}
 
 function showError(element: HTMLElement, message: string): void {
   const errorDiv = document.createElement('div');
@@ -51,6 +93,20 @@ async function boot(): Promise<void> {
       // OPFS. Leftover entries lie outside our per-flow cleanup, so
       // sweep on every boot — TTL-gated, no-op on non-OPFS platforms.
       void sweepOPFSPending();
+      return;
+    }
+
+    // /share-receive = Web Share Target landing page. The
+    // share-receive Service Worker accepted a multipart POST from
+    // another app, staged the files into OPFS, and 303-redirected
+    // here with ?session=<id>. Until the full PR-5 flow lands the
+    // page just reports the session id and provides cleanup so the
+    // staged data does not linger on the device.
+    if (window.location.pathname === '/share-receive') {
+      const session = new URLSearchParams(window.location.search).get('session') ?? '';
+      mountShareReceivePlaceholder(appElement, session);
+      void registerShareReceiveSW();
+      void shareReceiveSweepStale();
       return;
     }
     // Fail-closed runtime config load. Any validation error aborts mount.
@@ -101,6 +157,8 @@ async function boot(): Promise<void> {
     detectByoCapabilities();
     void prewarmDownloadServiceWorker();
     void sweepOPFSPending();
+    void registerShareReceiveSW();
+    void shareReceiveSweepStale();
   } catch (e) {
     console.error('Failed to mount Wattcloud app:', e);
     showError(appElement, e instanceof Error ? e.message : String(e));
