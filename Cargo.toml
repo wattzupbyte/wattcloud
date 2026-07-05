@@ -11,7 +11,7 @@ edition = "2021"
 [workspace.dependencies]
 # Crypto — versions pinned. Bumping any of these changes V7 ciphertext
 # derivation; treat it as a wire-format change and bump the protocol version.
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 argon2 = "0.5"
 x25519-dalek = { version = "2.0", default-features = false, features = ["static_secrets", "zeroize"] }
 ed25519-dalek = { version = "2.0", features = ["rand_core", "zeroize"] }
